@@ -208,6 +208,8 @@ ctx.inject(["slots"], (scope) => {
 
 ```
 dsh-mcp-manager/
+  AGENTS.md         agent 工作约束（硬性纪律 / 代码边界 / UI 纪律 / 交付标准）
+  README.md         本文件：设计、通道选型、实测状态、尺寸基准、证据索引
   package.json      exports{"./client"} + dsh.client{platform:"web"} + name（= 客户端 bundle 的模块 id）
   lib/index.js      宿主半边：/api/mcp-manager 路由 + 读写验证（零 import）
   lib/client.js     浏览器半边：settings.section 页面（懒 CJS bundle）
