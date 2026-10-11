@@ -54,6 +54,8 @@ ctx.inject(["slots"], (scope) => {
 
 > `label` 可传 `string` 或 `() => string`（`resolveSlotLabel` 两种都认）。
 > 注意 `settings.section` 是 list 座位，**不像 `single` 座位那样需要 priority 抢位**，所以不存在遮蔽官方控件的风险——这也让本插件天然可回滚。
+>
+> **导航那一格的图标（齿轮）不是本插件选的**：官方按 `id` 硬编码查表、未知 `id` 一律兜底成齿轮，注册契约里**没有 icon 字段**。本插件用「渲染后给自己那一格打标记 + 两行 CSS 覆盖」把它换成了 MCP 官方标记——成因、证据与代价见 **8.6**。
 
 ---
 
@@ -212,8 +214,10 @@ dsh-mcp-manager/
   README.md         本文件：设计、通道选型、实测状态、尺寸基准、证据索引
   package.json      exports{"./client"} + dsh.client{platform:"web"} + name（= 客户端 bundle 的模块 id）
   lib/index.js      宿主半边：/api/mcp-manager 路由 + 读写验证（零 import）
-  lib/client.js     浏览器半边：settings.section 页面（懒 CJS bundle）
-  tools/verify.mjs  自检：102 条断言，纯 Node 零依赖
+  lib/client.js     浏览器半边：settings.section 页面 + 导航那一格的 MCP 标记（懒 CJS bundle）
+  assets/mcp-mark.svg  设置导航那一格用的 MCP 标记（16x16，几何取自官方 favicon）
+  assets/nav-preview.png  改后导航那一格的模拟对照图（自绘，非截图；README 8.6 引用）
+  tools/verify.mjs  自检：115 条断言，纯 Node 零依赖
   .gitattributes    统一 LF（本仓库全 LF，混入 CRLF 会产生整文件 diff）
   .gitignore        node_modules / 构建产物 / 日志 / 编辑器 / 系统文件
 ```
@@ -269,10 +273,10 @@ dsh-mcp-manager/
 
 ```powershell
 node D:\project\dsh-plugins\dsh-mcp-manager\tools\verify.mjs
-# → PASS 102/102
+# → PASS 115/115
 ```
 
-覆盖：包清单契约（`dsh.client.platform`、`exports["./client"]`、bundle 模块 id 必须等于包名、只 require 种子模块、宿主半边零 import）；宿主半边行为（依赖声明、路由路径/方法/requestBody、GET 快照与状态映射、**三种操作 `setEnabled`/`remove`/`save`**、`env`/`headers`/`args` 的三种输入形状、非法 `serverName`/空 `url`/未知操作被拒且**不落盘**、group 条目缺失时的可读报错）；**行内操作回归测试**（B27–B42：停用后 `headers` 必须仍在、启用后仍在、删除只删目标、名字找不到回 409、回退路径的文本形状解析正确）；客户端半边行为（懒 CJS 协议、`settings.section` 注册契约、order 与 label、能力协商）；**主题 / 尺寸 / 自适应 / 表单结构护栏**（A11–A12c：不得裸硬编码颜色、主按钮必须用 foreground token、视觉必须走注入的样式表且有 hover 反馈；A13–A31：标题行与说明文字分层、紧凑档尺寸对齐官方 `.sm`/`.rowActions`、**表单面板对齐官方 models 页（底色分层 + 无描边 + 输入框 token）**、操作区不换行、不重复叠加外壳留白、不渲染 URL 详情、主体自适应且不撑破、不在 inline style 里写尺寸、`mono` 与 `multiline` 分离、一卡一服务器且表单展开在同一张卡内、编辑按钮可收起）；**真实渲染测试**（D1–D13：用迷你渲染器递归展开函数组件，覆盖列表 / 展开编辑 / 新增 / 空 / 载入 / 错误 / 未配置七种状态，断言"表单确实在那张卡内部"、"url 是 `input` 而 `headers` 是 `textarea`"、"展开时不会出现第二张同名卡"）。
+覆盖：包清单契约（`dsh.client.platform`、`exports["./client"]`、bundle 模块 id 必须等于包名、只 require 种子模块、宿主半边零 import）；宿主半边行为（依赖声明、路由路径/方法/requestBody、GET 快照与状态映射、**三种操作 `setEnabled`/`remove`/`save`**、`env`/`headers`/`args` 的三种输入形状、非法 `serverName`/空 `url`/未知操作被拒且**不落盘**、group 条目缺失时的可读报错）；**行内操作回归测试**（B27–B42：停用后 `headers` 必须仍在、启用后仍在、删除只删目标、名字找不到回 409、回退路径的文本形状解析正确）；客户端半边行为（懒 CJS 协议、`settings.section` 注册契约、order 与 label、能力协商）；**主题 / 尺寸 / 自适应 / 表单结构护栏**（A11–A12c：不得裸硬编码颜色、主按钮必须用 foreground token、视觉必须走注入的样式表且有 hover 反馈；A13–A31：标题行与说明文字分层、紧凑档尺寸对齐官方 `.sm`/`.rowActions`、**表单面板对齐官方 models 页（底色分层 + 无描边 + 输入框 token）**、操作区不换行、不重复叠加外壳留白、不渲染 URL 详情、主体自适应且不撑破、不在 inline style 里写尺寸、`mono` 与 `multiline` 分离、一卡一服务器且表单展开在同一张卡内、编辑按钮可收起）；**真实渲染测试**（D1–D13：用迷你渲染器递归展开函数组件，覆盖列表 / 展开编辑 / 新增 / 空 / 载入 / 错误 / 未配置七种状态，断言"展开时不会出现第二张同名卡"）；**设置导航那一格的图标**（A32–A38：内联副本与 `assets/mcp-mark.svg` 的三条 path 逐字一致、几何与官方 favicon 同源、按官方比例缩进 16x16（墨迹高 15 / 居中 / 有效描边 1.0）、用官方 `data-shortcut-modal` 锚点而不是 CSS-module 哈希类名、只 setAttribute 不改 React 节点树、只隐藏官方 `<svg>` 而不隐藏整行；C12–C17 用**假 DOM 真跑一遍 `apply`**：只标记 label 为 `MCP` 的那一格、observer 挂在 body、注入的样式表已含那两行规则、面板关闭重开后能重新标记、卸载时 observer 与标记都清干净）。
 
 ---
 
@@ -290,7 +294,7 @@ profile 已按第 5 节接线，`dsh-hmr` 监听该文件（`dsh-hmr/lib/index.j
 | **宿主半边生效** | `include:dsh-mcp-manager` → `fiberPhase: active`（`apply()` 内同步注册路由，抛错会挂掉 fiber） |
 | **客户端半边生效** | `settings.section` 台账 occupants 含 `{id:"mcp", order:900, active:true}`，且是 order 最大的一项 |
 | 路由受鉴权保护 | `GET/POST /api/mcp-manager` → **401**；伪造 `Host` → **403** |
-| 自检 | `PASS 102/102` |
+| 自检 | `PASS 115/115` |
 | 文件编码 | 无 BOM、无 U+FFFD、LF 行尾、YAML 解析通过 |
 
 `readOnlyReason: "unaddressable"` 这一条尤其值得记下：它**正面印证了「group 子条目不可单独寻址」**——所以 `configEditor` 只能整体重写 group 的 config 数组，这正是本插件「单一数组」设计的由来，而不是实现偷懒。
@@ -309,6 +313,7 @@ account -10 | general 0 | models 10 | plugins 15 | agent-presets 20 | mcp 900 �
 4. **group 子条目当前没有显式 `id`**，Loader 自动生成了 `ef60a0d1` 这类十六进制 id。若希望 id 稳定，给每个子条目手写 `id:`。
 5. **UI 不依赖 primitives 组件**：视觉走注入的样式表（class 名 `mcpm-` 前缀），只用主题 token，因此 `require` 里只有 `react`。`@deepseek-ai/dsh-client-ui-primitives` 里确实有 `Button` / `Input` / `Switch` / `SettingsForm` / `Toast` / `Modal` —— 但它们的 props 我没有实测，所以没有猜着用；间距/配色改按官方 CSS 的实测值照抄（第 8 节）。
 6. **`serverName` 重命名**：客户端目前按数组下标定位被编辑项，重命名会保留原 `rowId`。若改的是 `insert:` 行里的声明而非覆写行，可能新建而非复用条目。
+7. **导航那一格的 MCP 标记没在真实界面里点过**。离线侧能证明的是：几何取自官方 favicon、16px 下光栅化后三层笔画仍分得开（下方 §8.6 的对照图是**我用同一份几何自绘的模拟行**，不是应用截图）、以及 C12–C17 用假 DOM 跑通了标记/重开/卸载三条路径。仍缺的一环是「真机打开设置面板，齿轮确实变成 MCP 标记」——这取决于官方那两处 `data-shortcut-modal="settings"` / `nav > button > [svg, span]` 结构与源码一致（已按 `dsh-client-ui-settings-general/lib/client.js:277-320` 逐行核对）。
 
 ### 7.3 行内操作曾经静默丢字段（已修）
 
@@ -409,6 +414,8 @@ account -10 | general 0 | models 10 | plugins 15 | agent-presets 20 | mcp 900 �
 | 主按钮 token `button-primary-fill` / `label-primary-foreground` | `dsh-client-ui-primitives/lib/Button.module.css` 的 `.primary` |
 | **表单/卡片的整体结构**：`.section max-width:720px`、`.rows gap:8px`、`.rowCard`、`.rowActions button {28px/12px}`、`.addCard { background:bg-module-platform; 无描边 }`、`.field`、`.fieldLabel {12px/500}`、`.input { border-l4 + bg-layer-1 }`、`.input::placeholder { label-dimmed }`、`.input:focus { border-color:state-business-primary; outline:none }` | `dsh-client-ui-settings-models/lib/client.js` 的 CSS Module 字符串（`.section` / `.rowCard` / `.addCard` / `.field` / `.input` 等） |
 | 合法 alias token 清单（14 个） | `cordis_inspect_query` → client `Theme.listTokens` |
+| **导航那一格的尺寸**：`navCell { height:40px; gap:8px; padding:9px 16px 9px 12px; font 400 14px/22px }`、`navIcon { flex:none }`（16px 图标格） | 同 `dsh-client-ui-settings-general/lib/client.js` 的 CSS 字符串（`.wCInkW_navCell` / `.wCInkW_navIcon` / `.wCInkW_navLabel`） |
+| **MCP 标记的几何**：三条 `stroke-width="11.0667"` / `linecap="round"` 的 path | 官方仓库 `modelcontextprotocol/modelcontextprotocol` 的 `docs/favicon.svg` |
 
 > 注意 `listTokens` 只列出"需要 light/dark 双份覆写"的 alias 子集；`button-primary-fill`、`radius-*`、`settings-card-*`、`label-tertiary` 都不在表里，但官方 CSS 在用，所以真实存在。**判断某个 token 是否存在，以官方 CSS 的用法为准，不要只看 `listTokens`。**
 
@@ -434,6 +441,41 @@ account -10 | general 0 | models 10 | plugins 15 | agent-presets 20 | mcp 900 �
 
 混用会在单行字段上套 56px 的多行框——`url` 就曾被渲染成一个大框（`A28` 守住）。
 
+### 8.6 设置导航那一格的图标：为什么默认是齿轮，以及怎么换成 MCP 标记
+
+**为什么默认是齿轮**：DSH 的设置导航**不接受插件提供图标**，一行证据链：
+
+| 事实 | 证据 |
+|---|---|
+| `settings.section` 的注册选项只有 `id` / `order` / `label`（**没有 icon**） | 运行时 `Slots.listSubTree` 的 catalog；官方投影行时也只取这三个字段（`dsh-client-ui-settings-general/lib/client.js:1025-1030`） |
+| 图标由**硬编码的 id 查表**决定，未知 id 一律兜底成齿轮 | 同文件 `:244-267`，注释原文 *Nav glyph by section id; unknown ids fall back to the settings gear.* |
+| 渲染处只看 id：`children: [navIcon(row.id), span(row.label)]` | 同文件 `:313` |
+| `sidebar.settings` 下没有「导航装饰」座位 | `Slots.listSubTree`（只有 section / onboarding / trigger / header / action / close / launcher） |
+
+顺带否决一条歪路：**不能靠换 id 蹭官方图标**——catalog 原文是 *reusing a shipped id puts you in THAT cell and replaces it*，那会顶掉官方那一页。
+
+**本插件怎么换**（只碰一个属性 + 两行 CSS，不动 React 的节点树）：
+
+1. `markNavCell()`（`lib/client.js`）在 `ctx.effect` 里挂一个 body 级 MutationObserver；面板打开后按**官方 data 锚点** `[data-shortcut-modal="settings"] > nav` 找到导航，再按**我们自己注册的 `SECTION_LABEL` 文本**认出那一格。官方 class 是 CSS-module 哈希（`wCInkW_navCell`），会随构建变，**不能当锚点**。
+2. 认出来后只 `setAttribute("data-mcpm-nav", "1")`。已标记且 `isConnected` 时立刻 return（一次属性读、不查 DOM），所以聊天流式渲染那种高频 mutation 也不会把它变热。
+3. 样式表两行：`button[data-mcpm-nav] > svg { display:none }` 让官方齿轮退出 flex 流（label 位置不变，`gap:8px` 也不会多算一格），`::before` + `mask` 用内联 SVG 的 data URI 画标记，颜色走 `currentColor`（mask 只取 alpha）。
+
+**标记几何**（`assets/mcp-mark.svg`；三条 path 逐字取自官方仓库 `modelcontextprotocol/modelcontextprotocol` 的 `docs/favicon.svg`）：
+
+| 参数 | 值 | 为什么 |
+|---|---|---|
+| 墨迹高 | 15（16x16 内，宽 13.4851，居中） | 与官方 `.navIcon` 同格；官方图自然比例在 16px 下墨迹高约 14.1，这里略放大以抵掉细描边的视觉损失 |
+| `scale` | 0.0942473（= 15 / 159.1557） | 159.1557 是官方图**含描边**的墨迹高，由几何反推，不是手调 |
+| 有效描边 | **1.0**（`stroke-width:10.61038` × `scale`） | 官方自然比例是 1.043，但 16px 下笔画之间的缝只剩约 1px：**4% 的加粗就把缝糊死**（光栅化实测覆盖率 0.169 → 0.242）。官方导航图标本身是 1.3 的 Medium 描边，照搬会让这个三层笔画的标记糊成一坨 |
+
+**A32–A38** 逐条钉住上表：官方墨迹包围盒 → `scale` / 居中 / 有效描边用**算术**验证，内联副本与资产文件逐字比对（反向验证时改一个数字就报错）。
+
+改后的样子（`assets/nav-preview.png`）：上行是官方齿轮 + 「通用」，下行是替换后的 MCP 标记 + 「MCP」。**这是我用同一份几何自绘的模拟行，不是应用截图**——字号/间距照抄官方 `.navCell`（`40px` 高、`gap:8px`、`padding:9px 16px 9px 12px`、`14px/22px`）。
+
+![设置导航里的两行对照：通用=官方齿轮，MCP=本插件标记](assets/nav-preview.png)
+
+> **代价，明确记下**：官方 practices 写的是 *Do not write DOM outside your component*，本插件为此**开了一个有意的例外**，并把例外压到最小——只在**我们自己那一格**打一个 data 属性；不读别的插件的 DOM，不删/不换 React 节点，卸载时 `removeAttribute` + `disconnect`。它依赖官方 DOM 结构（`data-shortcut-modal="settings"` + `nav > button > [svg, span]`），DSH 改结构就会**静默失效**——失效时最坏情况是保持原样显示齿轮，不会破坏页面。若哪天官方给 `settings.section` 加上 `icon` 字段，这段整块删掉、改成注册参数即可。
+
 ---
 
 ## 9. 实测依据索引
@@ -453,3 +495,8 @@ account -10 | general 0 | models 10 | plugins 15 | agent-presets 20 | mcp 900 �
 | `Include.write()` 整体重写 root.data | `dsh-app-boot/lib/index.js:245-248` |
 | group 子条目随 `internal/update` 重建 | `cordis-plugin-loader/lib/index.js:108-115` |
 | 双半插件的接线范式（路径行） | 同级 `../codex-effort-picker/README.md` |
+| **设置导航图标是硬编码 id→图标，未知 id 兜底齿轮** | `dsh-client-ui-settings-general/lib/client.js:244-267`（用于 `:313`；行只带 id/order/label，见 `:1025-1030`） |
+| 导航那一格的结构与锚点：`panel[data-shortcut-modal="settings"] > nav > button > [svg, span]` | 同文件 `:277-320` |
+| **MCP 官方标记几何**（三联弧线笔画） | 官方仓库 `modelcontextprotocol/modelcontextprotocol` 的 `docs/favicon.svg`（`docs/logo/{light,dark}.svg` 是同一标记 + 文字商标） |
+| 插件**自己**的图标（Plugin Manager 卡片）走 manifest：SVG/PNG/JPEG/WebP ≤256 KiB、须在包目录内 | `dsh-app-boot/lib/index.js:1851-1876, 1971-2001`（渲染端 `dsh-client-ui-plugin-manager/lib/client.js:2029-2032` 的 `PackageArtwork`） |
+| 但 `file://` 接线**拿不到**上面那份 manifest（`barePackageName()` 对含 `:` 的 specifier 返回 undefined） | `dsh-app-boot/lib/index.js:1167-1174`（`metaOf` 在 `:3261-3263`） |

@@ -198,6 +198,81 @@ check('A10 两半边的组条目 id 一致', hostSource.includes("'mcp-manager'"
   const subtitleAt = headerBlock.indexOf('mcpm-subtitle')
   check('A14 说明文字在标题行之外', rowAt >= 0 && subtitleAt > rowAt)
 }
+
+// 导航图标护栏：DSH 的设置导航是**硬编码 id→图标**、未知 id 兜底成齿轮
+// （dsh-client-ui-settings-general/lib/client.js:244-267），注册契约里没有 icon 字段，
+// 所以本插件只能渲染后给自己那一格打标记再覆盖。下面把「标记方式」与「标记几何」都钉住。
+{
+  // 官方墨迹包围盒（含描边）：由官方仓库 docs/favicon.svg 那三条 path 采样解析得到。
+  const OFFICIAL_INK = { x: 18.06625, y: 10.63465, w: 143.0821, h: 159.1557 }
+  const TARGET_HEIGHT = 15
+
+  const asset = await readFile(join(root, 'assets', 'mcp-mark.svg'), 'utf8')
+  // 注释里也会出现 stroke-width 之类的字样，先剥掉再解析，否则会取到注释里的数字。
+  const assetMarkup = asset.replace(/<!--[\s\S]*?-->/g, '')
+  const assetPaths = [...assetMarkup.matchAll(/<path d="([^"]+)"/g)].map(([, d]) => d)
+  const inlinePaths = [...clientSource.matchAll(/<path d="([^"]+)"/g)].map(([, d]) => d)
+  check(
+    'A32 MCP 标记：内联副本与 assets/mcp-mark.svg 的三条 path 逐字一致',
+    assetPaths.length === 3 && inlinePaths.length === 3 && same(assetPaths, inlinePaths),
+    `asset=${assetPaths.length} inline=${inlinePaths.length}`,
+  )
+  check(
+    'A33 MCP 标记：几何与官方 favicon 同源（round linecap + currentColor，无硬编码颜色）',
+    /stroke-linecap="round"/.test(assetMarkup) &&
+      /stroke="currentColor"/.test(assetMarkup) &&
+      !/#[0-9a-fA-F]{3,8}/.test(assetMarkup),
+  )
+
+  // 变换必须能把官方墨迹放进 16x16：高 = 15、居中、有效描边 = 1.0。
+  const numbers = (text) => {
+    const transform = text.match(/translate\((-?[\d.]+) (-?[\d.]+)\) scale\(([\d.]+)\)/)
+    const stroke = text.match(/stroke-width="([\d.]+)"/)
+    return transform === null || stroke === null
+      ? null
+      : { tx: Number(transform[1]), ty: Number(transform[2]), scale: Number(transform[3]), stroke: Number(stroke[1]) }
+  }
+  const inline = numbers(clientSource)
+  const inAsset = numbers(assetMarkup)
+  const near = (a, b, tol) => Math.abs(a - b) <= tol
+  const geometryOk =
+    inline !== null &&
+    inAsset !== null &&
+    same(inline, inAsset) &&
+    near(inline.scale, TARGET_HEIGHT / OFFICIAL_INK.h, 1e-6) &&
+    near(inline.tx + (OFFICIAL_INK.x + OFFICIAL_INK.w / 2) * inline.scale, 8, 1e-3) &&
+    near(inline.ty + (OFFICIAL_INK.y + OFFICIAL_INK.h / 2) * inline.scale, 8, 1e-3) &&
+    near(inline.stroke * inline.scale, 1, 0.02)
+  check('A34 MCP 标记：按官方比例缩进 16x16（墨迹高 15、居中、有效描边 1.0）', geometryOk, JSON.stringify(inline))
+
+  const code = clientSource.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
+  check(
+    'A35 导航标记用官方 data 锚点，不依赖 CSS-module 哈希类名',
+    code.includes("'[data-shortcut-modal=\"settings\"]'") || code.includes('NAV_DIALOG_SELECTOR = \'[data-shortcut-modal="settings"]\''),
+  )
+  check('A36 导航标记只 setAttribute/removeAttribute，不改 React 节点树', 
+    /cell\.setAttribute\(NAV_ATTRIBUTE, "1"\)/.test(code) &&
+      /removeAttribute\(NAV_ATTRIBUTE\)/.test(code) &&
+      !/document\.body\.append|\.removeChild\(|innerHTML/.test(code),
+  )
+  check(
+    'A37 只隐藏官方 <svg>，不隐藏我们自己那一格',
+    /\[data-shortcut-modal="settings"\] button\[data-mcpm-nav\] > svg \{ display:none; \}/.test(clientSource) &&
+      !/button\[data-mcpm-nav\]\s*\{[^}]*display\s*:\s*none/.test(clientSource),
+  )
+  // 注意：这条规则里含 `${MCP_MARK_DATA_URI}`，用 `[^}]*` 取规则会在第一个 `}` 处截断，
+  // 所以按「行」取（样式表里一条规则一行）。
+  const markAt = clientSource.indexOf('button[data-mcpm-nav]::before')
+  const markRule = markAt < 0 ? '' : clientSource.slice(markAt, clientSource.indexOf('\n', markAt))
+  check(
+    'A38 标记颜色走 currentColor，几何走内联 SVG 的 data URI（不是外链图片或硬编码颜色）',
+    markRule.includes('background-color:currentColor') &&
+      markRule.includes('mask:url("${MCP_MARK_DATA_URI}")') &&
+      markRule.includes('width:16px') &&
+      /const MCP_MARK_DATA_URI = `data:image\/svg\+xml,\$\{encodeURIComponent\(MCP_MARK_SVG\)\}`/.test(clientSource),
+    markRule.slice(0, 120),
+  )
+}
 //#endregion
 
 //#region B. 宿主半边
@@ -471,7 +546,12 @@ check('C4 导出 apply', typeof clientExports.apply === 'function')
 
 const registrations = []
 const injectedNames = []
+const effects = []
 clientExports.apply({
+  // 资源登记：官方客户端插件就是 `ctx.effect(() => disposer, label)`。
+  effect(callback, label) {
+    effects.push({ label, dispose: callback() })
+  },
   inject(names, callback) {
     injectedNames.push(...names)
     callback({
@@ -496,6 +576,152 @@ check('C8 条目 id', options?.id === 'mcp', String(options?.id))
 check('C9 order 落在最下方（>= 官方页）', typeof options?.order === 'number' && options.order >= 500, String(options?.order))
 check('C10 label 可解析', (typeof options?.label === 'function' ? options.label() : options?.label) === 'MCP')
 check('C11 组件是函数', typeof component === 'function')
+// 导航标记必须走 ctx.effect 登记，否则插件卸载/热替换后 observer 会留在页面上。
+check(
+  'C12 导航标记经 ctx.effect 登记（可随插件卸载收掉）',
+  effects.length === 1 && /nav mark/.test(effects[0]?.label ?? '') && typeof effects[0]?.dispose === 'function',
+  JSON.stringify(effects.map((effect) => effect.label)),
+)
+
+// C13–C17：拿一套假 DOM 真跑一遍 apply，验证「只标记我们那一格」「面板关闭重开后能重新标记」
+// 「卸载后清干净」。这些行为源码 grep 抓不到。
+{
+  /** 按官方结构造一格：`<button><svg/><span>label</span></button>`。 */
+  const makeCell = (label) => {
+    const span = { tagName: 'SPAN', textContent: label }
+    const svg = { tagName: 'svg' }
+    return {
+      tagName: 'BUTTON',
+      children: [svg, span],
+      isConnected: true,
+      attributes: {},
+      get lastElementChild() {
+        return this.children[this.children.length - 1]
+      },
+      setAttribute(name, value) {
+        this.attributes[name] = value
+      },
+      getAttribute(name) {
+        return name in this.attributes ? this.attributes[name] : null
+      },
+      removeAttribute(name) {
+        delete this.attributes[name]
+      },
+    }
+  }
+
+  const cells = [makeCell('通用'), makeCell('模型'), makeCell('MCP')]
+  const nav = { querySelectorAll: (selector) => (selector === 'button' ? cells : []) }
+  const dialog = { querySelector: (selector) => (selector === 'nav' ? nav : null) }
+  const injected = []
+  const observers = []
+  class FakeMutationObserver {
+    constructor(callback) {
+      this.callback = callback
+      this.disconnected = false
+      observers.push(this)
+    }
+    observe(target, options) {
+      this.target = target
+      this.options = options
+    }
+    disconnect() {
+      this.disconnected = true
+    }
+  }
+  const fakeDocument = {
+    body: { nodeName: 'BODY' },
+    head: { appendChild: (element) => injected.push(element) },
+    getElementById: () => null,
+    createElement: () => ({ id: '', textContent: '' }),
+    querySelectorAll: (selector) => (selector === '[data-shortcut-modal="settings"]' ? [dialog] : []),
+  }
+
+  const domSandbox = {
+    window: { __ModuleLoader__: { load: (definition) => registered.push(definition) } },
+    document: fakeDocument,
+    MutationObserver: FakeMutationObserver,
+    console,
+  }
+  domSandbox.globalThis = domSandbox
+  vm.runInNewContext(clientSource, domSandbox, { filename: 'lib/client.js' })
+  const domExports = registered[registered.length - 1].factory(stubRequire)
+  const domEffects = []
+  domExports.apply({
+    effect(callback, label) {
+      domEffects.push({ label, dispose: callback() })
+    },
+    inject() {},
+  })
+
+  check(
+    'C13 只在「MCP」那一格打标记（按 label 文本认，不看哈希类名）',
+    cells.filter((cell) => cell.getAttribute('data-mcpm-nav') === '1').length === 1 &&
+      cells[2].getAttribute('data-mcpm-nav') === '1',
+    `marked=${cells.filter((cell) => cell.getAttribute('data-mcpm-nav') === '1').length}`,
+  )
+  check(
+    'C14 observer 挂在 body 上（设置面板是 portal 到 body 的）',
+    observers.length === 1 && observers[0].target === fakeDocument.body && observers[0].options?.subtree === true,
+  )
+  const sheet = injected[0]?.textContent ?? ''
+  check(
+    'C15 注入的样式表里已含导航那两行（隐藏官方 svg + mask 画标记）',
+    /\[data-shortcut-modal="settings"\] button\[data-mcpm-nav\] > svg \{ display:none; \}/.test(sheet) &&
+      /content:""[^}]*mask:url\("data:image\/svg\+xml,/.test(sheet),
+    `chars=${sheet.length}`,
+  )
+
+  // 面板关闭 → 旧节点断开 → 重新打开（新节点）→ 应重新标记。
+  cells[2].isConnected = false
+  cells[2].removeAttribute('data-mcpm-nav')
+  const reopened = makeCell('MCP')
+  cells[2] = reopened
+  observers[0].callback()
+  check('C16 面板关闭重开后能重新标记新节点', reopened.getAttribute('data-mcpm-nav') === '1')
+
+  // 先确认确实标记过，否则「卸载后没有属性」会变成一条空断言（曾经就差点漏过这个洞）。
+  const beforeDispose = reopened.getAttribute('data-mcpm-nav')
+  domEffects[0].dispose()
+  check(
+    'C17 卸载时摘掉 observer 与标记',
+    beforeDispose === '1' &&
+      observers[0].disconnected === true &&
+      reopened.getAttribute('data-mcpm-nav') === null,
+    `before=${String(beforeDispose)} after=${String(reopened.getAttribute('data-mcpm-nav'))}`,
+  )
+}
+
+// C18：客户端半边热替换时，页面上那份**旧样式表**必须被刷新。
+// 反例（真实踩过）：`ensureStyles` 写成「元素存在就 return」，于是新加的导航规则永远进不了页面，
+// 表现就是「bundle 更新了、图标却还是齿轮」。
+{
+  const elements = [{ id: 'dsh-mcp-manager-styles', textContent: '/* 旧版样式，没有导航规则 */' }]
+  const staleDocument = {
+    body: { nodeName: 'BODY' },
+    head: { appendChild: (element) => elements.push(element) },
+    getElementById: (id) => elements.find((element) => element.id === id) ?? null,
+    createElement: () => ({ id: '', textContent: '' }),
+    querySelectorAll: () => [],
+  }
+  const staleSandbox = {
+    window: { __ModuleLoader__: { load: (definition) => registered.push(definition) } },
+    document: staleDocument,
+    MutationObserver: class {
+      observe() {}
+      disconnect() {}
+    },
+    console,
+  }
+  staleSandbox.globalThis = staleSandbox
+  vm.runInNewContext(clientSource, staleSandbox, { filename: 'lib/client.js' })
+  registered[registered.length - 1].factory(stubRequire).apply({ effect: () => {}, inject: () => {} })
+  check(
+    'C18 热替换时刷新已有样式表（写成「存在就跳过」会让新 CSS 永不生效）',
+    elements.length === 1 && elements[0].textContent.includes('data-mcpm-nav'),
+    `count=${elements.length} refreshed=${elements[0].textContent.includes('data-mcpm-nav')}`,
+  )
+}
 //#endregion
 
 //#region D. 客户端渲染（迷你渲染器：真正递归展开函数组件，不只是 grep 源码）
@@ -557,6 +783,8 @@ check('C11 组件是函数', typeof component === 'function')
     let sectionComponent = null
     const fresh = definition.factory((specifier) => (specifier === 'react' ? fakeReact : {}))
     fresh.apply({
+      // 渲染测试只关心页面组件；导航标记那部分由 C12–C17 覆盖。
+      effect: () => {},
       inject: (_names, callback) =>
         callback({
           slots: {

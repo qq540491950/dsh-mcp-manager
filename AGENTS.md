@@ -14,7 +14,7 @@
 
 | 半边 | 文件 | 职责 |
 |---|---|---|
-| 客户端 | `lib/client.js` | 往 `settings.section`（list 座位，`order: 900`）注册一页。`window.__ModuleLoader__` 懒 CJS bundle。 |
+| 客户端 | `lib/client.js` | 往 `settings.section`（list 座位，`order: 900`）注册一页；并把设置导航里**自己那一格**的兜底齿轮换成 MCP 标记（打 data 属性 + 两行 CSS，见 3.8）。`window.__ModuleLoader__` 懒 CJS bundle。 |
 | 宿主 | `lib/index.js` | 零 import。用 `ctx.connection.fetch.register()` 开 `/api/mcp-manager`；用 `ctx.configEditor.edit()` 写配置。 |
 
 **数据模型**：所有 MCP 服务器放在**一个** `cordis:group` 条目（id `mcp-manager`）的 config 数组里。
@@ -22,7 +22,7 @@
 **唯一必跑的命令**：
 
 ```powershell
-node tools/verify.mjs      # 期望 PASS；当前 102 条断言
+node tools/verify.mjs      # 期望 PASS；当前 115 条断言
 ```
 
 **详细设计/证据索引**：`README.md`（第 3 节通道选型、第 7 节实测状态、第 8 节尺寸基准、第 9 节证据出处）。
@@ -156,6 +156,14 @@ Loader 的 `EntryTree.write()`（`dsh-app-boot` 的 `Include` 类）是 `writeFi
 
 当前档位、每个数值的出处、以及"为什么第一版比官方丑"都记在 `README.md` 第 8 节。改尺寸先读那一节，改完同步更新它。
 
+### 3.8 不要动别的插件的 DOM —— 唯一的例外是设置导航里**我们自己那一格**
+
+官方 practices 的原话是 *Do not write DOM outside your component*。本仓库为此开了一个**有意的例外**，并且把例外压到最小：`markNavCell()` 只在**我们自己那一格**（label 文本 == `SECTION_LABEL`）上 `setAttribute("data-mcpm-nav", "1")`，视觉全交给样式表。
+
+不许扩大的部分：不读别的插件的 DOM、不删/不换/不移 React 管的节点、不往 `document.body` append 任何东西、卸载时必须 `removeAttribute` + `disconnect`（C13–C17 守住）。
+
+原因是硬约束：设置导航图标由官方 `navIcon(id)` **硬编码查表**、未知 id 兜底成齿轮，`settings.section` 的注册契约里**没有 icon 字段**，`sidebar.settings` 下也没有导航装饰座位。细节与证据见 `README.md` 8.6。**若哪天官方加上 `icon` 字段，就删掉这段改用注册参数。**
+
 ---
 
 ## 4. 改代码的流程
@@ -174,9 +182,9 @@ node tools/verify.mjs
 
 | 区 | 覆盖 |
 |---|---|
-| A | 包清单 / 主题 / 尺寸 / 自适应 / 布局 / 表单结构护栏 |
+| A | 包清单 / 主题 / 尺寸 / 自适应 / 布局 / 表单结构护栏 / 导航标记几何（A32–A38） |
 | B | 宿主半边行为 + 行内操作回归（B27–B42 专测"停用后 headers 必须仍在"） |
-| C | 客户端半边协议与座位注册契约 |
+| C | 客户端半边协议与座位注册契约 + 导航标记的 DOM 行为（C12–C17：用假 DOM 真跑 apply） |
 | D | **真实渲染测试**：迷你渲染器递归展开函数组件，覆盖七种状态 |
 
 ### 4.3 新断言必须做**反向验证**
@@ -257,3 +265,5 @@ node tools/verify.mjs
 | group 子条目不可单独寻址 | `plugin_manager` 报 `readOnlyReason: "unaddressable"`。这正是"整体重写 group config 数组"这一设计的由来 |
 | `disabled` 对 group 子条目有效 | 已实测：加 `disabled: true` 后 `enabled:false, fiberPhase:null`。启停机制没问题，别再怀疑这里 |
 | 无宿主日志可看 | `%APPDATA%\@deepseek-ai\dsh-desktop\logs` 是空的，无法从外部观测宿主侧异常。所以**必须靠自检 + 渲染测试**兜住，不能靠"跑起来看看" |
+| 设置导航的图标**不可由插件提供** | `settings.section` 只认 `id`/`order`/`label`，图标是官方 `navIcon(id)` 硬编码查表 + 齿轮兜底。本插件靠「给自己那一格打 data 属性 + 两行 CSS 覆盖」实现（3.8），代价是**依赖官方 DOM 结构**：DSH 改结构就静默失效（最坏只是继续显示齿轮）。若官方将来支持 `icon`，改用注册参数 |
+| 插件在设置导航里的位置由 `order` 决定，不保证"永远最后" | 900 只是"比官方页大"；别的插件开更大就会排到后面。`findNavCell` 按 label 文本认那一格，所以顺序变化不影响标记 |
