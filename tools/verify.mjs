@@ -138,6 +138,11 @@ check('A10 两半边的组条目 id 一致', hostSource.includes("'mcp-manager'"
   ]
   const badAdaptive = missing(adaptive)
   check('A26 自适应主体（填满 + 可压缩 + 省略号 + 不撑破）', badAdaptive.length === 0, badAdaptive.map(([c, d]) => `${c} { ${d} }`).join('; '))
+  check(
+    'A26b 失败原因行可断行且不撑破卡片',
+    ruleOf('.mcpm-rowError').includes('min-width:0') && ruleOf('.mcpm-rowError').includes('overflow-wrap:anywhere'),
+    ruleOf('.mcpm-rowError'),
+  )
   // inline 的尺寸会压过样式表，改档位时看不到效果（踩过：输入框 inline height 36px）。
   check('A27 不在 inline style 里写尺寸', !/style:\s*\{[^}]*\b(height|fontSize|padding|lineHeight)\s*:/.test(code))
   // 「等宽」与「多行」必须分离：混用会把 url 这种单行字段渲染成 56px 的大框。
@@ -179,7 +184,30 @@ check('A10 两半边的组条目 id 一致', hostSource.includes("'mcp-manager'"
   check('A22 toRecord 认对象形状（否则 headers/env 被静默清空）', /typeof value === 'object' && !Array\.isArray\(value\)/.test(hostSource))
   // 宿主半边不参与热重载，所以客户端必须能同时说两代协议。
   check('A23 客户端做能力协商', /supports\(snapshot,\s*"setEnabled"\)/.test(clientSource) && clientSource.includes('capabilities'))
-  check('A24 宿主声明 capabilities', hostSource.includes("capabilities: ['setEnabled', 'remove', 'save']"))
+  check('A24 宿主声明 capabilities', hostSource.includes("capabilities: ['setEnabled', 'remove', 'save', 'lastError', 'probe']"))
+  // 失败原因必须由宿主自己从 ctx.logger 里捞：mcp-client 默认 failOnStartupError=false，
+  // 连接失败不会让 fiber 变 FAILED，而内置日志缓冲的默认阈值是 1（WARN=2 会被丢掉）。
+  check(
+    'A24b 宿主挂 logger exporter 且显式声明阈值（否则 warn 级原因被丢）',
+    /logger\.exporter\(\{\s*levels:\s*\{\s*default:\s*3\s*\}/.test(hostSource),
+  )
+  check(
+    'A24c 只认 mcp-client 自己的日志行（别的插件报错不算服务器故障）',
+    hostSource.includes('^mcp-client\\(([^)]+)\\):') && hostSource.includes('MCP_LOG_LINE.exec(line)'),
+  )
+  // 主动探测必须有自己的超时：没有超时的话服务器挂死会把 UI 的按钮永久卡住。
+  check(
+    'A24d 主动探测带自己的超时（AbortController + PROBE_TIMEOUT_MS）',
+    /PROBE_TIMEOUT_MS = \d+/.test(hostSource) &&
+      hostSource.includes('new AbortController()') &&
+      hostSource.includes('controller.abort()') &&
+      hostSource.includes('clearTimeout(timer)'),
+  )
+  // 相位映射必须补全 LOADING（那才是"启动中"），不能只区分 active/其它。
+  check(
+    'A24e 相位映射覆盖 LOADING（启动中）与 FAILED',
+    /FIBER_PHASE = \['pending', 'loading', 'active', 'failed', 'disposed', 'unloading'\]/.test(hostSource),
+  )
   // 退回整数组提交时，env/headers 必须转成旧宿主认识的文本形状，否则又会被清空。
   {
     const block = clientSource.slice(clientSource.indexOf('function serverOfExisting'), clientSource.indexOf('function supports'))
@@ -281,17 +309,35 @@ check('B1 导出 name', host.name === 'dsh-mcp-manager', String(host.name))
 check('B2 导出 apply', typeof host.apply === 'function')
 
 /** 造一个够用的假宿主上下文；写入会落到 state，因此可以连续操作。 */
-function makeHostCtx({ configRows = [], mcpChildren = [] } = {}) {
-  const captured = { deps: null, route: null, writes: [] }
+function makeHostCtx({ configRows = [], mcpChildren = [], withLogger = true } = {}) {
+  const captured = { deps: null, route: null, writes: [], exporters: [] }
   const state = { rows: structuredClone(configRows) }
   const groupEntry = {
     options: { id: 'mcp-manager', name: 'cordis:group', get config() { return state.rows } },
+  }
+  /** cordis LoggerLevel：ERROR=0 / INFO=1 / WARN=2 / DEBUG=3（数字越大越啰嗦）。 */
+  const LEVELS = { error: 0, info: 1, warn: 2, debug: 3 }
+  /** 把一条结构化日志喂给宿主注册的 exporter，模拟 mcp-client 自己打的日志。 */
+  const log = (type, text, ts = 1_700_000_000_000) => {
+    for (const exporter of captured.exporters) {
+      exporter.export({ sn: captured.exporters.length, ts, type, level: LEVELS[type], name: 'mcp-client', args: [text] })
+    }
   }
   const ctx = {
     inject(deps, callback) {
       captured.deps = deps
       callback({
         effect: (factory) => factory(),
+        ...(withLogger
+          ? {
+              logger: {
+                exporter: (exporter) => {
+                  captured.exporters.push(exporter)
+                  return () => {}
+                },
+              },
+            }
+          : {}),
         configEditor: {
           entries: () => [groupEntry],
           configuration: () => [{ entry: groupEntry, inherited: state.rows, override: undefined }],
@@ -305,7 +351,7 @@ function makeHostCtx({ configRows = [], mcpChildren = [] } = {}) {
           entries: () =>
             mcpChildren.map((child) => ({
               options: { id: child.id, name: '@deepseek-ai/dsh-mcp-client', config: child.config },
-              fiber: child.state === 2 ? { state: 2 } : undefined,
+              fiber: child.state === undefined ? undefined : { state: child.state },
             })),
         },
         connection: {
@@ -319,7 +365,7 @@ function makeHostCtx({ configRows = [], mcpChildren = [] } = {}) {
       })
     },
   }
-  return { ctx, captured, groupEntry }
+  return { ctx, captured, groupEntry, log }
 }
 
 {
@@ -342,7 +388,7 @@ function makeHostCtx({ configRows = [], mcpChildren = [] } = {}) {
   const getBody = await getResponse.json()
   check('B8 GET 200', getResponse.status === 200, String(getResponse.status))
   check('B9 GET 汇报 configured', getBody.data?.configured === true)
-  check('B9b GET 声明 capabilities', same(getBody.data?.capabilities, ['setEnabled', 'remove', 'save']), JSON.stringify(getBody.data?.capabilities))
+  check('B9b GET 声明 capabilities', same(getBody.data?.capabilities, ['setEnabled', 'remove', 'save', 'lastError', 'probe']), JSON.stringify(getBody.data?.capabilities))
   check('B10 GET 列出 2 台服务器', getBody.data?.servers?.length === 2, JSON.stringify(getBody.data?.servers?.length))
   check('B11 第一台运行中', getBody.data?.servers?.[0]?.phase === 'active', String(getBody.data?.servers?.[0]?.phase))
   check('B12 第二台 disabled', getBody.data?.servers?.[1]?.disabled === true)
@@ -511,6 +557,262 @@ function makeHostCtx({ configRows = [], mcpChildren = [] } = {}) {
     same(fbRows?.[1]?.config?.args, ['-y', 'pkg']) && same(fbRows?.[1]?.config?.env, { A: '1', B: '2' }),
     JSON.stringify(fbRows?.[1]?.config),
   )
+}
+
+{
+  // 失败原因采集（README 7.6）：宿主自己挂 logger exporter，把 mcp-client 的
+  // warn/error 原文带进快照。没有它，页面上只有 fiber 相位，而 mcp-client 默认
+  // `failOnStartupError:false` —— 连不上也保持 ACTIVE，于是永远显示「运行中」。
+  const { ctx, captured, log } = makeHostCtx({
+    configRows: [
+      { name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 'context7', transport: 'streamable-http', url: 'https://mcp.context7.com/mcp' } },
+      { name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 'fs', transport: 'stdio', command: 'npx' } },
+    ],
+    mcpChildren: [
+      { id: 'a', config: { serverName: 'context7' }, state: 2 },
+      { id: 'b', config: { serverName: 'fs' }, state: 2 },
+    ],
+  })
+  host.apply(ctx)
+  const snapshotOf = async () =>
+    (await (await captured.route.fetch(new Request('http://localhost/api/mcp-manager', { method: 'GET' }))).json()).data
+
+  check('B43 宿主注册了自己的 logger exporter', captured.exporters.length === 1, String(captured.exporters.length))
+  // 阈值必须**自己声明**：cordis 内置缓冲没声明 levels → 取 Logger.level ?? 1，
+  // 而 WARN=2，`targetLevel < level` 直接丢弃 —— "为什么连不上"恰好是 warn。
+  check(
+    'B44 exporter 显式声明阈值（默认阈值 1 会把 warn 丢掉）',
+    typeof captured.exporters[0]?.levels?.default === 'number' && captured.exporters[0].levels.default >= 2,
+    JSON.stringify(captured.exporters[0]?.levels),
+  )
+
+  const clean = await snapshotOf()
+  check('B45 没有记录时快照不带 error 键', !('error' in (clean.servers?.[0] ?? {})), JSON.stringify(clean.servers?.[0]))
+
+  log('warn', 'mcp-client(context7): connection attempt failed: Error: connect ECONNREFUSED 127.0.0.1:443')
+  const warned = await snapshotOf()
+  check(
+    'B46 warn 原文进入快照',
+    warned.servers?.[0]?.error?.message === 'connection attempt failed: Error: connect ECONNREFUSED 127.0.0.1:443',
+    JSON.stringify(warned.servers?.[0]?.error),
+  )
+  check(
+    'B47 记下级别与时间戳',
+    warned.servers?.[0]?.error?.level === 'warn' && warned.servers?.[0]?.error?.at === 1_700_000_000_000,
+    JSON.stringify(warned.servers?.[0]?.error),
+  )
+  check('B48 只影响这一台（另一台仍无记录）', !('error' in (warned.servers?.[1] ?? {})), JSON.stringify(warned.servers?.[1]))
+
+  log('warn', 'mcp-client(context7): connection failed; retrying in 500ms (attempt 2/10)')
+  const counted = await snapshotOf()
+  check('B49 同一台多次失败累计 count', counted.servers?.[0]?.error?.count === 2, JSON.stringify(counted.servers?.[0]?.error))
+
+  // 别的子系统的 error 不能算到服务器头上，否则任意一条宿主报错都会让页面报「运行异常」。
+  // 这一行特意**内嵌**了 mcp-client 的形状：只有锚定行首（^）才不会把无关日志误认成故障。
+  log('error', 'llm: mcp-client(fs): embedded mention must not be attributed')
+  const unrelated = await snapshotOf()
+  check(
+    'B50 非 mcp-client 前缀的日志不入账（含内嵌同名形状）',
+    same(unrelated.servers?.[0]?.error, counted.servers?.[0]?.error) && !('error' in (unrelated.servers?.[1] ?? {})),
+    JSON.stringify(unrelated.servers?.[1]?.error),
+  )
+
+  const givingUp = 'giving up after 10 consecutive failed reconnect attempts — tools unregistered; reload the plugin or restart the Host to reconnect'
+  log('error', `mcp-client(fs): ${givingUp}`)
+  check(
+    'B51 error 级也采集（放弃重连也要看得见）',
+    (await snapshotOf()).servers?.[1]?.error?.message === givingUp,
+    JSON.stringify((await snapshotOf()).servers?.[1]?.error),
+  )
+
+  log('info', 'mcp-client(context7): reconnected and re-synced tools (attempt 2/10)')
+  check('B52 恢复信号清掉旧记录', !('error' in ((await snapshotOf()).servers?.[0] ?? {})), 'still present')
+
+  const write = await captured.route.fetch(
+    new Request('http://localhost/api/mcp-manager', {
+      method: 'POST',
+      body: JSON.stringify({ op: 'setEnabled', serverName: 'fs', enabled: false }),
+    }),
+  )
+  const writeBody = await write.json()
+  check(
+    'B53 任一次配置写入会清空旧失败记录（旧实例的记录不代表现状）',
+    write.status === 200 && !('error' in (writeBody.data?.servers?.[1] ?? {})),
+    JSON.stringify(writeBody.data?.servers?.[1]),
+  )
+}
+
+{
+  // 边界：超长原文必须截断（一条日志可能是整段栈），且缺 logger 的宿主替身不能崩。
+  const long = makeHostCtx({
+    configRows: [{ name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 'x', transport: 'streamable-http', url: 'https://x' } }],
+  })
+  host.apply(long.ctx)
+  long.log('error', `mcp-client(x): ${'E'.repeat(4000)}`)
+  const longBody = await (await long.captured.route.fetch(new Request('http://localhost/api/mcp-manager'))).json()
+  check(
+    'B54 超长原文按上限截断',
+    longBody.data?.servers?.[0]?.error?.message?.length === 500,
+    String(longBody.data?.servers?.[0]?.error?.message?.length),
+  )
+
+  const bare = makeHostCtx({
+    configRows: [{ name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 'y', transport: 'streamable-http', url: 'https://y' } }],
+    withLogger: false,
+  })
+  let crashed = false
+  try {
+    host.apply(bare.ctx)
+  } catch (error) {
+    crashed = true
+    void error
+  }
+  const bareBody = crashed ? null : await (await bare.captured.route.fetch(new Request('http://localhost/api/mcp-manager'))).json()
+  check('B55 没有 logger 服务时优雅降级（不抛、路由照常）', crashed === false && bareBody?.data?.servers?.length === 1, `crashed=${String(crashed)}`)
+}
+
+{
+  // 相位映射：LOADING 才是真正的"启动中"；FAILED 必须能报出来。
+  // 数值取自 cordis FiberState（PENDING=0/LOADING=1/ACTIVE=2/FAILED=3/DISPOSED=4/UNLOADING=5）。
+  const rowsOf = (states) => {
+    const { ctx, captured } = makeHostCtx({
+      configRows: states.map((_, index) => ({ name: '@deepseek-ai/dsh-mcp-client', config: { serverName: `s${String(index)}`, transport: 'streamable-http', url: 'https://x' } })),
+      mcpChildren: states.map((state, index) => ({ id: `s${String(index)}`, config: { serverName: `s${String(index)}` }, state })),
+    })
+    host.apply(ctx)
+    return captured.route.fetch(new Request('http://localhost/api/mcp-manager')).then((response) => response.json())
+  }
+  const mapped = await rowsOf([0, 1, 2, 3, 4, 5, undefined])
+  const phases = mapped.data?.servers?.map((server) => server.phase)
+  check(
+    'B56 相位映射覆盖全部 FiberState（loading 不再被当成"未运行"）',
+    same(phases, ['pending', 'loading', 'active', 'failed', 'disposed', 'unloading', 'pending']),
+    JSON.stringify(phases),
+  )
+}
+
+{
+  // 主动探测（op:"probe"）：日志只能说明"过去失败过"，探测才能说明"现在答不答"。
+  // 这是"绿灯但没反应"的正解，也覆盖 mcp-client 放弃重连后不再打日志的窗口。
+  const url = (n) => `http://10.9.9.${String(n)}/mcp`
+  const { ctx, captured } = makeHostCtx({
+    configRows: [
+      { name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 'ok', transport: 'streamable-http', url: url(1), headers: { 'x-token': 'tok' } } },
+      { name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 'auth', transport: 'streamable-http', url: url(3) } },
+      { name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 'dead', transport: 'streamable-http', url: url(2) } },
+      { name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 'notmcp', transport: 'streamable-http', url: url(5) } },
+      { name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 'local', transport: 'stdio', command: 'npx' } },
+      { name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 'off', transport: 'streamable-http', url: url(9) }, disabled: true },
+    ],
+    mcpChildren: [],
+  })
+  host.apply(ctx)
+
+  const realFetch = globalThis.fetch
+  const calls = []
+  const SSE_OK = 'event: message\ndata: {"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"ok"}}}\n\n'
+  globalThis.fetch = async (target, init) => {
+    calls.push({ target, init })
+    if (target === url(1)) return new Response(SSE_OK, { status: 200, headers: { 'content-type': 'text/event-stream' } })
+    if (target === url(3)) return new Response('{"error":"token expired"}', { status: 401, headers: { 'content-type': 'application/json' } })
+    if (target === url(2)) {
+      const error = new TypeError('fetch failed')
+      error.cause = new Error('connect ECONNREFUSED 10.9.9.2:80')
+      throw error
+    }
+    if (target === url(5)) return new Response('<html>hello</html>', { status: 200, headers: { 'content-type': 'text/html' } })
+    throw new Error(`unexpected probe target: ${target}`)
+  }
+
+  const probe = async (payload = { op: 'probe' }) => {
+    const response = await captured.route.fetch(new Request('http://localhost/api/mcp-manager', { method: 'POST', body: JSON.stringify(payload) }))
+    return { status: response.status, body: await response.json() }
+  }
+  const byName = (body, name) => body.data?.servers?.find((server) => server.config?.serverName === name)
+
+  try {
+    const result = await probe()
+    check('B57 探测返回 200', result.status === 200, JSON.stringify(result.body).slice(0, 200))
+    check('B58 探测只打启用中的服务器（停用的不发请求）', calls.length === 4 && !calls.some((call) => call.target === url(9)), `${String(calls.length)} calls`)
+
+    const sent = calls.find((call) => call.target === url(1))
+    check(
+      'B59 探测请求是 MCP initialize，且带上配置里的 headers',
+      sent?.init?.method === 'POST' &&
+        sent.init.headers['content-type'] === 'application/json' &&
+        sent.init.headers['x-token'] === 'tok' &&
+        String(sent.init.body).includes('"method":"initialize"'),
+      JSON.stringify(sent?.init?.headers),
+    )
+
+    check('B60 探测通过 → connected:true', byName(result.body, 'ok')?.probe?.connected === true, JSON.stringify(byName(result.body, 'ok')?.probe))
+    check(
+      'B61 HTTP 401 → connected:false 且带上状态与响应片段',
+      byName(result.body, 'auth')?.probe?.connected === false &&
+        byName(result.body, 'auth')?.probe?.detail.includes('401') &&
+        byName(result.body, 'auth')?.probe?.detail.includes('token expired'),
+      JSON.stringify(byName(result.body, 'auth')?.probe),
+    )
+    check(
+      'B62 TCP 拒绝 → 报出 cause 里的真实原因（不是无用的 "fetch failed"）',
+      byName(result.body, 'dead')?.probe?.connected === false && byName(result.body, 'dead')?.probe?.detail.includes('ECONNREFUSED'),
+      JSON.stringify(byName(result.body, 'dead')?.probe),
+    )
+    check(
+      'B63 200 但不是 MCP → connected:false（防止把 HTML 门户当成可用服务器）',
+      byName(result.body, 'notmcp')?.probe?.connected === false && byName(result.body, 'notmcp')?.probe?.detail.includes('不是 MCP'),
+      JSON.stringify(byName(result.body, 'notmcp')?.probe),
+    )
+    check(
+      'B64 stdio 无法探测 → connected:null（不谎报失败）',
+      byName(result.body, 'local')?.probe?.connected === null && byName(result.body, 'local')?.probe?.detail.includes('stdio'),
+      JSON.stringify(byName(result.body, 'local')?.probe),
+    )
+    check('B65 停用的服务器不被探测（快照里没有 probe）', !('probe' in (byName(result.body, 'off') ?? {})))
+
+    const one = await probe({ op: 'probe', serverName: 'ok' })
+    check('B66 可以只探一台', one.status === 200 && calls.length === 5, `${String(one.status)} calls=${String(calls.length)}`)
+    const missing = await probe({ op: 'probe', serverName: 'nope' })
+    check('B67 探测不存在的服务器 → 409', missing.status === 409, String(missing.status))
+
+    // 配置写入会重建子条目 → 旧探测结论必须失效，否则"改完 url 还显示上一次的结果"。
+    const written = await captured.route.fetch(
+      new Request('http://localhost/api/mcp-manager', { method: 'POST', body: JSON.stringify({ op: 'setEnabled', serverName: 'ok', enabled: false }) }),
+    )
+    const writtenBody = await written.json()
+    check('B68 配置写入清空旧探测结果', !('probe' in (byName(writtenBody, 'ok') ?? {})), JSON.stringify(byName(writtenBody, 'ok')?.probe))
+  } finally {
+    globalThis.fetch = realFetch
+  }
+
+  // 挂死的服务器：必须在自己的 3s 预算内判定"超时"，不能把 UI 永久卡住。
+  const { ctx: hangCtx, captured: hangCaptured } = makeHostCtx({
+    configRows: [{ name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 'slow', transport: 'streamable-http', url: url(7) } }],
+  })
+  host.apply(hangCtx)
+  globalThis.fetch = (_target, init) =>
+    new Promise((_resolve, reject) => {
+      // 自限 6s 兜底（长于实现的 3s 预算）：正确实现会在 3s 内 abort；
+      // 万一实现漏了 abort，这里也不会把自检永久挂死，而是让 B69 以"没超时"的形式失败。
+      const guard = setTimeout(() => reject(new Error('probe never aborted the request')), 6000)
+      init.signal.addEventListener('abort', () => {
+        clearTimeout(guard)
+        reject(new Error('The operation was aborted'))
+      })
+    })
+  try {
+    const response = await hangCaptured.route.fetch(
+      new Request('http://localhost/api/mcp-manager', { method: 'POST', body: JSON.stringify({ op: 'probe' }) }),
+    )
+    const body = await response.json()
+    check(
+      'B69 挂死的服务器 → 超时（3s 预算内给出结论）',
+      body.data?.servers?.[0]?.probe?.connected === false && body.data?.servers?.[0]?.probe?.detail.includes('超时'),
+      JSON.stringify(body.data?.servers?.[0]?.probe),
+    )
+  } finally {
+    globalThis.fetch = realFetch
+  }
 }
 //#endregion
 
@@ -806,7 +1108,7 @@ check(
     config: { serverName: 'context7', transport: 'streamable-http', url: 'https://mcp.context7.com/mcp' },
     phase: 'active',
   }
-  const snapshot = { groupId: 'mcp-manager', configured: true, capabilities: ['setEnabled', 'remove', 'save'], servers: [server] }
+  const snapshot = { groupId: 'mcp-manager', configured: true, capabilities: ['setEnabled', 'remove', 'save', 'lastError', 'probe'], servers: [server] }
   const emptySnapshot = { ...snapshot, servers: [] }
   const draft = {
     disabled: false,
@@ -820,8 +1122,24 @@ check(
     cwd: '',
   }
 
+  /**
+   * 场景夹具：McpSection 的 useState 调用顺序 —— **新增一个状态就必须在这里补一位**，
+   * 否则后面所有槽位都会错位（假 useState 是按顺序发值的）。
+   * [snapshot, loadError, busy, editing, draft, formError, actionError, probing]
+   */
+  const scene = (
+    snapshotValue,
+    loadError = null,
+    busy = false,
+    editing = null,
+    draft = null,
+    formError = null,
+    actionError = null,
+    probing = false,
+  ) => renderSection({ McpSection: [snapshotValue, loadError, busy, editing, draft, formError, actionError, probing] })
+
   // D1–D3 列表视图
-  const list = renderSection({ McpSection: [snapshot, null, false, null, null, null] })
+  const list = scene(snapshot)
   check('D1 列表视图：一卡一服务器', hasClass(list, 'mcpm-rows') && hasClass(list, 'mcpm-rowCard') && hasClass(list, 'mcpm-row'))
   check('D2 列表视图不含表单面板', !hasClass(list, 'mcpm-form'))
   {
@@ -830,7 +1148,7 @@ check(
   }
 
   // D4–D7 展开编辑：表单必须在**同一张卡内**
-  const editing = renderSection({ McpSection: [snapshot, null, false, 0, draft, null] })
+  const editing = scene(snapshot, null, false, 0, draft)
   check('D4 展开后出现表单面板', hasClass(editing, 'mcpm-form'))
   {
     // 找到 rowCard 节点，确认表单是它的后代（而不是兄弟/别处）。
@@ -851,19 +1169,408 @@ check(
   check('D8 展开时不会重复显示第二张同名卡', classesOf(editing).filter((c) => c.includes('mcpm-rowCard')).length === 1)
 
   // D9 新增：末尾追加一张只含表单的卡
-  const adding = renderSection({ McpSection: [snapshot, null, false, 'new', draft, null] })
+  const adding = scene(snapshot, null, false, 'new', draft)
   check('D9 新增时追加一张只含表单的卡', classesOf(adding).filter((c) => c.includes('mcpm-rowCard')).length === 2 && hasClass(adding, 'mcpm-form'))
 
   // D10–D12 空 / 载入 / 错误
-  check('D10 空列表走无边框 .mcpm-empty', hasClass(renderSection({ McpSection: [emptySnapshot, null, false, null, null, null] }), 'mcpm-empty'))
-  check('D11 载入态', textsOf(renderSection({ McpSection: [null, null, false, null, null, null] })).includes('正在读取…'))
-  check('D12 错误态', hasClass(renderSection({ McpSection: [null, 'boom', false, null, null, null] }), 'mcpm-notice--error'))
+  check('D10 空列表走无边框 .mcpm-empty', hasClass(scene(emptySnapshot), 'mcpm-empty'))
+  check('D11 载入态', textsOf(scene(null)).includes('正在读取…'))
+  check('D12 错误态', hasClass(scene(null, 'boom'), 'mcpm-notice--error'))
 
   // D13 组条目缺失
   check(
     'D13 未配置 group 时给出可读提示',
-    textsOf(renderSection({ McpSection: [{ ...snapshot, configured: false }, null, false, null, null, null] })).some((t) => t.includes('cordis:group')),
+    textsOf(scene({ ...snapshot, configured: false })).some((t) => t.includes('cordis:group')),
   )
+
+  // D14–D20 失败原因行（README 7.6）：状态不能再误报「运行中」，原因要落在同一张卡内。
+  {
+    const ariaOf = (tree) => collect(tree, (n) => (typeof n.props?.['aria-label'] === 'string' ? n.props['aria-label'] : undefined))
+    const broken = {
+      ...server,
+      error: {
+        message: 'connection attempt failed: Error: connect ECONNREFUSED 127.0.0.1:443',
+        level: 'warn',
+        at: 1_700_000_000_000,
+        count: 3,
+      },
+    }
+    const failureView = scene({ ...snapshot, servers: [broken] })
+
+    check(
+      'D14 有失败记录时状态改成「连接异常」（不能再报运行中）',
+      ariaOf(failureView).includes('连接异常') && !ariaOf(failureView).includes('运行中'),
+      ariaOf(failureView).join('|'),
+    )
+    check(
+      'D15 原因渲染成一行小字且含 mcp-client 原文',
+      hasClass(failureView, 'mcpm-rowError') && textsOf(failureView).some((t) => t.includes('ECONNREFUSED')),
+      textsOf(failureView).join('|'),
+    )
+    check(
+      'D16 多次失败带次数与时间',
+      textsOf(failureView).some((t) => t.includes('已失败 3 次')),
+      textsOf(failureView).join('|'),
+    )
+    {
+      let inCard = false
+      walk(failureView, (node) => {
+        if (
+          typeof node.props?.className === 'string' &&
+          node.props.className.includes('mcpm-rowCard') &&
+          hasClass(node.children, 'mcpm-rowError')
+        ) {
+          inCard = true
+        }
+      })
+      check('D17 原因行在那张卡片内部', inCard)
+    }
+    check(
+      'D18 宿主可探测但没有探测记录 → 报「未检测」，不再靠相位报绿',
+      !hasClass(list, 'mcpm-rowError') && ariaOf(list).includes('未检测') && !ariaOf(list).includes('运行中'),
+      ariaOf(list).join('|'),
+    )
+    // 绿灯必须来自**正面证据**（AGENTS 3.10）：宿主能探测却没有探测记录时，相位只说明
+    // "apply 跑完了"，不能拿它报绿。「停用 → 再启用」必然走到这一态（宿主写入会清掉旧记录）。
+    check(
+      'D18b 旧宿主（无 probe 能力）→ 退回相位判定，仍报运行中',
+      ariaOf(scene({ ...snapshot, capabilities: ['setEnabled', 'remove', 'save'] })).includes('运行中'),
+      ariaOf(scene({ ...snapshot, capabilities: ['setEnabled', 'remove', 'save'] })).join('|'),
+    )
+    // 探不了的传输（stdio 的 connected:null）不算"没有证据"，不该因此变黄。
+    {
+      const stdio = scene({
+        ...snapshot,
+        servers: [
+          { ...server, config: { ...server.config, transport: 'stdio' }, probe: { connected: null, status: null, detail: 'stdio 走子进程', at: 1 } },
+        ],
+      })
+      check('D18c 探不了的传输（stdio）不因此报未检测 → 仍报运行中', ariaOf(stdio).includes('运行中'), ariaOf(stdio).join('|'))
+    }
+    check(
+      'D19 停用中的旧记录不显示（历史噪声）',
+      !hasClass(scene({ ...snapshot, servers: [{ ...broken, disabled: true }] }), 'mcpm-rowError'),
+    )
+    check('D20 标题行给出刷新按钮（失败原因事后才写入，必须能手动重读）', textsOf(list).includes('刷新'), textsOf(list).join('|'))
+    check('D20b 标题行给出「检测」按钮（主动问候服务器，见 D24–D31）', textsOf(list).includes('检测'), textsOf(list).join('|'))
+
+    // D24–D31 四态状态机：灰(未启动/已停用) · 琥珀(启动中) · 绿(运行中) · 红(失败)
+    const view = (extra) => scene({ ...snapshot, servers: [{ ...server, ...extra }] })
+    const aria = (extra) => ariaOf(view(extra)).join('|')
+
+    check('D24 握手期间报「启动中」（LOADING 而不是"未运行"）', aria({ phase: 'loading' }).includes('启动中'), aria({ phase: 'loading' }))
+    check('D25 pending 同样是「启动中」', aria({ phase: 'pending' }).includes('启动中'), aria({ phase: 'pending' }))
+    check('D26 fiber FAILED 报「加载失败」', aria({ phase: 'failed' }).includes('加载失败'), aria({ phase: 'failed' }))
+    check('D27 没有活条目报「未启动」', aria({ phase: 'absent' }).includes('未启动'), aria({ phase: 'absent' }))
+
+    const probedOk = view({ phase: 'active', probe: { connected: true, status: 200, detail: 'HTTP 200', at: 1_700_000_000_000 } })
+    check(
+      'D28 检测通过 + 条目 active → 绿色运行中，且不显示历史原因',
+      ariaOf(probedOk).includes('运行中') && !hasClass(probedOk, 'mcpm-rowError'),
+      ariaOf(probedOk).join('|'),
+    )
+    // 关键：条目没挂上时即使端点可达也不能报绿——那时工具根本没注册。
+    check(
+      'D29 检测通过但条目未加载 → 不报绿',
+      !aria({ phase: 'absent', probe: { connected: true, status: 200, detail: 'HTTP 200', at: 1 } }).includes('运行中'),
+      aria({ phase: 'absent', probe: { connected: true, status: 200, detail: 'HTTP 200', at: 1 } }),
+    )
+    const probedDead = view({ phase: 'active', probe: { connected: false, status: null, detail: '请求失败：connect ECONNREFUSED 10.9.9.2:80', at: 1_700_000_000_000 } })
+    check(
+      'D30 检测失败 → 连接失败 + 原因行里是检测结论（含真实原因）',
+      ariaOf(probedDead).includes('连接失败') &&
+        hasClass(probedDead, 'mcpm-rowError') &&
+        textsOf(probedDead).some((t) => t.includes('ECONNREFUSED')),
+      textsOf(probedDead).join('|'),
+    )
+    // 检测成功要能盖掉更早的日志记录（否则"修好了还是红的"）。
+    const recovered = view({
+      phase: 'active',
+      error: { message: 'connection attempt failed: boom', level: 'warn', at: 1, count: 1 },
+      probe: { connected: true, status: 200, detail: 'HTTP 200', at: 1_700_000_000_000 },
+    })
+    check('D31 检测通过盖掉更早的失败记录（不再显示旧原因）', ariaOf(recovered).includes('运行中') && !hasClass(recovered, 'mcpm-rowError'), textsOf(recovered).join('|'))
+
+    // D32–D33 能力协商：旧宿主不认识 probe，按钮必须禁用并说明，而不是点了报「未知操作」。
+    const buttonWith = (tree, label) => {
+      let found = null
+      walk(tree, (node) => {
+        if (node.type === 'button' && textsOf(node).includes(label)) found = node
+      })
+      return found
+    }
+    const oldHost = scene({ ...snapshot, capabilities: ['setEnabled', 'remove', 'save'] })
+    check(
+      'D32 旧宿主（无 probe 能力）→「检测」禁用并提示要重启 DSH',
+      buttonWith(oldHost, '检测')?.props?.disabled === true && String(buttonWith(oldHost, '检测')?.props?.title).includes('重启'),
+      JSON.stringify(buttonWith(oldHost, '检测')?.props),
+    )
+    check('D33 新宿主（有 probe 能力）→「检测」可点', buttonWith(list, '检测')?.props?.disabled === false, JSON.stringify(buttonWith(list, '检测')?.props))
+    check(
+      'D34 检测进行中显示「检测中…」且按钮暂时锁住（自动检测的可见反馈）',
+      textsOf(scene(snapshot, null, false, null, null, null, null, true)).includes('检测中…') &&
+        buttonWith(scene(snapshot, null, false, null, null, null, null, true), '检测')?.props?.disabled === true,
+      textsOf(scene(snapshot, null, false, null, null, null, null, true)).join('|'),
+    )
+  }
+
+  // D21–D23 两条错误通道互斥（用户截图反馈：同一句话出现了两遍）。
+  {
+    const reason = '服务器 "server-1" 使用 streamable-http，但 url 为空'
+    /** 所有 `.mcpm-notice--error` 节点的文本（页面级 + 表单内都算）。 */
+    const errorNotices = (tree) =>
+      collect(tree, (node) =>
+        typeof node.props?.className === 'string' && node.props.className.includes('mcpm-notice--error')
+          ? textsOf(node).join(' ')
+          : undefined,
+      )
+    /** 表单子树里的全部文本，用来判断报错到底渲染在哪一层。 */
+    const formTexts = (tree) => {
+      const out = []
+      walk(tree, (node) => {
+        if (typeof node.props?.className === 'string' && node.props.className.includes('mcpm-form')) out.push(...textsOf(node))
+      })
+      return out
+    }
+
+    // 表单开着 + 行内操作失败 → 只有页面级一条，表单里不能重复。
+    const actionOnly = scene(snapshot, null, false, 0, draft, null, reason)
+    check(
+      'D21 行内操作失败只在页面级出现一次',
+      same(errorNotices(actionOnly), [reason]) && !formTexts(actionOnly).includes(reason),
+      `${JSON.stringify(errorNotices(actionOnly))} form=${String(formTexts(actionOnly).includes(reason))}`,
+    )
+
+    // 表单开着 + 提交失败 → 只有表单里一条，页面级不能重复（截图里的那种重复）。
+    const formOnly = scene(snapshot, null, false, 0, draft, reason)
+    check(
+      'D22 表单提交失败只在表单里出现一次',
+      same(errorNotices(formOnly), [reason]) && formTexts(formOnly).includes(reason),
+      `${JSON.stringify(errorNotices(formOnly))} form=${String(formTexts(formOnly).includes(reason))}`,
+    )
+
+    // 两个通道都非空时（同一次渲染里理论上不会发生）也只各出现一次，不会互相复制。
+    const both = scene(snapshot, null, false, 0, draft, `表单：${reason}`, `操作：${reason}`)
+    check(
+      'D23 两条通道各自只渲染一次',
+      errorNotices(both).length === 2 && formTexts(both).includes(`表单：${reason}`) && !formTexts(both).includes(`操作：${reason}`),
+      JSON.stringify(errorNotices(both)),
+    )
+  }
+}
+//#endregion
+
+//#region D2. 挂载行为：打开页面就自动检测（要真正执行 useEffect，所以另起一套沙箱）
+{
+  const tick = async (times = 6) => {
+    for (let index = 0; index < times; index += 1) await new Promise((resolve) => setTimeout(resolve, 0))
+  }
+  /**
+   * 跑一次"挂载"：带 fetch 的沙箱建模块 → 渲染一次 McpSection（effect 真执行）→ 收集请求。
+   * @param capabilities - 宿主声明的能力（旧宿主没有 `probe`）。
+   * @param failGet - GET 就失败（模拟读不到快照）。
+   * @param server - 快照里那一条服务器记录（默认启用中、active）。
+   * @param responses - GET/POST 依次返回的快照队列（模拟"相位还没稳定"的多轮读取）；
+   *   用完之后一直返回默认快照。
+   * @param stateValues - 喂给 McpSection 的 8 位 useState 初值
+   *   `[snapshot, loadError, busy, editing, draft, formError, actionError, probing]`。
+   *   不传时 snapshot 为 null（只在挂载里用返回值做能力判断，不渲染列表）。
+   * @param click - 首次渲染的树里，点一次这个文案的按钮（用来跑"停用 → 再启用"这条路）。
+   * @returns 实际发出的请求（`{ method, body }`，按顺序）。
+   */
+  const mount = async ({ capabilities, failGet = false, server, responses = [], stateValues = [], click } = {}) => {
+    const requests = []
+    const base = {
+      groupId: 'mcp-manager',
+      configured: true,
+      capabilities,
+      servers: [server ?? { index: 0, disabled: false, config: { serverName: 's' }, phase: 'active' }],
+    }
+    const queue = [...responses]
+    const stubFetch = async (_url, init) => {
+      const method = init?.method ?? 'GET'
+      requests.push({ method, body: init?.body === undefined ? undefined : JSON.parse(String(init.body)) })
+      if (method === 'GET' && failGet) throw new Error('boom')
+      return { status: 200, json: async () => ({ ok: true, data: queue.length > 0 ? queue.shift() : base }) }
+    }
+    const loaded = []
+    const sandbox = {
+      window: { __ModuleLoader__: { load: (definition) => loaded.push(definition) } },
+      console,
+      fetch: stubFetch,
+      // 相位稳定那一步要等一拍；平时（挂载即稳定）不会用到。
+      setTimeout,
+      clearTimeout,
+      // 故意不提供 AbortSignal / document：客户端两处都有 typeof 守卫。
+    }
+    sandbox.globalThis = sandbox
+    vm.runInNewContext(clientSource, sandbox, { filename: 'lib/client.js' })
+
+    const states = [...stateValues]
+    const effectReact = {
+      createElement: (type, props, ...children) => ({ type, props: props ?? {}, children }),
+      Fragment: Symbol.for('react.fragment'),
+      // McpSection 的 8 个状态先按顺序取；取完之后（ServerRow 的 confirming 等）回落到初值。
+      useState: (initial) => [states.length > 0 ? states.shift() : initial, () => {}],
+      useEffect: (callback) => {
+        callback()
+      },
+      useCallback: (fn) => fn,
+      useMemo: (fn) => fn(),
+    }
+    const exportsOfModule = loaded[0].factory((specifier) => (specifier === 'react' ? effectReact : {}))
+    let component = null
+    exportsOfModule.apply({
+      effect: () => {},
+      inject: (_names, callback) =>
+        callback({
+          slots: {
+            inject: (_name, register) => register(),
+            register: (_options, registered) => {
+              component = registered
+            },
+          },
+        }),
+    })
+    const tree = component({}) // 渲染一次 → useEffect 立即执行 → 自动检测发请求
+    await tick()
+    if (click !== undefined) {
+      // 函数组件要展开才拿得到按钮（树是惰性的）；展开时 ServerRow 的 useState 已回落到初值。
+      const button = findButton(tree, click)
+      if (button === null) throw new Error(`找不到按钮：${click}`)
+      button.props.onClick()
+      await tick()
+    }
+    return requests
+  }
+
+  /** 在（惰性）元素树里按文案找 <button>，找到就展开函数组件继续找。 */
+  const findButton = (node, label) => {
+    if (node === null || node === undefined || typeof node !== 'object') return null
+    if (Array.isArray(node)) {
+      for (const child of node) {
+        const found = findButton(child, label)
+        if (found !== null) return found
+      }
+      return null
+    }
+    if (typeof node.type === 'function') return findButton(node.type(node.props), label)
+    if (node.type === 'button' && (node.children ?? []).flat().join('') === label) return node
+    for (const child of node.children ?? []) {
+      const found = findButton(child, label)
+      if (found !== null) return found
+    }
+    return null
+  }
+
+  const withProbe = await mount({ capabilities: ['setEnabled', 'remove', 'save', 'lastError', 'probe'] })
+  check(
+    'D35 打开页面自动检测：先 GET 快照、再 POST probe（不需要点按钮）',
+    withProbe.length === 2 &&
+      withProbe[0].method === 'GET' &&
+      withProbe[1].method === 'POST' &&
+      withProbe[1].body?.op === 'probe',
+    JSON.stringify(withProbe),
+  )
+
+  const staleHost = await mount({ capabilities: ['setEnabled', 'remove', 'save'] })
+  check(
+    'D36 旧宿主（没有 probe 能力）只读快照、不发探测（免得拿到「未知操作」）',
+    staleHost.length === 1 && staleHost[0].method === 'GET',
+    JSON.stringify(staleHost),
+  )
+
+  const brokenRead = await mount({ capabilities: ['probe'], failGet: true })
+  check(
+    'D37 快照读失败时不发探测（只有 GET 一次）',
+    brokenRead.length === 1 && brokenRead[0].method === 'GET',
+    JSON.stringify(brokenRead),
+  )
+
+  // D38–D41 写入之后必须重新检测。用户反馈："关闭 MCP 后再启动，不会检测它的连接性是否正常"。
+  // 根因：宿主每次写入都清掉旧的失败/探测记录（commitRows），只剩相位；而相位 active 只说明
+  // apply 跑完了（mcp-client 连不上也不抛错），照它报绿就是"没有证据的绿灯"（AGENTS 3.10）。
+  {
+    const newHost = ['setEnabled', 'remove', 'save', 'lastError', 'probe']
+    const oldHost = ['setEnabled', 'remove', 'save']
+    const row = (disabled, extra) => ({
+      index: 0,
+      disabled,
+      config: { serverName: 'gva', transport: 'streamable-http', url: 'http://127.0.0.1:8899/mcp' },
+      phase: 'active',
+      ...extra,
+    })
+    /** McpSection 的 8 位初值（见 D 区 scene 夹具）：这里只喂第 1 位，其余走初值。 */
+    const values = (capabilities, server) => [{ groupId: 'mcp-manager', configured: true, capabilities, servers: [server] }]
+    /** 请求序列压成 `[method, op]` 便于比对。 */
+    const shape = (requests) => requests.map((request) => [request.method, request.body?.op])
+
+    // 停用中的一台（按钮文字是「启用」）→ 点它 → 先 POST setEnabled，紧接着再 POST probe。
+    const enabling = await mount({
+      capabilities: newHost,
+      server: row(true),
+      stateValues: values(newHost, row(true)),
+      click: '启用',
+    })
+    check(
+      'D38 点「启用」之后自动补一次探测（否则只能靠相位报一个没有证据的绿灯）',
+      same(shape(enabling), [
+        ['GET', undefined],
+        ['POST', 'probe'],
+        ['POST', 'setEnabled'],
+        ['POST', 'probe'],
+      ]),
+      JSON.stringify(shape(enabling)),
+    )
+
+    // 旧宿主没有这条通道：写入之后不发探测（免得拿到「未知操作：probe」）。
+    const staleToggle = await mount({
+      capabilities: oldHost,
+      server: row(true),
+      stateValues: values(oldHost, row(true)),
+      click: '启用',
+    })
+    check(
+      'D39 旧宿主（无 probe 能力）点「启用」不发探测',
+      same(shape(staleToggle), [
+        ['GET', undefined],
+        ['POST', 'setEnabled'],
+      ]),
+      JSON.stringify(shape(staleToggle)),
+    )
+
+    // 探通了、但 Loader 还没把子条目挂上（相位 loading）→ 继续重读快照，直到 active 才收手。
+    // 相位稳定那一步客户端会 sleep（SETTLE_INTERVAL_MS = 200ms），所以这里必须真的等一会儿。
+    const settled = { ...row(false), probe: { connected: true, status: 200, detail: 'HTTP 200', at: 1 } }
+    const settle = await mount({
+      capabilities: newHost,
+      responses: [
+        { groupId: 'mcp-manager', configured: true, capabilities: newHost, servers: [{ ...row(false), phase: 'loading' }] },
+        { groupId: 'mcp-manager', configured: true, capabilities: newHost, servers: [{ ...settled, phase: 'loading' }] },
+        { groupId: 'mcp-manager', configured: true, capabilities: newHost, servers: [{ ...settled, phase: 'active' }] },
+      ],
+    })
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    check(
+      'D40 探通了但条目还没挂上（相位 loading）→ 重读快照直到 active（绿灯必须有证据）',
+      same(shape(settle), [
+        ['GET', undefined],
+        ['POST', 'probe'],
+        ['GET', undefined],
+      ]),
+      JSON.stringify(shape(settle)),
+    )
+
+    // 相位永远不稳定 → 有界收手（不是轮询），总重读次数 == SETTLE_ATTEMPTS（10 × 200ms）。
+    const stuck = await mount({ capabilities: newHost, server: { ...settled, phase: 'loading' } })
+    await new Promise((resolve) => setTimeout(resolve, 2400))
+    const gets = stuck.filter((request) => request.method === 'GET').length
+    check(
+      'D41 相位一直不稳定时有界收手（10 次重读后不再问，不轮询）',
+      stuck.length === 12 && gets === 11 && stuck.filter((request) => request.body?.op === 'probe').length === 1,
+      `total=${String(stuck.length)} gets=${String(gets)}`,
+    )
+  }
 }
 //#endregion
 
