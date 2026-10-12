@@ -189,7 +189,7 @@ check('A10 两半边的组条目 id 一致', hostSource.includes("'mcp-manager'"
   check('A22 toRecord 认对象形状（否则 headers/env 被静默清空）', /typeof value === 'object' && !Array\.isArray\(value\)/.test(hostSource))
   // 宿主半边不参与热重载，所以客户端必须能同时说两代协议。
   check('A23 客户端做能力协商', /supports\(snapshot,\s*"setEnabled"\)/.test(clientSource) && clientSource.includes('capabilities'))
-  check('A24 宿主声明 capabilities', hostSource.includes("capabilities: ['setEnabled', 'remove', 'save', 'lastError', 'probe']"))
+  check('A24 宿主声明 capabilities', hostSource.includes("capabilities: ['setEnabled', 'remove', 'save', 'lastError', 'probe', 'tools']"))
   // 失败原因必须由宿主自己从 ctx.logger 里捞：mcp-client 默认 failOnStartupError=false，
   // 连接失败不会让 fiber 变 FAILED，而内置日志缓冲的默认阈值是 1（WARN=2 会被丢掉）。
   check(
@@ -327,8 +327,10 @@ check('B2 导出 apply', typeof host.apply === 'function')
  * @param layers - 可选：显式给出 `configEditor.configuration()` 的继承层/覆写层
  *   （默认 `inherited = state.rows`、`override = undefined`，即"只有 insert 层"）。
  *   B70 用它复现"覆写行存在、insert 行里还留着旧字段"的真实分层现场。
+ * @param registeredTools - 可选：假 `ctx.tools` 注册表里**全部**工具名（宿主按
+ *   `mcp__<serverName>__` 前缀归属给某台服务器，所以这里要把别人的工具也放进来）。
  */
-function makeHostCtx({ configRows = [], mcpChildren = [], withLogger = true, layers = undefined } = {}) {
+function makeHostCtx({ configRows = [], mcpChildren = [], withLogger = true, layers = undefined, registeredTools = undefined } = {}) {
   const captured = { deps: null, route: null, writes: [], exporters: [] }
   const state = { rows: structuredClone(configRows) }
   const groupEntry = {
@@ -336,6 +338,11 @@ function makeHostCtx({ configRows = [], mcpChildren = [], withLogger = true, lay
   }
   /** cordis LoggerLevel：ERROR=0 / INFO=1 / WARN=2 / DEBUG=3（数字越大越啰嗦）。 */
   const LEVELS = { error: 0, info: 1, warn: 2, debug: 3 }
+  /** 假 `ctx.tools`：只提供宿主用到的 `schemas()`；`registeredTools` 为 undefined 时视作"没有该服务"。 */
+  const fakeTools =
+    registeredTools === undefined
+      ? undefined
+      : { schemas: () => registeredTools.map((name) => ({ name, description: '', parameters: {} })) }
   /** 把一条结构化日志喂给宿主注册的 exporter，模拟 mcp-client 自己打的日志。 */
   const log = (type, text, ts = 1_700_000_000_000) => {
     for (const exporter of captured.exporters) {
@@ -347,6 +354,8 @@ function makeHostCtx({ configRows = [], mcpChildren = [], withLogger = true, lay
       captured.deps = deps
       callback({
         effect: (factory) => factory(),
+        // 宿主半边用 `scope.get('tools')` 取**可选**服务（不进 inject 声明，缺了也能跑）。
+        get: (name) => (name === 'tools' ? fakeTools : undefined),
         ...(withLogger
           ? {
               logger: {
@@ -415,7 +424,7 @@ function makeHostCtx({ configRows = [], mcpChildren = [], withLogger = true, lay
   const getBody = await getResponse.json()
   check('B8 GET 200', getResponse.status === 200, String(getResponse.status))
   check('B9 GET 汇报 configured', getBody.data?.configured === true)
-  check('B9b GET 声明 capabilities', same(getBody.data?.capabilities, ['setEnabled', 'remove', 'save', 'lastError', 'probe']), JSON.stringify(getBody.data?.capabilities))
+  check('B9b GET 声明 capabilities', same(getBody.data?.capabilities, ['setEnabled', 'remove', 'save', 'lastError', 'probe', 'tools']), JSON.stringify(getBody.data?.capabilities))
   check('B10 GET 列出 2 台服务器', getBody.data?.servers?.length === 2, JSON.stringify(getBody.data?.servers?.length))
   check('B11 第一台运行中', getBody.data?.servers?.[0]?.phase === 'active', String(getBody.data?.servers?.[0]?.phase))
   check('B12 第二台 disabled', getBody.data?.servers?.[1]?.disabled === true)
@@ -877,6 +886,74 @@ function makeHostCtx({ configRows = [], mcpChildren = [], withLogger = true, lay
       JSON.stringify(rows.map((row) => row.config)),
     )
   }
+
+  // 每台服务器"当前注册了几个工具、分别叫什么"。宿主问的是**注册表**（`ctx.tools.schemas()`），
+  // 不是再发一次 `tools/list`：注册表就是模型此刻真正能调用的集合，连不上的服务器自然没有名字。
+  {
+    const context7 = { name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 'context7', transport: 'streamable-http', url: 'https://x' } }
+    const gva = { name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 'gva', transport: 'streamable-http', url: 'https://y' } }
+    // 故意乱序、混入别人的工具和非 MCP 工具：归属只认 `mcp__<serverName>__` 前缀。
+    const registry = [
+      'mcp__context7__query-docs',
+      'mcp__gva__create_api',
+      'mcp__context7__resolve-library-id',
+      'read_image',
+      'mcp__gva__list_all_apis',
+    ]
+    const { ctx, captured } = makeHostCtx({ configRows: [context7, gva], registeredTools: registry })
+    host.apply(ctx)
+    const response = await captured.route.fetch(new Request('http://localhost/api/mcp-manager'))
+    const body = await response.json()
+    const byName = Object.fromEntries(body.data.servers.map((s) => [s.config.serverName, s]))
+    check(
+      'B71 每台服务器都带上当前注册的工具（count = 前缀命中的个数）',
+      byName.context7.tools?.count === 2 && byName.gva.tools?.count === 2,
+      JSON.stringify([byName.context7.tools, byName.gva.tools]),
+    )
+    check(
+      'B72 工具按 serverName 前缀归属（别人的工具和非 MCP 工具都不算）',
+      same(byName.context7.tools.names, ['mcp__context7__query-docs', 'mcp__context7__resolve-library-id']) &&
+        same(byName.gva.tools.names, ['mcp__gva__create_api', 'mcp__gva__list_all_apis']),
+      JSON.stringify([byName.context7.tools.names, byName.gva.tools.names]),
+    )
+    check('B73 工具名单已排序（与注册顺序无关，展示才稳定）', same(byName.context7.tools.names, [...byName.context7.tools.names].sort()))
+    check(
+      'B74 宿主声明 tools 能力（客户端据此决定要不要渲染那块）',
+      body.data.capabilities.includes('tools'),
+      JSON.stringify(body.data.capabilities),
+    )
+  }
+
+  // 没有任何工具注册（服务器没连上 / 工具同步失败）：如实报 0，不谎报"有工具"。
+  {
+    const { ctx, captured } = makeHostCtx({
+      configRows: [{ name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 'down', transport: 'streamable-http', url: 'https://z' } }],
+      registeredTools: ['read_image'],
+    })
+    host.apply(ctx)
+    const response = await captured.route.fetch(new Request('http://localhost/api/mcp-manager'))
+    const body = await response.json()
+    check(
+      'B75 一台都没注册时 count=0（不谎报）',
+      body.data.servers[0].tools?.count === 0 && same(body.data.servers[0].tools.names, []),
+      JSON.stringify(body.data.servers[0].tools),
+    )
+  }
+
+  // 宿主没有 tools 服务（老宿主 / 测试替身）：不写这个键，客户端就不渲染那块（向前兼容）。
+  {
+    const { ctx, captured } = makeHostCtx({
+      configRows: [{ name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 's', transport: 'streamable-http', url: 'https://x' } }],
+    })
+    host.apply(ctx)
+    const response = await captured.route.fetch(new Request('http://localhost/api/mcp-manager'))
+    const body = await response.json()
+    check(
+      'B76 没有 tools 服务时省略该键（客户端读不到就不渲染）',
+      !('tools' in body.data.servers[0]) && body.data.capabilities.includes('tools'),
+      JSON.stringify(Object.keys(body.data.servers[0])),
+    )
+  }
 }
 //#endregion
 
@@ -1246,6 +1323,70 @@ check(
     'D13 未配置 group 时给出可读提示',
     textsOf(scene({ ...snapshot, configured: false })).some((t) => t.includes('cordis:group')),
   )
+
+  // D42–D47 工具名单：显示「N 个」，超过 TOOL_PREVIEW_LIMIT 就折叠，点开才显示全部。
+  {
+    // 自带夹具（不依赖外层的 server/snapshot）：一台有 9 个工具的服务器（> TOOL_PREVIEW_LIMIT=6，触发折叠）。
+    const toolServer = {
+      index: 0,
+      disabled: false,
+      config: { serverName: 'context7', transport: 'streamable-http', url: 'https://mcp.context7.com/mcp' },
+      phase: 'active',
+    }
+    const toolNames = Array.from({ length: 9 }, (_, i) => `mcp__context7__tool_${i}`)
+    const toolsSnapshot = (tools) => ({
+      groupId: 'mcp-manager',
+      configured: true,
+      capabilities: ['setEnabled', 'remove', 'save', 'lastError', 'probe', 'tools'],
+      servers: [{ ...toolServer, tools }],
+    })
+    // 渲染后的文本节点是 {type:'#text', props:{text}}，直接 join 会得到 [object Object]。
+    const nodeText = (node) => (node?.children ?? []).map((child) => (typeof child === 'string' ? child : (child?.props?.text ?? ''))).join('')
+    const toolChips = (tree) =>
+      collect(tree, (n) => (typeof n.props?.className === 'string' && n.props.className.split(/\s+/).includes('mcpm-tool') ? nodeText(n) : undefined))
+    // 页面级「显示全部 / 收起」按钮（D32–D33 里的 buttonWith 只在那一个局部块里可见，这里自带一个）。
+    const toolButton = (tree, label) =>
+      collect(tree, (n) => (n.type === 'button' && nodeText(n) === label ? n.props : undefined))[0]
+    // ServerRow 的 useState 顺序是 [confirming, toolsOpen]；toolsOpen=false → 折叠态。
+    const collapsed = renderSection({ McpSection: [toolsSnapshot({ count: 9, names: toolNames, truncated: false }), null, false, null, null, null, null, false], ServerRow: [false, false] })
+    check(
+      'D42 卡片内显示工具总数「工具 N 个」',
+      textsOf(collapsed).includes('工具 9 个'),
+      textsOf(collapsed).filter((t) => t.includes('工具')).join('|'),
+    )
+    const collapsedChips = toolChips(collapsed)
+    check(
+      'D43 超过 6 个时默认只显示前 6 个 + 「+3 个」（折叠）',
+      collapsedChips.length === 7 && collapsedChips[6] === '+3 个' && !collapsedChips.includes('mcp__context7__tool_6'),
+      JSON.stringify(collapsedChips),
+    )
+    check(
+      'D44 折叠时提供「显示全部 9 个」按钮',
+      toolButton(collapsed, '显示全部 9 个') !== undefined,
+      textsOf(collapsed).filter((t) => t.includes('显示全部') || t.includes('显示')).join('|'),
+    )
+
+    // toolsOpen=true → 展开态，全部显示，无「+N 个」，按钮变「收起」。
+    const expanded = renderSection({ McpSection: [toolsSnapshot({ count: 9, names: toolNames, truncated: false }), null, false, null, null, null, null, false], ServerRow: [false, true] })
+    const expandedChips = toolChips(expanded)
+    check(
+      'D45 展开后显示全部 9 个、按钮变「收起」',
+      expandedChips.length === 9 && toolButton(expanded, '收起') !== undefined && !expandedChips.some((t) => t.startsWith('+')),
+      JSON.stringify(expandedChips),
+    )
+
+    // 宿主名单被截断（> TOOL_NAME_LIMIT）：多一个「名单已截断」提示。
+    const capped = renderSection({ McpSection: [toolsSnapshot({ count: 500, names: toolNames, truncated: true }), null, false, null, null, null, null, false], ServerRow: [false, false] })
+    check('D46 宿主名单被截断时额外提示「名单已截断」', textsOf(capped).includes('名单已截断'))
+
+    // 工具名数量 <= 6：直接全显示，不出现「显示全部」按钮。
+    const fewTools = renderSection({ McpSection: [toolsSnapshot({ count: 3, names: ['a', 'b', 'c'], truncated: false }), null, false, null, null, null, null, false], ServerRow: [false, false] })
+    check(
+      'D47 工具不多（≤6）时直接全显示、没有折叠按钮',
+      toolButton(fewTools, '显示全部 3 个') === undefined && textsOf(fewTools).includes('工具 3 个'),
+      textsOf(fewTools).filter((t) => t.includes('工具') || t.includes('显示')).join('|'),
+    )
+  }
 
   // D14–D20 失败原因行（README 7.6）：状态不能再误报「运行中」，原因要落在同一张卡内。
   {
