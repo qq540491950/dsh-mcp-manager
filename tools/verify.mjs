@@ -35,6 +35,11 @@ function same(a, b) {
 const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'))
 const hostSource = await readFile(join(root, 'lib', 'index.js'), 'utf8')
 const clientSource = await readFile(join(root, 'lib', 'client.js'), 'utf8')
+/**
+ * 实现里的探测预算（ms）。B69 的自限兜底与新断言都从源码里取，避免同一个数字写死两处
+ * ——否则改预算时自检会先炸在夹具上，让人误以为是实现错了。
+ */
+const probeBudgetMs = Number(/PROBE_TIMEOUT_MS = (\d+)/.exec(hostSource)?.[1] ?? 0)
 
 //#region A. 包清单
 check('A1 package name', manifest.name === 'dsh-mcp-manager', manifest.name)
@@ -207,6 +212,15 @@ check('A10 两半边的组条目 id 一致', hostSource.includes("'mcp-manager'"
   check(
     'A24e 相位映射覆盖 LOADING（启动中）与 FAILED',
     /FIBER_PHASE = \['pending', 'loading', 'active', 'failed', 'disposed', 'unloading'\]/.test(hostSource),
+  )
+  // 探测预算必须留够**冷连接**余量。实测（本机 + 真实 profile，与 probeServer 同形状）：
+  // 远程 https://mcp.context7.com/mcp 冷路径 1.6–3.0s、热连接 ~360ms，局域网服务器 3–10ms。
+  // 3s 正好卡在冷路径的抖动边缘 → 配置正确的远程服务器被反复报成假红
+  // 「超时（3s）：服务器没有响应」。取 8s ≈ 2.7 倍余量，别再退回 3s。
+  check(
+    'A24f 探测预算留够冷连接余量（≥8s）',
+    probeBudgetMs >= 8000,
+    `budget=${String(probeBudgetMs)}ms`,
   )
   // 退回整数组提交时，env/headers 必须转成旧宿主认识的文本形状，否则又会被清空。
   {
@@ -785,16 +799,16 @@ function makeHostCtx({ configRows = [], mcpChildren = [], withLogger = true } = 
     globalThis.fetch = realFetch
   }
 
-  // 挂死的服务器：必须在自己的 3s 预算内判定"超时"，不能把 UI 永久卡住。
+  // 挂死的服务器：必须在自己的预算内判定"超时"，不能把 UI 永久卡住。
   const { ctx: hangCtx, captured: hangCaptured } = makeHostCtx({
     configRows: [{ name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 'slow', transport: 'streamable-http', url: url(7) } }],
   })
   host.apply(hangCtx)
   globalThis.fetch = (_target, init) =>
     new Promise((_resolve, reject) => {
-      // 自限 6s 兜底（长于实现的 3s 预算）：正确实现会在 3s 内 abort；
+      // 自限兜底（比实现里的预算多 3s）：正确实现会在预算内 abort；
       // 万一实现漏了 abort，这里也不会把自检永久挂死，而是让 B69 以"没超时"的形式失败。
-      const guard = setTimeout(() => reject(new Error('probe never aborted the request')), 6000)
+      const guard = setTimeout(() => reject(new Error('probe never aborted the request')), probeBudgetMs + 3000)
       init.signal.addEventListener('abort', () => {
         clearTimeout(guard)
         reject(new Error('The operation was aborted'))
@@ -806,7 +820,7 @@ function makeHostCtx({ configRows = [], mcpChildren = [], withLogger = true } = 
     )
     const body = await response.json()
     check(
-      'B69 挂死的服务器 → 超时（3s 预算内给出结论）',
+      'B69 挂死的服务器 → 超时（' + String(probeBudgetMs / 1000) + 's 预算内给出结论）',
       body.data?.servers?.[0]?.probe?.connected === false && body.data?.servers?.[0]?.probe?.detail.includes('超时'),
       JSON.stringify(body.data?.servers?.[0]?.probe),
     )
