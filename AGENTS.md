@@ -22,7 +22,7 @@
 **唯一必跑的命令**：
 
 ```powershell
-node tools/verify.mjs      # 期望 PASS；当前 180 条断言
+node tools/verify.mjs      # 期望 PASS；当前 181 条断言
 ```
 
 **详细设计/证据索引**：`README.md`（第 3 节通道选型、第 7 节实测状态、第 8 节尺寸基准、第 9 节证据出处）。
@@ -98,7 +98,9 @@ Loader 的 `EntryTree.write()`（`dsh-app-boot` 的 `Include` 类）是 `writeFi
 |---|---|
 | `- insert: [...]`（无 id） | 追加到顶层条目列表 |
 | `- id: X` + `insert: [...]` | 追加进已存在的 group 条目 X 的 config |
-| `- id: X`（无 insert） | **覆写**已存在条目 X；X 不存在则 warn 并丢弃 |
+| `- id: X`（无 insert） | **覆写**已存在条目 X；**整键赋值**（`target[key] = value`）→ `config` 是整数组替换，不是逐字段合并；X 不存在则 warn 并丢弃 |
+
+**覆写是整键赋值，不是"分层继承"。** `applyEntryPatches` 对非 insert 补丁做 `target[key] = value`（`cordis-plugin-include/lib/index.js:99-102` / `src/index.ts:120-123`），于是 `target.config = 覆写数组` 一把换掉——`insert:` 行里同 id 的那份 config 是**被整体丢弃**。别把它当"继承层"：profile 里 context7 的 `Authorization` 就写死在 insert 行（`:96-97`），而生效的覆写行（`:270-274`）没有 `headers` → 运行时**根本没有这个请求头**（context7 一直走匿名速率限制），文件看上去却"key 已经配好了"，页面（只读覆写层）也看不到它。B70 守住"只认覆写、不合并两层"。
 
 `configEditor.edit()` 对 insert 声明的条目会**追加一条顶层覆写行**——因为 `insert` 先被 `buildMap` 注册，后面的顶层行才认领得到它。
 
@@ -213,7 +215,7 @@ node tools/verify.mjs
 | 区 | 覆盖 |
 |---|---|
 | A | 包清单 / 主题 / 尺寸 / 自适应 / 布局 / 表单结构护栏 / 导航标记几何（A32–A38）/ 失败原因采集与探测的静态护栏（A24b–A24f、A26b） |
-| B | 宿主半边行为 + 行内操作回归（B27–B42 专测"停用后 headers 必须仍在"）+ 失败原因采集（B43–B55）+ **相位映射（B56）与主动探测（B57–B69）** |
+| B | 宿主半边行为 + 行内操作回归（B27–B42 专测"停用后 headers 必须仍在"）+ 失败原因采集（B43–B55）+ **相位映射（B56）与主动探测（B57–B69）** + **配置分层语义（B70：覆写层是整数组替换，只认覆写行、不合并 `insert:` 层）** |
 | C | 客户端半边协议与座位注册契约 + 导航标记的 DOM 行为（C12–C17：用假 DOM 真跑 apply） |
 | D | **真实渲染测试**：迷你渲染器递归展开函数组件，覆盖列表 / 展开编辑 / 新增 / 空 / 载入 / 错误 / 未配置 / 有失败记录 / 停用+旧记录（D14–D23），**状态语义（D18/D18b/D18c：有 `probe` 能力却没有探测记录 → 「未检测」；旧宿主退回相位；stdio 不走这条）+ 四态状态机（D24–D34：启动中/加载失败/未启动/检测通过/检测失败/检测盖掉旧记录/旧宿主时「检测」按钮禁用/「检测中…」）**，以及**挂载行为（D35–D41：另起一套"会真跑 useEffect"的沙箱 + fetch 桩，断言打开页面自动 GET→POST probe、旧宿主不发探测、读快照失败也不发；点一次「启用」之后必须补一次 probe、旧宿主不补、探通了但相位没稳定时继续重读快照、且重读有界）**；夹具用 `scene(...)` 把 `useState` 顺序显式化，新增状态必须补一位 |
 
@@ -290,7 +292,7 @@ node tools/verify.mjs
 | 边界 | 说明 |
 |---|---|
 | 宿主半边不热重载 | 见 1.2。要么重启，要么改 `hmr.root`（但 `root` 是整表、补丁层 `config` 是整份替换，直接写会丢掉基础 bundle 的原值——动手前先读出原值） |
-| 首次保存后 `insert:` 行失效 | 顶层覆写行成为权威来源，`insert:` 行里的 config 退化为继承层。这是 DSH 分层配置的固有行为，不是 bug |
+| 首次保存后 `insert:` 行失效 | 覆写补丁是**整键赋值**（`target[key] = value`，见 2.4），`target.config` 被覆写数组**整数组替换**，所以 `insert:` 行里同 id 的 config 是**被整体丢弃**（不是"继承层"，别按继承理解）——写在那里的 `headers`/`env` 运行时根本不存在。这是 DSH 分层配置的固有行为，不是 bug |
 | `listTokens` 不是完整 token 表 | 它只列"需要 light/dark 双份覆写"的 alias 子集；`button-primary-fill`、`radius-*`、`settings-card-*`、`label-tertiary` 都不在表里但真实存在。**判断 token 是否存在，以官方 CSS 的用法为准** |
 | group 子条目不可单独寻址 | `plugin_manager` 报 `readOnlyReason: "unaddressable"`。这正是"整体重写 group config 数组"这一设计的由来 |
 | `disabled` 对 group 子条目有效 | 已实测：加 `disabled: true` 后 `enabled:false, fiberPhase:null`。启停机制没问题，别再怀疑这里 |

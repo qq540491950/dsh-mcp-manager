@@ -322,8 +322,13 @@ const host = await import(new URL('../lib/index.js', import.meta.url).href)
 check('B1 导出 name', host.name === 'dsh-mcp-manager', String(host.name))
 check('B2 导出 apply', typeof host.apply === 'function')
 
-/** 造一个够用的假宿主上下文；写入会落到 state，因此可以连续操作。 */
-function makeHostCtx({ configRows = [], mcpChildren = [], withLogger = true } = {}) {
+/**
+ * 造一个够用的假宿主上下文；写入会落到 state，因此可以连续操作。
+ * @param layers - 可选：显式给出 `configEditor.configuration()` 的继承层/覆写层
+ *   （默认 `inherited = state.rows`、`override = undefined`，即"只有 insert 层"）。
+ *   B70 用它复现"覆写行存在、insert 行里还留着旧字段"的真实分层现场。
+ */
+function makeHostCtx({ configRows = [], mcpChildren = [], withLogger = true, layers = undefined } = {}) {
   const captured = { deps: null, route: null, writes: [], exporters: [] }
   const state = { rows: structuredClone(configRows) }
   const groupEntry = {
@@ -354,7 +359,15 @@ function makeHostCtx({ configRows = [], mcpChildren = [], withLogger = true } = 
           : {}),
         configEditor: {
           entries: () => [groupEntry],
-          configuration: () => [{ entry: groupEntry, inherited: state.rows, override: undefined }],
+          configuration: () => [
+            {
+              entry: groupEntry,
+              // 默认就是"只有 insert 层"；给了 layers 就照实给两层（覆写层可以为 undefined）。
+              inherited: layers === undefined ? state.rows : structuredClone(layers.inherited ?? []),
+              override:
+                layers === undefined || layers.override === undefined ? undefined : structuredClone(layers.override),
+            },
+          ],
           edit: async (entry, change) => {
             const next = change(state.rows, state.rows)
             captured.writes.push(structuredClone(next))
@@ -826,6 +839,43 @@ function makeHostCtx({ configRows = [], mcpChildren = [], withLogger = true } = 
     )
   } finally {
     globalThis.fetch = realFetch
+  }
+
+  // 覆写层是**整数组替换**，不是"继承层"。
+  // 证据：cordis-plugin-include 的 applyEntryPatches 对非 insert 补丁逐键赋值
+  // （`target[key] = value`，lib/index.js:99-102 / src/index.ts:120-123），于是
+  // `target.config = 覆写数组` —— insert 行里同 id 的那份声明被**整体丢弃**。
+  // 线上就是这么中的：profile 的 insert 行一直写着 `Authorization: Bearer ctx7sk-…`，
+  // 而权威的覆写行没有 headers → 运行时这个头根本不存在，可文件看上去"key 已经配好了"。
+  // 这条钉住插件侧的读法：覆写非空时**只认覆写**，绝不把两层合并（也别"补回"继承层的字段）——
+  // 合并会让那份死配置重新变成生效值，还会凭空多出一台服务器。
+  {
+    const insertRow = {
+      name: '@deepseek-ai/dsh-mcp-client',
+      config: {
+        serverName: 'context7',
+        transport: 'streamable-http',
+        url: 'https://mcp.context7.com/mcp',
+        headers: { Authorization: 'Bearer ctx7sk-insert-layer' },
+      },
+    }
+    const overrideRow = {
+      name: '@deepseek-ai/dsh-mcp-client',
+      config: { serverName: 'context7', transport: 'streamable-http', url: 'https://mcp.context7.com/mcp' },
+    }
+    const layered = makeHostCtx({
+      configRows: [overrideRow],
+      layers: { inherited: [insertRow], override: [overrideRow] },
+    })
+    host.apply(layered.ctx)
+    const response = await layered.captured.route.fetch(new Request('http://localhost/api/mcp-manager'))
+    const body = await response.json()
+    const rows = body.data?.servers ?? []
+    check(
+      'B70 覆写层整数组替换：只认覆写行，不合并 insert 层（合并会把死配置当成生效）',
+      rows.length === 1 && same(rows[0]?.config, overrideRow.config),
+      JSON.stringify(rows.map((row) => row.config)),
+    )
   }
 }
 //#endregion

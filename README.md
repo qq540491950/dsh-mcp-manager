@@ -106,10 +106,17 @@ ctx.inject(["slots"], (scope) => {
 |---|---|
 | `- insert: [ ... ]`（无 `id`） | 把这些行**追加**到顶层条目列表 |
 | `- id: X` + `insert: [...]` | 把 `insert` 的行走追加进**已存在的 group 条目 X** 的 `config` 里（X 不是 group 就 warn 跳过） |
-| `- id: X`（无 `insert`） | **覆写**已存在条目 X 的字段；**X 不存在就 warn「entry not found」并丢弃** |
+| `- id: X`（无 `insert`） | **覆写**已存在条目 X 的键；**整键赋值**（`target[key] = value`，`:99-102`），所以 `config` 是**整数组替换**、不是逐字段合并；**X 不存在就 warn「entry not found」并丢弃** |
 | `- id: X, name: Y, config: {...}` | 同上，是覆写；`name` 与目标不符会被拒 |
 
 关键细节：**`insert` 进去的行会被 `buildMap(insert)` 注册进 `entryMap`**（`:83`），所以**同一个文件里排在 insert 后面的顶层 `- id: X` 覆写行能命中它**。这正是下面「单条目 + 覆写」方案的合法性依据。
+
+> **`config` 是整数组替换，不是"继承层"。** 覆写补丁逐键赋值，`target.config = 覆写数组` 一把换掉，
+> 所以 `insert:` 行里那份同 id 的声明是**被丢弃**，而不是"没写到的字段继续继承"。
+> 线上踩到的样子：profile 的 `insert:` 行一直写着 context7 的
+> `Authorization: Bearer ctx7sk-…`，而首次保存生成的覆写行只有 `serverName/transport/url`
+> ——运行时**根本没有这个请求头**（context7 因此一直走匿名速率限制），可文件里看上去"key 已经配好了"，
+> 页面（只读覆写层）也看不到它。B70 守住插件侧的读法：**覆写非空时只认覆写，绝不合并两层**。
 
 → 也顺带解释了 profile 里那句中文注释：想**新增**条目必须用 `insert:`；直接写顶层 `- id:` 因为目标不存在会被丢弃。
 
@@ -217,7 +224,7 @@ dsh-mcp-manager/
   lib/client.js     浏览器半边：settings.section 页面 + 导航那一格的 MCP 标记（懒 CJS bundle）
   assets/mcp-mark.svg  设置导航那一格用的 MCP 标记（16x16，几何取自官方 favicon）
   assets/nav-preview.png  改后导航那一格的模拟对照图（自绘，非截图；README 8.6 引用）
-  tools/verify.mjs  自检：180 条断言，纯 Node 零依赖
+  tools/verify.mjs  自检：181 条断言，纯 Node 零依赖
   .gitattributes    统一 LF（本仓库全 LF，混入 CRLF 会产生整文件 diff）
   .gitignore        node_modules / 构建产物 / 日志 / 编辑器 / 系统文件
 ```
@@ -273,10 +280,10 @@ dsh-mcp-manager/
 
 ```powershell
 node D:\project\dsh-plugins\dsh-mcp-manager\tools\verify.mjs
-# → PASS 180/180
+# → PASS 181/181
 ```
 
-覆盖：包清单契约（`dsh.client.platform`、`exports["./client"]`、bundle 模块 id 必须等于包名、只 require 种子模块、宿主半边零 import）；宿主半边行为（依赖声明、路由路径/方法/requestBody、GET 快照与状态映射、**三种操作 `setEnabled`/`remove`/`save`**、`env`/`headers`/`args` 的三种输入形状、非法 `serverName`/空 `url`/未知操作被拒且**不落盘**、group 条目缺失时的可读报错）；**行内操作回归测试**（B27–B42：停用后 `headers` 必须仍在、启用后仍在、删除只删目标、名字找不到回 409、回退路径的文本形状解析正确）；**失败原因采集与主动检测**（A24b–A24f + B43–B69：宿主必须挂自己的 logger exporter、必须显式声明阈值（否则 warn 级原因被默认阈值 1 丢掉）、只认行首 `mcp-client(<name>):` 前缀（含"内嵌同名形状"的无关日志不入账）、warn/error 原文与级别/时间/count 进快照、多台互不串台、恢复信号与**任一次配置写入**清空旧记录、超长原文按 500 字符截断、缺 `logger` 服务时优雅降级；**相位映射**覆盖 `pending/loading/active/failed/disposed/unloading`；**主动探测**只打启用中的服务器、请求是 MCP `initialize` 且带上配置里的 headers、探测通过/HTTP 401/TCP 拒绝（报出 cause 而不是无用的 "fetch failed"）/200 但不是 MCP/stdio 无法探测/挂死服务器在自己的 8s 预算内超时/探测预算必须留够冷连接余量（A24f，≥8s）/可单探一台、探不存在的名字回 409、配置写入清空旧探测结果）；客户端半边行为（懒 CJS 协议、`settings.section` 注册契约、order 与 label、能力协商）；**主题 / 尺寸 / 自适应 / 表单结构护栏**（A11–A12c：不得裸硬编码颜色、主按钮必须用 foreground token、视觉必须走注入的样式表且有 hover 反馈；A13–A31：标题行与说明文字分层、紧凑档尺寸对齐官方 `.sm`/`.rowActions`、**表单面板对齐官方 models 页（底色分层 + 无描边 + 输入框 token）**、操作区不换行、不重复叠加外壳留白、不渲染 URL 详情、主体自适应且不撑破、不在 inline style 里写尺寸、`mono` 与 `multiline` 分离、一卡一服务器且表单展开在同一张卡内、编辑按钮可收起、**失败原因行可断行且不撑破卡片**）；**真实渲染测试**（D1–D41：用迷你渲染器递归展开函数组件，覆盖列表 / 展开编辑 / 新增 / 空 / 载入 / 错误 / 未配置 / **有失败记录** / **停用+旧记录** / **四态（灰·琥珀·绿·红）** 等状态，断言"展开时不会出现第二张同名卡"、**状态语义（有记录时是「连接异常」而不是「运行中」、LOADING 是「启动中」、FAILED 是「加载失败」、无活条目是「未启动」、宿主能探测却没有记录时是「未检测」而不是「运行中」、检测失败是「连接失败」+ 原因行、检测通过盖掉更早的失败记录、检测通过但条目没挂上时不报绿）**、**能力协商（旧宿主没有 `probe` 能力时「检测」禁用并提示要重启 DSH，而不是点了报「未知操作：probe」）**、**打开页面自动检测一次（先 GET 拿能力、再 POST probe；silent 模式只亮「检测中…」不锁按钮；旧宿主与读快照失败时不发探测）**、**写入之后自动补检测（在同一套沙箱里真点一次「启用」：`POST setEnabled → POST probe`；旧宿主不补；探通了但相位还没稳定时继续重读快照；相位一直不稳定时有界收手）**、原因行含原文与次数且落在那张卡片内部、标题行有刷新与检测两个按钮、**两条错误通道互斥——同一句文案在同一时刻只渲染一次，且表单失败落在表单里、行内操作失败落在页面级**）；**设置导航那一格的图标**（A32–A38：内联副本与 `assets/mcp-mark.svg` 的三条 path 逐字一致、几何与官方 favicon 同源、按官方比例缩进 16x16（墨迹高 15 / 居中 / 有效描边 1.0）、用官方 `data-shortcut-modal` 锚点而不是 CSS-module 哈希类名、只 setAttribute 不改 React 节点树、只隐藏官方 `<svg>` 而不隐藏整行；C12–C17 用**假 DOM 真跑一遍 `apply`**：只标记 label 为 `MCP` 的那一格、observer 挂在 body、注入的样式表已含那两行规则、面板关闭重开后能重新标记、卸载时 observer 与标记都清干净）。
+覆盖：包清单契约（`dsh.client.platform`、`exports["./client"]`、bundle 模块 id 必须等于包名、只 require 种子模块、宿主半边零 import）；宿主半边行为（依赖声明、路由路径/方法/requestBody、GET 快照与状态映射、**三种操作 `setEnabled`/`remove`/`save`**、`env`/`headers`/`args` 的三种输入形状、非法 `serverName`/空 `url`/未知操作被拒且**不落盘**、group 条目缺失时的可读报错）；**行内操作回归测试**（B27–B42：停用后 `headers` 必须仍在、启用后仍在、删除只删目标、名字找不到回 409、回退路径的文本形状解析正确）；**失败原因采集与主动检测**（A24b–A24f + B43–B70：宿主必须挂自己的 logger exporter、必须显式声明阈值（否则 warn 级原因被默认阈值 1 丢掉）、只认行首 `mcp-client(<name>):` 前缀（含"内嵌同名形状"的无关日志不入账）、warn/error 原文与级别/时间/count 进快照、多台互不串台、恢复信号与**任一次配置写入**清空旧记录、超长原文按 500 字符截断、缺 `logger` 服务时优雅降级；**相位映射**覆盖 `pending/loading/active/failed/disposed/unloading`；**主动探测**只打启用中的服务器、请求是 MCP `initialize` 且带上配置里的 headers、探测通过/HTTP 401/TCP 拒绝（报出 cause 而不是无用的 "fetch failed"）/200 但不是 MCP/stdio 无法探测/挂死服务器在自己的 8s 预算内超时/探测预算必须留够冷连接余量（A24f，≥8s）/可单探一台、探不存在的名字回 409、配置写入清空旧探测结果）；**配置分层语义**（B70：覆写层是整数组替换——只认覆写行，不合并 `insert:` 层，否则"写在 insert 里的死配置"会被当成生效，还会凭空多出一台服务器）；客户端半边行为（懒 CJS 协议、`settings.section` 注册契约、order 与 label、能力协商）；**主题 / 尺寸 / 自适应 / 表单结构护栏**（A11–A12c：不得裸硬编码颜色、主按钮必须用 foreground token、视觉必须走注入的样式表且有 hover 反馈；A13–A31：标题行与说明文字分层、紧凑档尺寸对齐官方 `.sm`/`.rowActions`、**表单面板对齐官方 models 页（底色分层 + 无描边 + 输入框 token）**、操作区不换行、不重复叠加外壳留白、不渲染 URL 详情、主体自适应且不撑破、不在 inline style 里写尺寸、`mono` 与 `multiline` 分离、一卡一服务器且表单展开在同一张卡内、编辑按钮可收起、**失败原因行可断行且不撑破卡片**）；**真实渲染测试**（D1–D41：用迷你渲染器递归展开函数组件，覆盖列表 / 展开编辑 / 新增 / 空 / 载入 / 错误 / 未配置 / **有失败记录** / **停用+旧记录** / **四态（灰·琥珀·绿·红）** 等状态，断言"展开时不会出现第二张同名卡"、**状态语义（有记录时是「连接异常」而不是「运行中」、LOADING 是「启动中」、FAILED 是「加载失败」、无活条目是「未启动」、宿主能探测却没有记录时是「未检测」而不是「运行中」、检测失败是「连接失败」+ 原因行、检测通过盖掉更早的失败记录、检测通过但条目没挂上时不报绿）**、**能力协商（旧宿主没有 `probe` 能力时「检测」禁用并提示要重启 DSH，而不是点了报「未知操作：probe」）**、**打开页面自动检测一次（先 GET 拿能力、再 POST probe；silent 模式只亮「检测中…」不锁按钮；旧宿主与读快照失败时不发探测）**、**写入之后自动补检测（在同一套沙箱里真点一次「启用」：`POST setEnabled → POST probe`；旧宿主不补；探通了但相位还没稳定时继续重读快照；相位一直不稳定时有界收手）**、原因行含原文与次数且落在那张卡片内部、标题行有刷新与检测两个按钮、**两条错误通道互斥——同一句文案在同一时刻只渲染一次，且表单失败落在表单里、行内操作失败落在页面级**）；**设置导航那一格的图标**（A32–A38：内联副本与 `assets/mcp-mark.svg` 的三条 path 逐字一致、几何与官方 favicon 同源、按官方比例缩进 16x16（墨迹高 15 / 居中 / 有效描边 1.0）、用官方 `data-shortcut-modal` 锚点而不是 CSS-module 哈希类名、只 setAttribute 不改 React 节点树、只隐藏官方 `<svg>` 而不隐藏整行；C12–C17 用**假 DOM 真跑一遍 `apply`**：只标记 label 为 `MCP` 的那一格、observer 挂在 body、注入的样式表已含那两行规则、面板关闭重开后能重新标记、卸载时 observer 与标记都清干净）。
 
 ---
 
@@ -294,7 +301,7 @@ profile 已按第 5 节接线，`dsh-hmr` 监听该文件（`dsh-hmr/lib/index.j
 | **宿主半边生效** | `include:dsh-mcp-manager` → `fiberPhase: active`（`apply()` 内同步注册路由，抛错会挂掉 fiber） |
 | **客户端半边生效** | `settings.section` 台账 occupants 含 `{id:"mcp", order:900, active:true}`，且是 order 最大的一项 |
 | 路由受鉴权保护 | `GET/POST /api/mcp-manager` → **401**；伪造 `Host` → **403** |
-| 自检 | `PASS 180/180` |
+| 自检 | `PASS 181/181` |
 | 文件编码 | 无 BOM、无 U+FFFD、LF 行尾、YAML 解析通过 |
 
 `readOnlyReason: "unaddressable"` 这一条尤其值得记下：它**正面印证了「group 子条目不可单独寻址」**——所以 `configEditor` 只能整体重写 group 的 config 数组，这正是本插件「单一数组」设计的由来，而不是实现偷懒。
@@ -309,7 +316,7 @@ account -10 | general 0 | models 10 | plugins 15 | agent-presets 20 | mcp 900 �
 
 1. **点击进入页面的那一次 fetch 往返**。路由已注册、围栏已验证，但「打开 设置 → MCP 看到列表」这一步需要在浏览器里点一次。客户端已内置失败态：读不到会渲染「读取失败：<原因>」+ 重试按钮，不会白屏。
 2. **`configEditor.edit()` 对 insert 声明条目的 `document.add` 分支**尚未产生过一次真实写入（首次在 UI 上点「保存」时才走）。语义推导有 `applyEntryPatches` 源码支撑，且失败是安全的（写入前断言、不落盘）。
-3. **覆写行的语义副作用**：首次写入后，配置的权威来源变成**文件末尾那条顶层覆写行**；group 的 `insert:` 行里的原始 config 退化为「继承层」。用户若手改 `insert:` 行会发现不生效——这是 DSH 分层配置的固有行为。
+3. **覆写行的语义副作用（已用源码 + 现场核实，不是"取舍"）**：首次写入后，配置的权威来源变成**文件末尾那条顶层覆写行**；而覆写是**整键赋值**（`applyEntryPatches` 的 `target[key] = value`，`cordis-plugin-include/lib/index.js:99-102` / `src/index.ts:120-123`），于是 group 的 `insert:` 行里的原始 `config` 是**被整体丢弃**，不是"逐字段继承"。用户手改 `insert:` 行会发现不生效——这是 DSH 分层配置的固有行为。**现场证据**：`cordis.patch.yml` 的 insert 行（`:96-97`）里有 context7 的 `Authorization`，覆写行（`:270-274`）里没有 → 运行时 context7 只有 `serverName/transport/url`；`Config.listConfigs(name: '@deepseek-ai/dsh-mcp-client')` 也只列出覆写行的 2 个条目（若是两层叠加应有 3 个）。B70 守住这条读法。
 4. **group 子条目当前没有显式 `id`**，Loader 自动生成了 `ef60a0d1` 这类十六进制 id。若希望 id 稳定，给每个子条目手写 `id:`。
 5. **UI 不依赖 primitives 组件**：视觉走注入的样式表（class 名 `mcpm-` 前缀），只用主题 token，因此 `require` 里只有 `react`。`@deepseek-ai/dsh-client-ui-primitives` 里确实有 `Button` / `Input` / `Switch` / `SettingsForm` / `Toast` / `Modal` —— 但它们的 props 我没有实测，所以没有猜着用；间距/配色改按官方 CSS 的实测值照抄（第 8 节）。
 6. **`serverName` 重命名**：客户端目前按数组下标定位被编辑项，重命名会保留原 `rowId`。若改的是 `insert:` 行里的声明而非覆写行，可能新建而非复用条目。
@@ -450,9 +457,9 @@ account -10 | general 0 | models 10 | plugins 15 | agent-presets 20 | mcp 900 �
 - 已知取舍：**只在打开页面时探一次、以及每次写入后探一次，不轮询**（写入之后的相位稳定最多重读 10 × 200ms）。页面开着但什么都不做的时候状态不会自己变（要"现在"的结论就点「检测」）。这样后台不会一直敲服务器。
 - 已知取舍：**每次打开这一页（以及每次点「检测」）都是一次真实的 `initialize` 请求**，会在服务器侧留下一次连接（可能创建/丢弃一个会话）。它对服务端是无副作用的读操作，但确实"敲了一次门"。
 
-**断言**：A24d（探测必须有自己的超时）、A24f（预算必须留够冷连接余量，≥8s）、A24e（相位映射必须含 LOADING）、B56（七种 fiber state 的完整映射）、B57–B69（探测的十条行为：只打启用的、带 headers、initialize 载荷、通过/401/拒连/非 MCP/stdio/单探一台/不存在 409/写入清空/挂死 8s 超时；B69 的自限兜底从源码取预算 + 3s，不写死数字）、D18/D18b/D18c（绿灯必须有证据：有 `probe` 能力却没有记录 → 「未检测」；旧宿主退回相位；stdio 的 `connected:null` 不因此变黄）、D24–D34（四色渲染 + 检测盖掉旧记录 + 能力协商时按钮禁用 +「检测中…」）、**D35–D37（挂载行为：另起一套"会真跑 `useEffect`"的沙箱 + fetch 桩，断言打开页面就是 GET→POST probe、旧宿主不发探测、读快照失败也不发）**、**D38–D41（写入之后必须补检测：同一套沙箱里真点一次「启用」，断言请求序列里有 `POST setEnabled → POST probe`；旧宿主不补；探通了但相位还是 `loading` 时继续重读快照直到 `active`；相位一直不稳定时有界收手）**。
+**断言**：A24d（探测必须有自己的超时）、A24f（预算必须留够冷连接余量，≥8s）、A24e（相位映射必须含 LOADING）、B56（七种 fiber state 的完整映射）、B57–B69（探测的十条行为：只打启用的、带 headers、initialize 载荷、通过/401/拒连/非 MCP/stdio/单探一台/不存在 409/写入清空/挂死 8s 超时；B69 的自限兜底从源码取预算 + 3s，不写死数字）、**B70（配置分层语义：覆写层是整数组替换，只认覆写行、不合并 `insert:` 层——合并会让"写在 insert 层的 context7 Authorization"这种死配置重新变成生效值，并凭空多出一台服务器）**、D18/D18b/D18c（绿灯必须有证据：有 `probe` 能力却没有记录 → 「未检测」；旧宿主退回相位；stdio 的 `connected:null` 不因此变黄）、D24–D34（四色渲染 + 检测盖掉旧记录 + 能力协商时按钮禁用 +「检测中…」）、**D35–D37（挂载行为：另起一套"会真跑 `useEffect`"的沙箱 + fetch 桩，断言打开页面就是 GET→POST probe、旧宿主不发探测、读快照失败也不发）**、**D38–D41（写入之后必须补检测：同一套沙箱里真点一次「启用」，断言请求序列里有 `POST setEnabled → POST probe`；旧宿主不补；探通了但相位还是 `loading` 时继续重读快照直到 `active`；相位一直不稳定时有界收手）**。
 
-**反向验证九次**：把 `active → 绿` 提前回判定最前面（旧 bug），D14/D15/D16/D17/D30 五条同时报错并打印出 `运行中`；去掉探测的 abort，A24d 与 B69 精确报错（B69 的夹具自限 = 源码预算 + 3s，所以漏掉 abort 只会失败、不会把自检挂死）；把预算退回 3s，A24f 精确报错并打印 `budget=3000ms`；去掉 headers，B59 报出实际发送的头；去掉能力判断，D36/D37 报出旧宿主也挨了 POST；去掉自动检测，D35 报出只发了一次 GET；去掉「绿灯要有证据」那条分支，D18 报出 `运行中`；去掉写入后的补检测，D38 报出 `[["GET",null],["POST","probe"],["POST","setEnabled"]]`（少了最后一次 probe）；把补检测的能力门去掉，D39 报出旧宿主也挨了 probe；去掉相位稳定那一步，D40/D41 同时报错；把稳定重读的上界放宽 5 次，D41 报出 `total=14 gets=13`（而不是 12/11）。
+**反向验证九次**：把 `active → 绿` 提前回判定最前面（旧 bug），D14/D15/D16/D17/D30 五条同时报错并打印出 `运行中`；去掉探测的 abort，A24d 与 B69 精确报错（B69 的夹具自限 = 源码预算 + 3s，所以漏掉 abort 只会失败、不会把自检挂死）；把预算退回 3s，A24f 精确报错并打印 `budget=3000ms`；把 `declaredRows` 的覆写分支改成合并两层（`[...inherited, ...override]`），B70 精确报错并打印出那两行——第一行还带着本该被丢弃的 `Authorization`；去掉 headers，B59 报出实际发送的头；去掉能力判断，D36/D37 报出旧宿主也挨了 POST；去掉自动检测，D35 报出只发了一次 GET；去掉「绿灯要有证据」那条分支，D18 报出 `运行中`；去掉写入后的补检测，D38 报出 `[["GET",null],["POST","probe"],["POST","setEnabled"]]`（少了最后一次 probe）；把补检测的能力门去掉，D39 报出旧宿主也挨了 probe；去掉相位稳定那一步，D40/D41 同时报错；把稳定重读的上界放宽 5 次，D41 报出 `total=14 gets=13`（而不是 12/11）。
 
 ---
 
@@ -594,6 +601,7 @@ account -10 | general 0 | models 10 | plugins 15 | agent-presets 20 | mcp 900 �
 | `$mount` 是公开扩展点、descriptor 校验 | `dsh-api-gateway/lib/types/client/index.js:80-135, 587-602` |
 | 客户端能力集构建期固定 | `dsh-api-remotes/README.md`（Known Limitations） |
 | `connection.fetch.register` 精确路由 + 自动鉴权 | `dsh-client-connection/lib/index.js:608-638, 755-762, 829-843` |
+| 覆写补丁是**整键赋值**（`target[key] = value`）→ group 的 `config` 被**整数组替换**，`insert:` 行同 id 的 config 被丢弃（不是"继承层"） | `cordis-plugin-include/lib/index.js:99-102`（`src/index.ts:120-123`） |
 | `applyEntryPatches` 的行语义 | `cordis-plugin-include/lib/index.js:56-105` |
 | `cordis:group` 是内置插件、config 是 entryList | `dsh-app-boot/lib/index.js:2814, 3703` |
 | `Include.write()` 整体重写 root.data | `dsh-app-boot/lib/index.js:245-248` |
