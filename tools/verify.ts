@@ -8,7 +8,7 @@
  *
  * 用法：node tools/verify.ts
  */
-import { readFile } from 'node:fs/promises'
+import { readdir, readFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
@@ -2513,6 +2513,89 @@ check(
       target !== '' && existsSync(join(root, target)),
       `${scriptName}: ${command}`,
     )
+  }
+
+  /**
+   * E12 —— 文档与工作流里提到的仓库文件 / 脚本必须真实存在。
+   *
+   * E11 只覆盖 package.json 的两个脚本，而一次改名（`tools/*.mjs` → `*.ts`）同时散落在
+   * CI 工作流、AGENTS.md、README.md 里，漏改一处只会等别人手打命令时才发现。这里按四类引用核对：
+   * markdown 相对链接、`node <路径>`、`pnpm <脚本名>`、反引号里的仓库路径。
+   *
+   * 两个**刻意的收窄**（都是有实测误报才写的）：
+   *   1. 反引号路径只认 `tools/`、`src/`、`assets/`、`.github/` —— `lib/main.js` 指的是 **asar 根**
+   *      的宿主 bundle、`docs/favicon.svg` 指的是**官方 MCP 仓库**的文件，把这两个命名空间纳进来
+   *      当天就是 4 条假阳性；
+   *   2. 不扫 `docs/**`：`docs/ts-migration-plan.md` 是历史计划快照，故意保留改名前的文件名。
+   *
+   * 聚合为**一条**断言（问题拼在 detail 里），失败时一次给全清单，不淹没其他断言。
+   */
+  {
+    /** pnpm 内建命令与虚拟脚本（`pnpm test` / `pnpm install` 没有 scripts 条目也合法）。 */
+    const PNPM_BUILTIN = new Set([
+      'install',
+      'add',
+      'remove',
+      'dlx',
+      'exec',
+      'run',
+      'why',
+      'update',
+      'publish',
+      'pack',
+      'audit',
+      'outdated',
+      'list',
+      'prune',
+      'rebuild',
+      'setup',
+      'init',
+      'import',
+      'patch',
+      'deploy',
+      'start',
+      'test',
+      'store',
+      'env',
+      'config',
+      'link',
+      'unlink',
+    ])
+    const NODE_CMD = /\bnode\s+((?:\.{1,2}\/)?[\w./@-]+\.(?:ts|mjs|cjs|js))\b/g
+    const REPO_FILE = /`((?:tools|src|assets|\.github)\/[\w./@-]+\.(?:ts|tsx|mjs|cjs|js|json|yml|yaml|svg))`/g
+    const LINK = /\]\(([^)\s]+)\)/g
+    const PNPM_SCRIPT = /\bpnpm\s+(?:run\s+)?([a-z][\w:-]*)/g
+    const workflows = join(root, '.github', 'workflows')
+    const targets = [
+      'AGENTS.md',
+      'README.md',
+      ...(existsSync(workflows)
+        ? (await readdir(workflows))
+            .filter((name) => name.endsWith('.yml'))
+            .map((name) => join('.github', 'workflows', name))
+        : []),
+    ]
+    const problems: string[] = []
+    for (const doc of targets) {
+      const text = await readFile(join(root, doc), 'utf8')
+      for (const [, link] of text.matchAll(LINK)) {
+        if (/^(https?:|mailto:|#)/.test(link)) continue
+        const rel = decodeURI(link.split('#')[0])
+        if (!existsSync(join(root, rel))) problems.push(`${doc}: 链接目标不存在 ${rel}`)
+      }
+      for (const [, file] of text.matchAll(NODE_CMD)) {
+        if (!existsSync(join(root, file))) problems.push(`${doc}: node 脚本不存在 ${file}`)
+      }
+      for (const [, name] of text.matchAll(PNPM_SCRIPT)) {
+        if (!PNPM_BUILTIN.has(name) && !(name in (manifest.scripts ?? {}))) {
+          problems.push(`${doc}: pnpm 脚本不存在 ${name}`)
+        }
+      }
+      for (const [, file] of text.matchAll(REPO_FILE)) {
+        if (!existsSync(join(root, file))) problems.push(`${doc}: 正文提到但文件不存在 ${file}`)
+      }
+    }
+    check('E12 文档 / 工作流里的文件与脚本引用都存在（改名的漏改面）', problems.length === 0, problems.join('；'))
   }
 }
 //#endregion
