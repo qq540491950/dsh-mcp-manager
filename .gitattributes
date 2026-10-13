@@ -3,6 +3,8 @@
 * text=auto eol=lf
 
 # 明确文本类型（本插件只有这几类源文件）
+*.ts     text eol=lf
+*.tsx    text eol=lf
 *.js     text eol=lf
 *.cjs    text eol=lf
 *.mjs    text eol=lf

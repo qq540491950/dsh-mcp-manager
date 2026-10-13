@@ -13,6 +13,22 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import vm from 'node:vm'
 
+/**
+ * 共享常量的**唯一来源**：`src/shared/constants.ts`。
+ *
+ * 这里直接 import TypeScript 源文件 —— Node ≥22.18 默认开启类型擦除，所以自检脚本
+ * 仍然**零依赖**（不装 node_modules 也能跑），却能把"两半边必须一致"的那些值从
+ * "断言里手写的字面量"升级成"期望值来自唯一来源"。E 区就是这件事的守卫。
+ */
+let shared
+try {
+  shared = await import('../src/shared/constants.ts')
+} catch (error) {
+  console.error('无法加载 src/shared/constants.ts —— 需要 Node ≥22.18（默认开启类型擦除）。')
+  console.error(error instanceof Error ? error.message : String(error))
+  process.exit(1)
+}
+
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 let passed = 0
@@ -43,20 +59,36 @@ const probeBudgetMs = Number(/PROBE_TIMEOUT_MS = (\d+)/.exec(hostSource)?.[1] ??
 
 //#region A. 包清单
 check('A1 package name', manifest.name === 'dsh-mcp-manager', manifest.name)
-check('A2 exports["./client"]', manifest.exports?.['./client'] === './lib/client.js', String(manifest.exports?.['./client']))
+check(
+  'A2 exports["./client"]',
+  manifest.exports?.['./client'] === './lib/client.js',
+  String(manifest.exports?.['./client']),
+)
 check('A3 dsh.client.platform === "web"', manifest.dsh?.client?.platform === 'web', JSON.stringify(manifest.dsh))
 check('A4 main points at lib/index.js', manifest.main === 'lib/index.js', String(manifest.main))
-check("A5 客户端 bundle 用包名注册模块 id", clientSource.includes(`id: "dsh-mcp-manager"`))
+check('A5 客户端 bundle 用包名注册模块 id', clientSource.includes(`id: "dsh-mcp-manager"`))
 check('A6 客户端 bundle 是 classic script（无 ESM 语法）', !/^\s*(import|export)\s/m.test(clientSource))
 check(
   'A7 只 require 平台种子模块',
   [...clientSource.matchAll(/require\((?:"|')([^"']+)(?:"|')\)/g)].every(([, specifier]) =>
-    ['react', 'react-dom', 'cordis', 'dsh-client-store', 'ui-slots', 'ui-primitives', 'ui-dockkit', '@deepseek-ai/dsh-client-ui-primitives'].includes(specifier),
+    [
+      'react',
+      'react-dom',
+      'cordis',
+      'dsh-client-store',
+      'ui-slots',
+      'ui-primitives',
+      'ui-dockkit',
+      '@deepseek-ai/dsh-client-ui-primitives',
+    ].includes(specifier),
   ),
   [...clientSource.matchAll(/require\((?:"|')([^"']+)(?:"|')\)/g)].map(([, s]) => s).join(', '),
 )
 check('A8 宿主半边零 import（磁盘路径解析不到裸模块）', !/^\s*import\s/m.test(hostSource))
-check('A9 两半边的路由字面量一致', hostSource.includes("'/api/mcp-manager'") && clientSource.includes('"/api/mcp-manager"'))
+check(
+  'A9 两半边的路由字面量一致',
+  hostSource.includes("'/api/mcp-manager'") && clientSource.includes('"/api/mcp-manager"'),
+)
 check('A10 两半边的组条目 id 一致', hostSource.includes("'mcp-manager'") && clientSource.includes('mcp-manager'))
 
 // 主题适配护栏：硬编码颜色在深色主题下会造成「白底白字」这类不可见文本。
@@ -108,7 +140,11 @@ check('A10 两半边的组条目 id 一致', hostSource.includes("'mcp-manager'"
     ['.mcpm-btn', 'border-radius:var(--dsw-radius-sm'],
   ]
   const badMetrics = missing(metrics)
-  check('A15 紧凑档尺寸（对齐官方 .sm / .rowActions）', badMetrics.length === 0, badMetrics.map(([c, d]) => `${c} { ${d} }`).join('; '))
+  check(
+    'A15 紧凑档尺寸（对齐官方 .sm / .rowActions）',
+    badMetrics.length === 0,
+    badMetrics.map(([c, d]) => `${c} { ${d} }`).join('; '),
+  )
   // 表单面板照抄官方 ui-settings-models：靠**底色**分层，不靠描边。
   const formMetrics = [
     ['.mcpm-form', 'background:var(--dsw-alias-bg-module-platform'],
@@ -126,7 +162,10 @@ check('A10 两半边的组条目 id 一致', hostSource.includes("'mcp-manager'"
   check('A17 操作区不换行（控件并排一行）', !/\.mcpm-actions\s*\{[^}]*flex-wrap/.test(code))
   // 传输方式与 URL 不占版面（只在名称 tooltip 里提供）。
   check('A18 行内不渲染 URL/传输方式详情', !clientSource.includes('mcpm-target'))
-  check('A19 启停用是按钮（不再是 switch）', !clientSource.includes('mcpm-switch') && /enabled \? "停用" : "启用"/.test(clientSource))
+  check(
+    'A19 启停用是按钮（不再是 switch）',
+    !clientSource.includes('mcpm-switch') && /enabled \? "停用" : "启用"/.test(clientSource),
+  )
   // 自适应：主体填满容器且可被压缩，长文本走省略号；卡片裁掉溢出，圆角不被分隔线破坏。
   const adaptive = [
     ['.mcpm-page', 'width:100%'],
@@ -142,7 +181,11 @@ check('A10 两半边的组条目 id 一致', hostSource.includes("'mcp-manager'"
     ['.mcpm-actions', 'flex:none'],
   ]
   const badAdaptive = missing(adaptive)
-  check('A26 自适应主体（填满 + 可压缩 + 省略号 + 不撑破）', badAdaptive.length === 0, badAdaptive.map(([c, d]) => `${c} { ${d} }`).join('; '))
+  check(
+    'A26 自适应主体（填满 + 可压缩 + 省略号 + 不撑破）',
+    badAdaptive.length === 0,
+    badAdaptive.map(([c, d]) => `${c} { ${d} }`).join('; '),
+  )
   check(
     'A26b 失败原因行可断行且不撑破卡片',
     ruleOf('.mcpm-rowError').includes('min-width:0') && ruleOf('.mcpm-rowError').includes('overflow-wrap:anywhere'),
@@ -179,17 +222,30 @@ check('A10 两半边的组条目 id 一致', hostSource.includes("'mcp-manager'"
   // 行内操作必须是「宿主侧定点操作」，不能把整份数组回传——回传会因字段形状差异静默丢字段。
   check(
     'A20 客户端用定点操作而非整数组回传',
-    clientSource.includes('op: "setEnabled"') && clientSource.includes('op: "remove"') && clientSource.includes('op: "save"'),
+    clientSource.includes('op: "setEnabled"') &&
+      clientSource.includes('op: "remove"') &&
+      clientSource.includes('op: "save"'),
   )
   check(
     'A21 宿主支持三种操作',
-    hostSource.includes("case 'setEnabled'") && hostSource.includes("case 'remove'") && hostSource.includes("case 'save'"),
+    hostSource.includes("case 'setEnabled'") &&
+      hostSource.includes("case 'remove'") &&
+      hostSource.includes("case 'save'"),
   )
   // 已实测的字段丢失根因：toRecord 不认「快照回传的对象」形状。
-  check('A22 toRecord 认对象形状（否则 headers/env 被静默清空）', /typeof value === 'object' && !Array\.isArray\(value\)/.test(hostSource))
+  check(
+    'A22 toRecord 认对象形状（否则 headers/env 被静默清空）',
+    /typeof value === 'object' && !Array\.isArray\(value\)/.test(hostSource),
+  )
   // 宿主半边不参与热重载，所以客户端必须能同时说两代协议。
-  check('A23 客户端做能力协商', /supports\(snapshot,\s*"setEnabled"\)/.test(clientSource) && clientSource.includes('capabilities'))
-  check('A24 宿主声明 capabilities', hostSource.includes("capabilities: ['setEnabled', 'remove', 'save', 'lastError', 'probe', 'tools']"))
+  check(
+    'A23 客户端做能力协商',
+    /supports\(snapshot,\s*"setEnabled"\)/.test(clientSource) && clientSource.includes('capabilities'),
+  )
+  check(
+    'A24 宿主声明 capabilities',
+    hostSource.includes("capabilities: ['setEnabled', 'remove', 'save', 'lastError', 'probe', 'tools']"),
+  )
   // 失败原因必须由宿主自己从 ctx.logger 里捞：mcp-client 默认 failOnStartupError=false，
   // 连接失败不会让 fiber 变 FAILED，而内置日志缓冲的默认阈值是 1（WARN=2 会被丢掉）。
   check(
@@ -217,25 +273,32 @@ check('A10 两半边的组条目 id 一致', hostSource.includes("'mcp-manager'"
   // 远程 https://mcp.context7.com/mcp 冷路径 1.6–3.0s、热连接 ~360ms，局域网服务器 3–10ms。
   // 3s 正好卡在冷路径的抖动边缘 → 配置正确的远程服务器被反复报成假红
   // 「超时（3s）：服务器没有响应」。取 8s ≈ 2.7 倍余量，别再退回 3s。
-  check(
-    'A24f 探测预算留够冷连接余量（≥8s）',
-    probeBudgetMs >= 8000,
-    `budget=${String(probeBudgetMs)}ms`,
-  )
+  check('A24f 探测预算留够冷连接余量（≥8s）', probeBudgetMs >= 8000, `budget=${String(probeBudgetMs)}ms`)
   // 退回整数组提交时，env/headers 必须转成旧宿主认识的文本形状，否则又会被清空。
   {
-    const block = clientSource.slice(clientSource.indexOf('function serverOfExisting'), clientSource.indexOf('function supports'))
+    const block = clientSource.slice(
+      clientSource.indexOf('function serverOfExisting'),
+      clientSource.indexOf('function supports'),
+    )
     check(
       'A25 回退路径把 env/headers/args 转成文本',
-      block.includes('flat.env = pairsToText') && block.includes('flat.headers = pairsToText') && block.includes('flat.args = config.args.join'),
+      block.includes('flat.env = pairsToText') &&
+        block.includes('flat.headers = pairsToText') &&
+        block.includes('flat.args = config.args.join'),
     )
   }
 }
 
 // 布局护栏：动作按钮与长说明文字不能挤在同一个 flex 行里抢宽度。
 {
-  check('A13 标题行与说明文字分层（heading/titleRow）', clientSource.includes('mcpm-heading') && clientSource.includes('mcpm-titleRow'))
-  const headerBlock = clientSource.slice(clientSource.indexOf('const header = h('), clientSource.indexOf('if (loadError !== null)'))
+  check(
+    'A13 标题行与说明文字分层（heading/titleRow）',
+    clientSource.includes('mcpm-heading') && clientSource.includes('mcpm-titleRow'),
+  )
+  const headerBlock = clientSource.slice(
+    clientSource.indexOf('const header = h('),
+    clientSource.indexOf('if (loadError !== null)'),
+  )
   const rowAt = headerBlock.indexOf('mcpm-titleRow')
   const subtitleAt = headerBlock.indexOf('mcpm-subtitle')
   check('A14 说明文字在标题行之外', rowAt >= 0 && subtitleAt > rowAt)
@@ -290,9 +353,11 @@ check('A10 两半边的组条目 id 一致', hostSource.includes("'mcp-manager'"
   const code = clientSource.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
   check(
     'A35 导航标记用官方 data 锚点，不依赖 CSS-module 哈希类名',
-    code.includes("'[data-shortcut-modal=\"settings\"]'") || code.includes('NAV_DIALOG_SELECTOR = \'[data-shortcut-modal="settings"]\''),
+    code.includes('\'[data-shortcut-modal="settings"]\'') ||
+      code.includes('NAV_DIALOG_SELECTOR = \'[data-shortcut-modal="settings"]\''),
   )
-  check('A36 导航标记只 setAttribute/removeAttribute，不改 React 节点树', 
+  check(
+    'A36 导航标记只 setAttribute/removeAttribute，不改 React 节点树',
     /cell\.setAttribute\(NAV_ATTRIBUTE, "1"\)/.test(code) &&
       /removeAttribute\(NAV_ATTRIBUTE\)/.test(code) &&
       !/document\.body\.append|\.removeChild\(|innerHTML/.test(code),
@@ -330,11 +395,23 @@ check('B2 导出 apply', typeof host.apply === 'function')
  * @param registeredTools - 可选：假 `ctx.tools` 注册表里**全部**工具名（宿主按
  *   `mcp__<serverName>__` 前缀归属给某台服务器，所以这里要把别人的工具也放进来）。
  */
-function makeHostCtx({ configRows = [], mcpChildren = [], withLogger = true, layers = undefined, registeredTools = undefined } = {}) {
+function makeHostCtx({
+  configRows = [],
+  mcpChildren = [],
+  withLogger = true,
+  layers = undefined,
+  registeredTools = undefined,
+} = {}) {
   const captured = { deps: null, route: null, writes: [], exporters: [] }
   const state = { rows: structuredClone(configRows) }
   const groupEntry = {
-    options: { id: 'mcp-manager', name: 'cordis:group', get config() { return state.rows } },
+    options: {
+      id: 'mcp-manager',
+      name: 'cordis:group',
+      get config() {
+        return state.rows
+      },
+    },
   }
   /** cordis LoggerLevel：ERROR=0 / INFO=1 / WARN=2 / DEBUG=3（数字越大越啰嗦）。 */
   const LEVELS = { error: 0, info: 1, warn: 2, debug: 3 }
@@ -346,7 +423,14 @@ function makeHostCtx({ configRows = [], mcpChildren = [], withLogger = true, lay
   /** 把一条结构化日志喂给宿主注册的 exporter，模拟 mcp-client 自己打的日志。 */
   const log = (type, text, ts = 1_700_000_000_000) => {
     for (const exporter of captured.exporters) {
-      exporter.export({ sn: captured.exporters.length, ts, type, level: LEVELS[type], name: 'mcp-client', args: [text] })
+      exporter.export({
+        sn: captured.exporters.length,
+        ts,
+        type,
+        level: LEVELS[type],
+        name: 'mcp-client',
+        args: [text],
+      })
     }
   }
   const ctx = {
@@ -407,13 +491,25 @@ function makeHostCtx({ configRows = [], mcpChildren = [], withLogger = true, lay
 {
   const { ctx, captured } = makeHostCtx({
     configRows: [
-      { id: 'abc123', name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 'context7', transport: 'streamable-http', url: 'https://mcp.context7.com/mcp' } },
-      { name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 'fs', transport: 'stdio', command: 'npx' }, disabled: true },
+      {
+        id: 'abc123',
+        name: '@deepseek-ai/dsh-mcp-client',
+        config: { serverName: 'context7', transport: 'streamable-http', url: 'https://mcp.context7.com/mcp' },
+      },
+      {
+        name: '@deepseek-ai/dsh-mcp-client',
+        config: { serverName: 'fs', transport: 'stdio', command: 'npx' },
+        disabled: true,
+      },
     ],
     mcpChildren: [{ id: 'abc123', config: { serverName: 'context7' }, state: 2 }],
   })
   host.apply(ctx)
-  check('B3 声明了三个依赖', same(captured.deps, ['connection', 'configEditor', 'loader']), JSON.stringify(captured.deps))
+  check(
+    'B3 声明了三个依赖',
+    same(captured.deps, ['connection', 'configEditor', 'loader']),
+    JSON.stringify(captured.deps),
+  )
   check('B4 注册了路由', captured.route !== null)
   check('B5 路由路径', captured.route?.path === '/api/mcp-manager', String(captured.route?.path))
   check('B6 路由方法', same(captured.route?.methods, ['GET', 'POST']), JSON.stringify(captured.route?.methods))
@@ -424,7 +520,11 @@ function makeHostCtx({ configRows = [], mcpChildren = [], withLogger = true, lay
   const getBody = await getResponse.json()
   check('B8 GET 200', getResponse.status === 200, String(getResponse.status))
   check('B9 GET 汇报 configured', getBody.data?.configured === true)
-  check('B9b GET 声明 capabilities', same(getBody.data?.capabilities, ['setEnabled', 'remove', 'save', 'lastError', 'probe', 'tools']), JSON.stringify(getBody.data?.capabilities))
+  check(
+    'B9b GET 声明 capabilities',
+    same(getBody.data?.capabilities, ['setEnabled', 'remove', 'save', 'lastError', 'probe', 'tools']),
+    JSON.stringify(getBody.data?.capabilities),
+  )
   check('B10 GET 列出 2 台服务器', getBody.data?.servers?.length === 2, JSON.stringify(getBody.data?.servers?.length))
   check('B11 第一台运行中', getBody.data?.servers?.[0]?.phase === 'active', String(getBody.data?.servers?.[0]?.phase))
   check('B12 第二台 disabled', getBody.data?.servers?.[1]?.disabled === true)
@@ -436,7 +536,13 @@ function makeHostCtx({ configRows = [], mcpChildren = [], withLogger = true, lay
       body: JSON.stringify({
         op: 'save',
         servers: [
-          { rowId: 'abc123', serverName: 'context7', transport: 'streamable-http', url: 'https://mcp.context7.com/mcp', headers: 'Authorization=Bearer x' },
+          {
+            rowId: 'abc123',
+            serverName: 'context7',
+            transport: 'streamable-http',
+            url: 'https://mcp.context7.com/mcp',
+            headers: 'Authorization=Bearer x',
+          },
           { serverName: 'fs', transport: 'stdio', command: 'npx', args: '-y\npkg', env: 'A=1\n# comment\nB=2' },
         ],
       }),
@@ -448,14 +554,29 @@ function makeHostCtx({ configRows = [], mcpChildren = [], withLogger = true, lay
   check('B15 写的是数组', Array.isArray(written), JSON.stringify(written))
   check('B16 保留 rowId', written?.[0]?.id === 'abc123', JSON.stringify(written?.[0]))
   check('B17 条目名是 mcp 包', written?.[0]?.name === '@deepseek-ai/dsh-mcp-client')
-  check('B18 headers 解析成对象', same(written?.[0]?.config?.headers, { Authorization: 'Bearer x' }), JSON.stringify(written?.[0]?.config?.headers))
-  check('B19 args 按行拆分', same(written?.[1]?.config?.args, ['-y', 'pkg']), JSON.stringify(written?.[1]?.config?.args))
-  check('B20 env 忽略注释行', same(written?.[1]?.config?.env, { A: '1', B: '2' }), JSON.stringify(written?.[1]?.config?.env))
+  check(
+    'B18 headers 解析成对象',
+    same(written?.[0]?.config?.headers, { Authorization: 'Bearer x' }),
+    JSON.stringify(written?.[0]?.config?.headers),
+  )
+  check(
+    'B19 args 按行拆分',
+    same(written?.[1]?.config?.args, ['-y', 'pkg']),
+    JSON.stringify(written?.[1]?.config?.args),
+  )
+  check(
+    'B20 env 忽略注释行',
+    same(written?.[1]?.config?.env, { A: '1', B: '2' }),
+    JSON.stringify(written?.[1]?.config?.env),
+  )
 
   const badName = await captured.route.fetch(
     new Request('http://localhost/api/mcp-manager', {
       method: 'POST',
-      body: JSON.stringify({ op: 'save', servers: [{ serverName: 'bad name!', transport: 'streamable-http', url: 'x' }] }),
+      body: JSON.stringify({
+        op: 'save',
+        servers: [{ serverName: 'bad name!', transport: 'streamable-http', url: 'x' }],
+      }),
     }),
   )
   check('B21 非法 serverName → 409', badName.status === 409, String(badName.status))
@@ -484,7 +605,14 @@ function makeHostCtx({ configRows = [], mcpChildren = [], withLogger = true, lay
         effect: (factory) => factory(),
         configEditor: { entries: () => [], configuration: () => [], edit: async () => {} },
         loader: { entries: () => [] },
-        connection: { fetch: { register: (route) => { captured.route = route; return async () => {} } } },
+        connection: {
+          fetch: {
+            register: (route) => {
+              captured.route = route
+              return async () => {}
+            },
+          },
+        },
       })
     },
   })
@@ -492,7 +620,10 @@ function makeHostCtx({ configRows = [], mcpChildren = [], withLogger = true, lay
   const body = await response.json()
   check('B25 组条目缺失时 configured=false', body.data?.configured === false, JSON.stringify(body.data))
   const save = await captured.route.fetch(
-    new Request('http://localhost/api/mcp-manager', { method: 'POST', body: JSON.stringify({ op: 'save', servers: [] }) }),
+    new Request('http://localhost/api/mcp-manager', {
+      method: 'POST',
+      body: JSON.stringify({ op: 'save', servers: [] }),
+    }),
   )
   check('B26 组条目缺失时写入 → 409', save.status === 409, String(save.status))
 }
@@ -517,7 +648,9 @@ function makeHostCtx({ configRows = [], mcpChildren = [], withLogger = true, lay
   const { ctx, captured } = makeHostCtx({ configRows: [context7, other] })
   host.apply(ctx)
   const post = (payload) =>
-    captured.route.fetch(new Request('http://localhost/api/mcp-manager', { method: 'POST', body: JSON.stringify(payload) }))
+    captured.route.fetch(
+      new Request('http://localhost/api/mcp-manager', { method: 'POST', body: JSON.stringify(payload) }),
+    )
 
   const off = await post({ op: 'setEnabled', serverName: 'context7', enabled: false })
   const offBody = await off.json()
@@ -530,7 +663,11 @@ function makeHostCtx({ configRows = [], mcpChildren = [], withLogger = true, lay
     JSON.stringify(offRows?.[0]?.config),
   )
   check('B30 停用没有动另一行', same(offRows?.[1], other), JSON.stringify(offRows?.[1]))
-  check('B31 响应里 context7 已是停用', offBody.data?.servers?.[0]?.disabled === true, JSON.stringify(offBody.data?.servers?.[0]))
+  check(
+    'B31 响应里 context7 已是停用',
+    offBody.data?.servers?.[0]?.disabled === true,
+    JSON.stringify(offBody.data?.servers?.[0]),
+  )
 
   const on = await post({ op: 'setEnabled', serverName: 'context7', enabled: true })
   const onBody = await on.json()
@@ -542,12 +679,24 @@ function makeHostCtx({ configRows = [], mcpChildren = [], withLogger = true, lay
     same(onRows?.[0]?.config?.headers, { Authorization: 'Bearer secret' }),
     JSON.stringify(onRows?.[0]?.config),
   )
-  check('B35 响应里 context7 已启用', onBody.data?.servers?.[0]?.disabled === false, JSON.stringify(onBody.data?.servers?.[0]))
+  check(
+    'B35 响应里 context7 已启用',
+    onBody.data?.servers?.[0]?.disabled === false,
+    JSON.stringify(onBody.data?.servers?.[0]),
+  )
 
   const gone = await post({ op: 'remove', serverName: 'fs' })
   const goneBody = await gone.json()
-  check('B36 删除 → 200 且只剩一台', gone.status === 200 && goneBody.data?.servers?.length === 1, JSON.stringify(goneBody.data?.servers))
-  check('B37 删掉的是 fs，context7 完好', goneBody.data?.servers?.[0]?.config?.serverName === 'context7', JSON.stringify(goneBody.data?.servers))
+  check(
+    'B36 删除 → 200 且只剩一台',
+    gone.status === 200 && goneBody.data?.servers?.length === 1,
+    JSON.stringify(goneBody.data?.servers),
+  )
+  check(
+    'B37 删掉的是 fs，context7 完好',
+    goneBody.data?.servers?.[0]?.config?.serverName === 'context7',
+    JSON.stringify(goneBody.data?.servers),
+  )
 
   const miss = await post({ op: 'setEnabled', serverName: 'nope', enabled: false })
   check('B38 名字找不到 → 409', miss.status === 409, String(miss.status))
@@ -565,7 +714,11 @@ function makeHostCtx({ configRows = [], mcpChildren = [], withLogger = true, lay
     ],
   })
   const formRows = captured.writes.at(-1)
-  check('B39 表单提交也保留对象形状的 headers', form.status === 200 && same(formRows?.[0]?.config?.headers, { Authorization: 'Bearer kept' }), JSON.stringify(formRows?.[0]?.config))
+  check(
+    'B39 表单提交也保留对象形状的 headers',
+    form.status === 200 && same(formRows?.[0]?.config?.headers, { Authorization: 'Bearer kept' }),
+    JSON.stringify(formRows?.[0]?.config),
+  )
 
   // 回退路径（宿主半边尚未重载时走的就是它）：客户端发的是「多行文本」形状。
   const fallback = await post({
@@ -601,7 +754,10 @@ function makeHostCtx({ configRows = [], mcpChildren = [], withLogger = true, lay
   // `failOnStartupError:false` —— 连不上也保持 ACTIVE，于是永远显示「运行中」。
   const { ctx, captured, log } = makeHostCtx({
     configRows: [
-      { name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 'context7', transport: 'streamable-http', url: 'https://mcp.context7.com/mcp' } },
+      {
+        name: '@deepseek-ai/dsh-mcp-client',
+        config: { serverName: 'context7', transport: 'streamable-http', url: 'https://mcp.context7.com/mcp' },
+      },
       { name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 'fs', transport: 'stdio', command: 'npx' } },
     ],
     mcpChildren: [
@@ -637,11 +793,19 @@ function makeHostCtx({ configRows = [], mcpChildren = [], withLogger = true, lay
     warned.servers?.[0]?.error?.level === 'warn' && warned.servers?.[0]?.error?.at === 1_700_000_000_000,
     JSON.stringify(warned.servers?.[0]?.error),
   )
-  check('B48 只影响这一台（另一台仍无记录）', !('error' in (warned.servers?.[1] ?? {})), JSON.stringify(warned.servers?.[1]))
+  check(
+    'B48 只影响这一台（另一台仍无记录）',
+    !('error' in (warned.servers?.[1] ?? {})),
+    JSON.stringify(warned.servers?.[1]),
+  )
 
   log('warn', 'mcp-client(context7): connection failed; retrying in 500ms (attempt 2/10)')
   const counted = await snapshotOf()
-  check('B49 同一台多次失败累计 count', counted.servers?.[0]?.error?.count === 2, JSON.stringify(counted.servers?.[0]?.error))
+  check(
+    'B49 同一台多次失败累计 count',
+    counted.servers?.[0]?.error?.count === 2,
+    JSON.stringify(counted.servers?.[0]?.error),
+  )
 
   // 别的子系统的 error 不能算到服务器头上，否则任意一条宿主报错都会让页面报「运行异常」。
   // 这一行特意**内嵌**了 mcp-client 的形状：只有锚定行首（^）才不会把无关日志误认成故障。
@@ -653,7 +817,8 @@ function makeHostCtx({ configRows = [], mcpChildren = [], withLogger = true, lay
     JSON.stringify(unrelated.servers?.[1]?.error),
   )
 
-  const givingUp = 'giving up after 10 consecutive failed reconnect attempts — tools unregistered; reload the plugin or restart the Host to reconnect'
+  const givingUp =
+    'giving up after 10 consecutive failed reconnect attempts — tools unregistered; reload the plugin or restart the Host to reconnect'
   log('error', `mcp-client(fs): ${givingUp}`)
   check(
     'B51 error 级也采集（放弃重连也要看得见）',
@@ -681,7 +846,12 @@ function makeHostCtx({ configRows = [], mcpChildren = [], withLogger = true, lay
 {
   // 边界：超长原文必须截断（一条日志可能是整段栈），且缺 logger 的宿主替身不能崩。
   const long = makeHostCtx({
-    configRows: [{ name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 'x', transport: 'streamable-http', url: 'https://x' } }],
+    configRows: [
+      {
+        name: '@deepseek-ai/dsh-mcp-client',
+        config: { serverName: 'x', transport: 'streamable-http', url: 'https://x' },
+      },
+    ],
   })
   host.apply(long.ctx)
   long.log('error', `mcp-client(x): ${'E'.repeat(4000)}`)
@@ -693,7 +863,12 @@ function makeHostCtx({ configRows = [], mcpChildren = [], withLogger = true, lay
   )
 
   const bare = makeHostCtx({
-    configRows: [{ name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 'y', transport: 'streamable-http', url: 'https://y' } }],
+    configRows: [
+      {
+        name: '@deepseek-ai/dsh-mcp-client',
+        config: { serverName: 'y', transport: 'streamable-http', url: 'https://y' },
+      },
+    ],
     withLogger: false,
   })
   let crashed = false
@@ -703,8 +878,14 @@ function makeHostCtx({ configRows = [], mcpChildren = [], withLogger = true, lay
     crashed = true
     void error
   }
-  const bareBody = crashed ? null : await (await bare.captured.route.fetch(new Request('http://localhost/api/mcp-manager'))).json()
-  check('B55 没有 logger 服务时优雅降级（不抛、路由照常）', crashed === false && bareBody?.data?.servers?.length === 1, `crashed=${String(crashed)}`)
+  const bareBody = crashed
+    ? null
+    : await (await bare.captured.route.fetch(new Request('http://localhost/api/mcp-manager'))).json()
+  check(
+    'B55 没有 logger 服务时优雅降级（不抛、路由照常）',
+    crashed === false && bareBody?.data?.servers?.length === 1,
+    `crashed=${String(crashed)}`,
+  )
 }
 
 {
@@ -712,8 +893,15 @@ function makeHostCtx({ configRows = [], mcpChildren = [], withLogger = true, lay
   // 数值取自 cordis FiberState（PENDING=0/LOADING=1/ACTIVE=2/FAILED=3/DISPOSED=4/UNLOADING=5）。
   const rowsOf = (states) => {
     const { ctx, captured } = makeHostCtx({
-      configRows: states.map((_, index) => ({ name: '@deepseek-ai/dsh-mcp-client', config: { serverName: `s${String(index)}`, transport: 'streamable-http', url: 'https://x' } })),
-      mcpChildren: states.map((state, index) => ({ id: `s${String(index)}`, config: { serverName: `s${String(index)}` }, state })),
+      configRows: states.map((_, index) => ({
+        name: '@deepseek-ai/dsh-mcp-client',
+        config: { serverName: `s${String(index)}`, transport: 'streamable-http', url: 'https://x' },
+      })),
+      mcpChildren: states.map((state, index) => ({
+        id: `s${String(index)}`,
+        config: { serverName: `s${String(index)}` },
+        state,
+      })),
     })
     host.apply(ctx)
     return captured.route.fetch(new Request('http://localhost/api/mcp-manager')).then((response) => response.json())
@@ -733,12 +921,28 @@ function makeHostCtx({ configRows = [], mcpChildren = [], withLogger = true, lay
   const url = (n) => `http://10.9.9.${String(n)}/mcp`
   const { ctx, captured } = makeHostCtx({
     configRows: [
-      { name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 'ok', transport: 'streamable-http', url: url(1), headers: { 'x-token': 'tok' } } },
-      { name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 'auth', transport: 'streamable-http', url: url(3) } },
-      { name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 'dead', transport: 'streamable-http', url: url(2) } },
-      { name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 'notmcp', transport: 'streamable-http', url: url(5) } },
+      {
+        name: '@deepseek-ai/dsh-mcp-client',
+        config: { serverName: 'ok', transport: 'streamable-http', url: url(1), headers: { 'x-token': 'tok' } },
+      },
+      {
+        name: '@deepseek-ai/dsh-mcp-client',
+        config: { serverName: 'auth', transport: 'streamable-http', url: url(3) },
+      },
+      {
+        name: '@deepseek-ai/dsh-mcp-client',
+        config: { serverName: 'dead', transport: 'streamable-http', url: url(2) },
+      },
+      {
+        name: '@deepseek-ai/dsh-mcp-client',
+        config: { serverName: 'notmcp', transport: 'streamable-http', url: url(5) },
+      },
       { name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 'local', transport: 'stdio', command: 'npx' } },
-      { name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 'off', transport: 'streamable-http', url: url(9) }, disabled: true },
+      {
+        name: '@deepseek-ai/dsh-mcp-client',
+        config: { serverName: 'off', transport: 'streamable-http', url: url(9) },
+        disabled: true,
+      },
     ],
     mcpChildren: [],
   })
@@ -749,19 +953,24 @@ function makeHostCtx({ configRows = [], mcpChildren = [], withLogger = true, lay
   const SSE_OK = 'event: message\ndata: {"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"ok"}}}\n\n'
   globalThis.fetch = async (target, init) => {
     calls.push({ target, init })
-    if (target === url(1)) return new Response(SSE_OK, { status: 200, headers: { 'content-type': 'text/event-stream' } })
-    if (target === url(3)) return new Response('{"error":"token expired"}', { status: 401, headers: { 'content-type': 'application/json' } })
+    if (target === url(1))
+      return new Response(SSE_OK, { status: 200, headers: { 'content-type': 'text/event-stream' } })
+    if (target === url(3))
+      return new Response('{"error":"token expired"}', { status: 401, headers: { 'content-type': 'application/json' } })
     if (target === url(2)) {
       const error = new TypeError('fetch failed')
       error.cause = new Error('connect ECONNREFUSED 10.9.9.2:80')
       throw error
     }
-    if (target === url(5)) return new Response('<html>hello</html>', { status: 200, headers: { 'content-type': 'text/html' } })
+    if (target === url(5))
+      return new Response('<html>hello</html>', { status: 200, headers: { 'content-type': 'text/html' } })
     throw new Error(`unexpected probe target: ${target}`)
   }
 
   const probe = async (payload = { op: 'probe' }) => {
-    const response = await captured.route.fetch(new Request('http://localhost/api/mcp-manager', { method: 'POST', body: JSON.stringify(payload) }))
+    const response = await captured.route.fetch(
+      new Request('http://localhost/api/mcp-manager', { method: 'POST', body: JSON.stringify(payload) }),
+    )
     return { status: response.status, body: await response.json() }
   }
   const byName = (body, name) => body.data?.servers?.find((server) => server.config?.serverName === name)
@@ -769,7 +978,11 @@ function makeHostCtx({ configRows = [], mcpChildren = [], withLogger = true, lay
   try {
     const result = await probe()
     check('B57 探测返回 200', result.status === 200, JSON.stringify(result.body).slice(0, 200))
-    check('B58 探测只打启用中的服务器（停用的不发请求）', calls.length === 4 && !calls.some((call) => call.target === url(9)), `${String(calls.length)} calls`)
+    check(
+      'B58 探测只打启用中的服务器（停用的不发请求）',
+      calls.length === 4 && !calls.some((call) => call.target === url(9)),
+      `${String(calls.length)} calls`,
+    )
 
     const sent = calls.find((call) => call.target === url(1))
     check(
@@ -781,7 +994,11 @@ function makeHostCtx({ configRows = [], mcpChildren = [], withLogger = true, lay
       JSON.stringify(sent?.init?.headers),
     )
 
-    check('B60 探测通过 → connected:true', byName(result.body, 'ok')?.probe?.connected === true, JSON.stringify(byName(result.body, 'ok')?.probe))
+    check(
+      'B60 探测通过 → connected:true',
+      byName(result.body, 'ok')?.probe?.connected === true,
+      JSON.stringify(byName(result.body, 'ok')?.probe),
+    )
     check(
       'B61 HTTP 401 → connected:false 且带上状态与响应片段',
       byName(result.body, 'auth')?.probe?.connected === false &&
@@ -791,39 +1008,58 @@ function makeHostCtx({ configRows = [], mcpChildren = [], withLogger = true, lay
     )
     check(
       'B62 TCP 拒绝 → 报出 cause 里的真实原因（不是无用的 "fetch failed"）',
-      byName(result.body, 'dead')?.probe?.connected === false && byName(result.body, 'dead')?.probe?.detail.includes('ECONNREFUSED'),
+      byName(result.body, 'dead')?.probe?.connected === false &&
+        byName(result.body, 'dead')?.probe?.detail.includes('ECONNREFUSED'),
       JSON.stringify(byName(result.body, 'dead')?.probe),
     )
     check(
       'B63 200 但不是 MCP → connected:false（防止把 HTML 门户当成可用服务器）',
-      byName(result.body, 'notmcp')?.probe?.connected === false && byName(result.body, 'notmcp')?.probe?.detail.includes('不是 MCP'),
+      byName(result.body, 'notmcp')?.probe?.connected === false &&
+        byName(result.body, 'notmcp')?.probe?.detail.includes('不是 MCP'),
       JSON.stringify(byName(result.body, 'notmcp')?.probe),
     )
     check(
       'B64 stdio 无法探测 → connected:null（不谎报失败）',
-      byName(result.body, 'local')?.probe?.connected === null && byName(result.body, 'local')?.probe?.detail.includes('stdio'),
+      byName(result.body, 'local')?.probe?.connected === null &&
+        byName(result.body, 'local')?.probe?.detail.includes('stdio'),
       JSON.stringify(byName(result.body, 'local')?.probe),
     )
     check('B65 停用的服务器不被探测（快照里没有 probe）', !('probe' in (byName(result.body, 'off') ?? {})))
 
     const one = await probe({ op: 'probe', serverName: 'ok' })
-    check('B66 可以只探一台', one.status === 200 && calls.length === 5, `${String(one.status)} calls=${String(calls.length)}`)
+    check(
+      'B66 可以只探一台',
+      one.status === 200 && calls.length === 5,
+      `${String(one.status)} calls=${String(calls.length)}`,
+    )
     const missing = await probe({ op: 'probe', serverName: 'nope' })
     check('B67 探测不存在的服务器 → 409', missing.status === 409, String(missing.status))
 
     // 配置写入会重建子条目 → 旧探测结论必须失效，否则"改完 url 还显示上一次的结果"。
     const written = await captured.route.fetch(
-      new Request('http://localhost/api/mcp-manager', { method: 'POST', body: JSON.stringify({ op: 'setEnabled', serverName: 'ok', enabled: false }) }),
+      new Request('http://localhost/api/mcp-manager', {
+        method: 'POST',
+        body: JSON.stringify({ op: 'setEnabled', serverName: 'ok', enabled: false }),
+      }),
     )
     const writtenBody = await written.json()
-    check('B68 配置写入清空旧探测结果', !('probe' in (byName(writtenBody, 'ok') ?? {})), JSON.stringify(byName(writtenBody, 'ok')?.probe))
+    check(
+      'B68 配置写入清空旧探测结果',
+      !('probe' in (byName(writtenBody, 'ok') ?? {})),
+      JSON.stringify(byName(writtenBody, 'ok')?.probe),
+    )
   } finally {
     globalThis.fetch = realFetch
   }
 
   // 挂死的服务器：必须在自己的预算内判定"超时"，不能把 UI 永久卡住。
   const { ctx: hangCtx, captured: hangCaptured } = makeHostCtx({
-    configRows: [{ name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 'slow', transport: 'streamable-http', url: url(7) } }],
+    configRows: [
+      {
+        name: '@deepseek-ai/dsh-mcp-client',
+        config: { serverName: 'slow', transport: 'streamable-http', url: url(7) },
+      },
+    ],
   })
   host.apply(hangCtx)
   globalThis.fetch = (_target, init) =>
@@ -890,8 +1126,14 @@ function makeHostCtx({ configRows = [], mcpChildren = [], withLogger = true, lay
   // 每台服务器"当前注册了几个工具、分别叫什么"。宿主问的是**注册表**（`ctx.tools.schemas()`），
   // 不是再发一次 `tools/list`：注册表就是模型此刻真正能调用的集合，连不上的服务器自然没有名字。
   {
-    const context7 = { name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 'context7', transport: 'streamable-http', url: 'https://x' } }
-    const gva = { name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 'gva', transport: 'streamable-http', url: 'https://y' } }
+    const context7 = {
+      name: '@deepseek-ai/dsh-mcp-client',
+      config: { serverName: 'context7', transport: 'streamable-http', url: 'https://x' },
+    }
+    const gva = {
+      name: '@deepseek-ai/dsh-mcp-client',
+      config: { serverName: 'gva', transport: 'streamable-http', url: 'https://y' },
+    }
     // 故意乱序、混入别人的工具和非 MCP 工具：归属只认 `mcp__<serverName>__` 前缀。
     const registry = [
       'mcp__context7__query-docs',
@@ -916,7 +1158,10 @@ function makeHostCtx({ configRows = [], mcpChildren = [], withLogger = true, lay
         same(byName.gva.tools.names, ['mcp__gva__create_api', 'mcp__gva__list_all_apis']),
       JSON.stringify([byName.context7.tools.names, byName.gva.tools.names]),
     )
-    check('B73 工具名单已排序（与注册顺序无关，展示才稳定）', same(byName.context7.tools.names, [...byName.context7.tools.names].sort()))
+    check(
+      'B73 工具名单已排序（与注册顺序无关，展示才稳定）',
+      same(byName.context7.tools.names, [...byName.context7.tools.names].sort()),
+    )
     check(
       'B74 宿主声明 tools 能力（客户端据此决定要不要渲染那块）',
       body.data.capabilities.includes('tools'),
@@ -927,7 +1172,12 @@ function makeHostCtx({ configRows = [], mcpChildren = [], withLogger = true, lay
   // 没有任何工具注册（服务器没连上 / 工具同步失败）：如实报 0，不谎报"有工具"。
   {
     const { ctx, captured } = makeHostCtx({
-      configRows: [{ name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 'down', transport: 'streamable-http', url: 'https://z' } }],
+      configRows: [
+        {
+          name: '@deepseek-ai/dsh-mcp-client',
+          config: { serverName: 'down', transport: 'streamable-http', url: 'https://z' },
+        },
+      ],
       registeredTools: ['read_image'],
     })
     host.apply(ctx)
@@ -943,7 +1193,12 @@ function makeHostCtx({ configRows = [], mcpChildren = [], withLogger = true, lay
   // 宿主没有 tools 服务（老宿主 / 测试替身）：不写这个键，客户端就不渲染那块（向前兼容）。
   {
     const { ctx, captured } = makeHostCtx({
-      configRows: [{ name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 's', transport: 'streamable-http', url: 'https://x' } }],
+      configRows: [
+        {
+          name: '@deepseek-ai/dsh-mcp-client',
+          config: { serverName: 's', transport: 'streamable-http', url: 'https://x' },
+        },
+      ],
     })
     host.apply(ctx)
     const response = await captured.route.fetch(new Request('http://localhost/api/mcp-manager'))
@@ -1016,7 +1271,11 @@ check('C6 注册了一个座位条目', registrations.length === 1, String(regis
 const { options, component } = registrations[0] ?? {}
 check('C7 座位名', options?.name === 'settings.section', String(options?.name))
 check('C8 条目 id', options?.id === 'mcp', String(options?.id))
-check('C9 order 落在最下方（>= 官方页）', typeof options?.order === 'number' && options.order >= 500, String(options?.order))
+check(
+  'C9 order 落在最下方（>= 官方页）',
+  typeof options?.order === 'number' && options.order >= 500,
+  String(options?.order),
+)
 check('C10 label 可解析', (typeof options?.label === 'function' ? options.label() : options?.label) === 'MCP')
 check('C11 组件是函数', typeof component === 'function')
 // 导航标记必须走 ctx.effect 登记，否则插件卸载/热替换后 observer 会留在页面上。
@@ -1128,9 +1387,7 @@ check(
   domEffects[0].dispose()
   check(
     'C17 卸载时摘掉 observer 与标记',
-    beforeDispose === '1' &&
-      observers[0].disconnected === true &&
-      reopened.getAttribute('data-mcpm-nav') === null,
+    beforeDispose === '1' && observers[0].disconnected === true && reopened.getAttribute('data-mcpm-nav') === null,
     `before=${String(beforeDispose)} after=${String(reopened.getAttribute('data-mcpm-nav'))}`,
   )
 }
@@ -1190,14 +1447,18 @@ check(
   /** 把 element 树展开成宿主元素树（函数组件会被真正调用）。 */
   function render(node, values) {
     if (node === null || node === undefined || typeof node === 'boolean') return null
-    if (typeof node === 'string' || typeof node === 'number') return { type: '#text', props: { text: String(node) }, children: [] }
+    if (typeof node === 'string' || typeof node === 'number')
+      return { type: '#text', props: { text: String(node) }, children: [] }
     if (Array.isArray(node)) return node.map((child) => render(child, values)).filter(Boolean)
     if (typeof node.type === 'function') {
       hookValues = values[node.type.name] ?? []
       hookIndex = 0
       return render(node.type(node.props), values)
     }
-    const children = (node.children ?? []).flat().map((child) => render(child, values)).filter(Boolean)
+    const children = (node.children ?? [])
+      .flat()
+      .map((child) => render(child, values))
+      .filter(Boolean)
     return { type: node.type, props: node.props, children }
   }
 
@@ -1216,7 +1477,8 @@ check(
     })
     return out
   }
-  const classesOf = (tree) => collect(tree, (n) => (typeof n.props?.className === 'string' ? n.props.className : undefined))
+  const classesOf = (tree) =>
+    collect(tree, (n) => (typeof n.props?.className === 'string' ? n.props.className : undefined))
   const textsOf = (tree) => collect(tree, (n) => (n.type === '#text' ? n.props.text : undefined))
   const typesOf = (tree) => collect(tree, (n) => (typeof n.type === 'string' ? n.type : undefined))
   const hasClass = (tree, cls) => classesOf(tree).some((value) => value.split(/\s+/).includes(cls))
@@ -1249,7 +1511,12 @@ check(
     config: { serverName: 'context7', transport: 'streamable-http', url: 'https://mcp.context7.com/mcp' },
     phase: 'active',
   }
-  const snapshot = { groupId: 'mcp-manager', configured: true, capabilities: ['setEnabled', 'remove', 'save', 'lastError', 'probe'], servers: [server] }
+  const snapshot = {
+    groupId: 'mcp-manager',
+    configured: true,
+    capabilities: ['setEnabled', 'remove', 'save', 'lastError', 'probe'],
+    servers: [server],
+  }
   const emptySnapshot = { ...snapshot, servers: [] }
   const draft = {
     disabled: false,
@@ -1281,11 +1548,18 @@ check(
 
   // D1–D3 列表视图
   const list = scene(snapshot)
-  check('D1 列表视图：一卡一服务器', hasClass(list, 'mcpm-rows') && hasClass(list, 'mcpm-rowCard') && hasClass(list, 'mcpm-row'))
+  check(
+    'D1 列表视图：一卡一服务器',
+    hasClass(list, 'mcpm-rows') && hasClass(list, 'mcpm-rowCard') && hasClass(list, 'mcpm-row'),
+  )
   check('D2 列表视图不含表单面板', !hasClass(list, 'mcpm-form'))
   {
     const texts = textsOf(list)
-    check('D3 行内三个动作按钮', ['编辑', '停用', '删除'].every((label) => texts.includes(label)), texts.join('|'))
+    check(
+      'D3 行内三个动作按钮',
+      ['编辑', '停用', '删除'].every((label) => texts.includes(label)),
+      texts.join('|'),
+    )
   }
 
   // D4–D7 展开编辑：表单必须在**同一张卡内**
@@ -1305,13 +1579,20 @@ check(
   {
     // url 是单行 input，headers 是多行 textarea —— 直接守住 mono/multiline 那个坑。
     const types = typesOf(editing)
-    check('D7 url 用 input、headers 用 textarea', types.includes('input') && types.includes('textarea'), types.filter((t) => t === 'input' || t === 'textarea').join(','))
+    check(
+      'D7 url 用 input、headers 用 textarea',
+      types.includes('input') && types.includes('textarea'),
+      types.filter((t) => t === 'input' || t === 'textarea').join(','),
+    )
   }
   check('D8 展开时不会重复显示第二张同名卡', classesOf(editing).filter((c) => c.includes('mcpm-rowCard')).length === 1)
 
   // D9 新增：末尾追加一张只含表单的卡
   const adding = scene(snapshot, null, false, 'new', draft)
-  check('D9 新增时追加一张只含表单的卡', classesOf(adding).filter((c) => c.includes('mcpm-rowCard')).length === 2 && hasClass(adding, 'mcpm-form'))
+  check(
+    'D9 新增时追加一张只含表单的卡',
+    classesOf(adding).filter((c) => c.includes('mcpm-rowCard')).length === 2 && hasClass(adding, 'mcpm-form'),
+  )
 
   // D10–D12 空 / 载入 / 错误
   check('D10 空列表走无边框 .mcpm-empty', hasClass(scene(emptySnapshot), 'mcpm-empty'))
@@ -1341,18 +1622,37 @@ check(
       servers: [{ ...toolServer, tools }],
     })
     // 渲染后的文本节点是 {type:'#text', props:{text}}，直接 join 会得到 [object Object]。
-    const nodeText = (node) => (node?.children ?? []).map((child) => (typeof child === 'string' ? child : (child?.props?.text ?? ''))).join('')
+    const nodeText = (node) =>
+      (node?.children ?? []).map((child) => (typeof child === 'string' ? child : (child?.props?.text ?? ''))).join('')
     const toolChips = (tree) =>
-      collect(tree, (n) => (typeof n.props?.className === 'string' && n.props.className.split(/\s+/).includes('mcpm-tool') ? nodeText(n) : undefined))
+      collect(tree, (n) =>
+        typeof n.props?.className === 'string' && n.props.className.split(/\s+/).includes('mcpm-tool')
+          ? nodeText(n)
+          : undefined,
+      )
     // 页面级「显示全部 / 收起」按钮（D32–D33 里的 buttonWith 只在那一个局部块里可见，这里自带一个）。
     const toolButton = (tree, label) =>
       collect(tree, (n) => (n.type === 'button' && nodeText(n) === label ? n.props : undefined))[0]
     // ServerRow 的 useState 顺序是 [confirming, toolsOpen]；toolsOpen=false → 折叠态。
-    const collapsed = renderSection({ McpSection: [toolsSnapshot({ count: 9, names: toolNames, truncated: false }), null, false, null, null, null, null, false], ServerRow: [false, false] })
+    const collapsed = renderSection({
+      McpSection: [
+        toolsSnapshot({ count: 9, names: toolNames, truncated: false }),
+        null,
+        false,
+        null,
+        null,
+        null,
+        null,
+        false,
+      ],
+      ServerRow: [false, false],
+    })
     check(
       'D42 卡片内显示工具总数「工具 N 个」',
       textsOf(collapsed).includes('工具 9 个'),
-      textsOf(collapsed).filter((t) => t.includes('工具')).join('|'),
+      textsOf(collapsed)
+        .filter((t) => t.includes('工具'))
+        .join('|'),
     )
     const collapsedChips = toolChips(collapsed)
     check(
@@ -1363,34 +1663,77 @@ check(
     check(
       'D44 折叠时提供「显示全部 9 个」按钮',
       toolButton(collapsed, '显示全部 9 个') !== undefined,
-      textsOf(collapsed).filter((t) => t.includes('显示全部') || t.includes('显示')).join('|'),
+      textsOf(collapsed)
+        .filter((t) => t.includes('显示全部') || t.includes('显示'))
+        .join('|'),
     )
 
     // toolsOpen=true → 展开态，全部显示，无「+N 个」，按钮变「收起」。
-    const expanded = renderSection({ McpSection: [toolsSnapshot({ count: 9, names: toolNames, truncated: false }), null, false, null, null, null, null, false], ServerRow: [false, true] })
+    const expanded = renderSection({
+      McpSection: [
+        toolsSnapshot({ count: 9, names: toolNames, truncated: false }),
+        null,
+        false,
+        null,
+        null,
+        null,
+        null,
+        false,
+      ],
+      ServerRow: [false, true],
+    })
     const expandedChips = toolChips(expanded)
     check(
       'D45 展开后显示全部 9 个、按钮变「收起」',
-      expandedChips.length === 9 && toolButton(expanded, '收起') !== undefined && !expandedChips.some((t) => t.startsWith('+')),
+      expandedChips.length === 9 &&
+        toolButton(expanded, '收起') !== undefined &&
+        !expandedChips.some((t) => t.startsWith('+')),
       JSON.stringify(expandedChips),
     )
 
     // 宿主名单被截断（> TOOL_NAME_LIMIT）：多一个「名单已截断」提示。
-    const capped = renderSection({ McpSection: [toolsSnapshot({ count: 500, names: toolNames, truncated: true }), null, false, null, null, null, null, false], ServerRow: [false, false] })
+    const capped = renderSection({
+      McpSection: [
+        toolsSnapshot({ count: 500, names: toolNames, truncated: true }),
+        null,
+        false,
+        null,
+        null,
+        null,
+        null,
+        false,
+      ],
+      ServerRow: [false, false],
+    })
     check('D46 宿主名单被截断时额外提示「名单已截断」', textsOf(capped).includes('名单已截断'))
 
     // 工具名数量 <= 6：直接全显示，不出现「显示全部」按钮。
-    const fewTools = renderSection({ McpSection: [toolsSnapshot({ count: 3, names: ['a', 'b', 'c'], truncated: false }), null, false, null, null, null, null, false], ServerRow: [false, false] })
+    const fewTools = renderSection({
+      McpSection: [
+        toolsSnapshot({ count: 3, names: ['a', 'b', 'c'], truncated: false }),
+        null,
+        false,
+        null,
+        null,
+        null,
+        null,
+        false,
+      ],
+      ServerRow: [false, false],
+    })
     check(
       'D47 工具不多（≤6）时直接全显示、没有折叠按钮',
       toolButton(fewTools, '显示全部 3 个') === undefined && textsOf(fewTools).includes('工具 3 个'),
-      textsOf(fewTools).filter((t) => t.includes('工具') || t.includes('显示')).join('|'),
+      textsOf(fewTools)
+        .filter((t) => t.includes('工具') || t.includes('显示'))
+        .join('|'),
     )
   }
 
   // D14–D20 失败原因行（README 7.6）：状态不能再误报「运行中」，原因要落在同一张卡内。
   {
-    const ariaOf = (tree) => collect(tree, (n) => (typeof n.props?.['aria-label'] === 'string' ? n.props['aria-label'] : undefined))
+    const ariaOf = (tree) =>
+      collect(tree, (n) => (typeof n.props?.['aria-label'] === 'string' ? n.props['aria-label'] : undefined))
     const broken = {
       ...server,
       error: {
@@ -1447,28 +1790,51 @@ check(
       const stdio = scene({
         ...snapshot,
         servers: [
-          { ...server, config: { ...server.config, transport: 'stdio' }, probe: { connected: null, status: null, detail: 'stdio 走子进程', at: 1 } },
+          {
+            ...server,
+            config: { ...server.config, transport: 'stdio' },
+            probe: { connected: null, status: null, detail: 'stdio 走子进程', at: 1 },
+          },
         ],
       })
-      check('D18c 探不了的传输（stdio）不因此报未检测 → 仍报运行中', ariaOf(stdio).includes('运行中'), ariaOf(stdio).join('|'))
+      check(
+        'D18c 探不了的传输（stdio）不因此报未检测 → 仍报运行中',
+        ariaOf(stdio).includes('运行中'),
+        ariaOf(stdio).join('|'),
+      )
     }
     check(
       'D19 停用中的旧记录不显示（历史噪声）',
       !hasClass(scene({ ...snapshot, servers: [{ ...broken, disabled: true }] }), 'mcpm-rowError'),
     )
-    check('D20 标题行给出刷新按钮（失败原因事后才写入，必须能手动重读）', textsOf(list).includes('刷新'), textsOf(list).join('|'))
-    check('D20b 标题行给出「检测」按钮（主动问候服务器，见 D24–D31）', textsOf(list).includes('检测'), textsOf(list).join('|'))
+    check(
+      'D20 标题行给出刷新按钮（失败原因事后才写入，必须能手动重读）',
+      textsOf(list).includes('刷新'),
+      textsOf(list).join('|'),
+    )
+    check(
+      'D20b 标题行给出「检测」按钮（主动问候服务器，见 D24–D31）',
+      textsOf(list).includes('检测'),
+      textsOf(list).join('|'),
+    )
 
     // D24–D31 四态状态机：灰(未启动/已停用) · 琥珀(启动中) · 绿(运行中) · 红(失败)
     const view = (extra) => scene({ ...snapshot, servers: [{ ...server, ...extra }] })
     const aria = (extra) => ariaOf(view(extra)).join('|')
 
-    check('D24 握手期间报「启动中」（LOADING 而不是"未运行"）', aria({ phase: 'loading' }).includes('启动中'), aria({ phase: 'loading' }))
+    check(
+      'D24 握手期间报「启动中」（LOADING 而不是"未运行"）',
+      aria({ phase: 'loading' }).includes('启动中'),
+      aria({ phase: 'loading' }),
+    )
     check('D25 pending 同样是「启动中」', aria({ phase: 'pending' }).includes('启动中'), aria({ phase: 'pending' }))
     check('D26 fiber FAILED 报「加载失败」', aria({ phase: 'failed' }).includes('加载失败'), aria({ phase: 'failed' }))
     check('D27 没有活条目报「未启动」', aria({ phase: 'absent' }).includes('未启动'), aria({ phase: 'absent' }))
 
-    const probedOk = view({ phase: 'active', probe: { connected: true, status: 200, detail: 'HTTP 200', at: 1_700_000_000_000 } })
+    const probedOk = view({
+      phase: 'active',
+      probe: { connected: true, status: 200, detail: 'HTTP 200', at: 1_700_000_000_000 },
+    })
     check(
       'D28 检测通过 + 条目 active → 绿色运行中，且不显示历史原因',
       ariaOf(probedOk).includes('运行中') && !hasClass(probedOk, 'mcpm-rowError'),
@@ -1480,7 +1846,15 @@ check(
       !aria({ phase: 'absent', probe: { connected: true, status: 200, detail: 'HTTP 200', at: 1 } }).includes('运行中'),
       aria({ phase: 'absent', probe: { connected: true, status: 200, detail: 'HTTP 200', at: 1 } }),
     )
-    const probedDead = view({ phase: 'active', probe: { connected: false, status: null, detail: '请求失败：connect ECONNREFUSED 10.9.9.2:80', at: 1_700_000_000_000 } })
+    const probedDead = view({
+      phase: 'active',
+      probe: {
+        connected: false,
+        status: null,
+        detail: '请求失败：connect ECONNREFUSED 10.9.9.2:80',
+        at: 1_700_000_000_000,
+      },
+    })
     check(
       'D30 检测失败 → 连接失败 + 原因行里是检测结论（含真实原因）',
       ariaOf(probedDead).includes('连接失败') &&
@@ -1494,7 +1868,11 @@ check(
       error: { message: 'connection attempt failed: boom', level: 'warn', at: 1, count: 1 },
       probe: { connected: true, status: 200, detail: 'HTTP 200', at: 1_700_000_000_000 },
     })
-    check('D31 检测通过盖掉更早的失败记录（不再显示旧原因）', ariaOf(recovered).includes('运行中') && !hasClass(recovered, 'mcpm-rowError'), textsOf(recovered).join('|'))
+    check(
+      'D31 检测通过盖掉更早的失败记录（不再显示旧原因）',
+      ariaOf(recovered).includes('运行中') && !hasClass(recovered, 'mcpm-rowError'),
+      textsOf(recovered).join('|'),
+    )
 
     // D32–D33 能力协商：旧宿主不认识 probe，按钮必须禁用并说明，而不是点了报「未知操作」。
     const buttonWith = (tree, label) => {
@@ -1507,10 +1885,15 @@ check(
     const oldHost = scene({ ...snapshot, capabilities: ['setEnabled', 'remove', 'save'] })
     check(
       'D32 旧宿主（无 probe 能力）→「检测」禁用并提示要重启 DSH',
-      buttonWith(oldHost, '检测')?.props?.disabled === true && String(buttonWith(oldHost, '检测')?.props?.title).includes('重启'),
+      buttonWith(oldHost, '检测')?.props?.disabled === true &&
+        String(buttonWith(oldHost, '检测')?.props?.title).includes('重启'),
       JSON.stringify(buttonWith(oldHost, '检测')?.props),
     )
-    check('D33 新宿主（有 probe 能力）→「检测」可点', buttonWith(list, '检测')?.props?.disabled === false, JSON.stringify(buttonWith(list, '检测')?.props))
+    check(
+      'D33 新宿主（有 probe 能力）→「检测」可点',
+      buttonWith(list, '检测')?.props?.disabled === false,
+      JSON.stringify(buttonWith(list, '检测')?.props),
+    )
     check(
       'D34 检测进行中显示「检测中…」且按钮暂时锁住（自动检测的可见反馈）',
       textsOf(scene(snapshot, null, false, null, null, null, null, true)).includes('检测中…') &&
@@ -1533,7 +1916,8 @@ check(
     const formTexts = (tree) => {
       const out = []
       walk(tree, (node) => {
-        if (typeof node.props?.className === 'string' && node.props.className.includes('mcpm-form')) out.push(...textsOf(node))
+        if (typeof node.props?.className === 'string' && node.props.className.includes('mcpm-form'))
+          out.push(...textsOf(node))
       })
       return out
     }
@@ -1558,7 +1942,9 @@ check(
     const both = scene(snapshot, null, false, 0, draft, `表单：${reason}`, `操作：${reason}`)
     check(
       'D23 两条通道各自只渲染一次',
-      errorNotices(both).length === 2 && formTexts(both).includes(`表单：${reason}`) && !formTexts(both).includes(`操作：${reason}`),
+      errorNotices(both).length === 2 &&
+        formTexts(both).includes(`表单：${reason}`) &&
+        !formTexts(both).includes(`操作：${reason}`),
       JSON.stringify(errorNotices(both)),
     )
   }
@@ -1706,7 +2092,9 @@ check(
       ...extra,
     })
     /** McpSection 的 8 位初值（见 D 区 scene 夹具）：这里只喂第 1 位，其余走初值。 */
-    const values = (capabilities, server) => [{ groupId: 'mcp-manager', configured: true, capabilities, servers: [server] }]
+    const values = (capabilities, server) => [
+      { groupId: 'mcp-manager', configured: true, capabilities, servers: [server] },
+    ]
     /** 请求序列压成 `[method, op]` 便于比对。 */
     const shape = (requests) => requests.map((request) => [request.method, request.body?.op])
 
@@ -1750,8 +2138,18 @@ check(
     const settle = await mount({
       capabilities: newHost,
       responses: [
-        { groupId: 'mcp-manager', configured: true, capabilities: newHost, servers: [{ ...row(false), phase: 'loading' }] },
-        { groupId: 'mcp-manager', configured: true, capabilities: newHost, servers: [{ ...settled, phase: 'loading' }] },
+        {
+          groupId: 'mcp-manager',
+          configured: true,
+          capabilities: newHost,
+          servers: [{ ...row(false), phase: 'loading' }],
+        },
+        {
+          groupId: 'mcp-manager',
+          configured: true,
+          capabilities: newHost,
+          servers: [{ ...settled, phase: 'loading' }],
+        },
         { groupId: 'mcp-manager', configured: true, capabilities: newHost, servers: [{ ...settled, phase: 'active' }] },
       ],
     })
@@ -1776,6 +2174,55 @@ check(
       `total=${String(stuck.length)} gets=${String(gets)}`,
     )
   }
+}
+//#endregion
+
+//#region E. 共享常量 ↔ 出厂产物
+/**
+ * E 区守的是"两半边必须认同一套协议值"。
+ *
+ * 历史做法是 A9/A10 那种"两边各自包含某个字面量"的断言 —— 它有两个毛病：
+ *   1. 期望值写在断言里，改一处实现要同时改断言，容易把断言改成"迁就实现"；
+ *   2. 空值恒真：`source.includes('')` 永远为 true，一个被写空的常量会让断言静默失效。
+ * 所以这里先证明常量非空（E1），再用它去比对产物（E2–E7）。
+ *
+ * 注意 E6/E7 是按**当前手写形状**的声明式正则（`SECTION_ID = "mcp"`）。P4 把客户端交给
+ * 构建器之后，常量可能被内联/改名，届时这两条要改成"产物里出现该值且该值被用于座位注册"，
+ * 而不是放宽成裸 includes（`'mcp'` 这种子串在路由里就出现过，裸 includes 等于没断言）。
+ */
+{
+  const names = ['ROUTE', 'GROUP_ID', 'MCP_PACKAGE', 'SECTION_ID', 'SECTION_LABEL']
+  check(
+    'E1 共享常量都是非空字符串（空值会让 includes 断言恒真）',
+    names.every((name) => typeof shared[name] === 'string' && shared[name] !== ''),
+    names.map((name) => `${name}=${JSON.stringify(shared[name])}`).join(' '),
+  )
+
+  /** 产物里是否出现该值（对引号风格不敏感：两半边历史上一个单引号、一个双引号）。 */
+  const has = (source, value) => typeof value === 'string' && value !== '' && source.includes(value)
+  /** 产物里是否以 `NAME = "值"` 的形式声明了该常量（单双引号都认）。 */
+  const declares = (source, name, value) =>
+    new RegExp(`${name}\\s*=\\s*["']${value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["']`).test(source)
+
+  check('E2 路由：宿主产物用的是共享常量 ROUTE', has(hostSource, shared.ROUTE), shared.ROUTE)
+  check('E3 路由：客户端产物用的是共享常量 ROUTE', has(clientSource, shared.ROUTE), shared.ROUTE)
+  check('E4 组条目 id：宿主产物用的是共享常量 GROUP_ID', has(hostSource, shared.GROUP_ID), shared.GROUP_ID)
+  check('E5 MCP 包名：宿主产物用的是共享常量 MCP_PACKAGE', has(hostSource, shared.MCP_PACKAGE), shared.MCP_PACKAGE)
+  check(
+    'E6 座位 id：客户端产物声明了共享常量 SECTION_ID',
+    declares(clientSource, 'SECTION_ID', shared.SECTION_ID),
+    shared.SECTION_ID,
+  )
+  check(
+    'E7 座位 label：客户端产物声明了共享常量 SECTION_LABEL',
+    declares(clientSource, 'SECTION_LABEL', shared.SECTION_LABEL),
+    shared.SECTION_LABEL,
+  )
+  check(
+    'E8 客户端 bundle 的模块 id 等于 package.json 的 name（改名时不会漏改产物）',
+    has(clientSource, `id: "${manifest.name}"`) || has(clientSource, `id: '${manifest.name}'`),
+    manifest.name,
+  )
 }
 //#endregion
 

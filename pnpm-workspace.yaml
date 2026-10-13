@@ -1,0 +1,22 @@
+# pnpm 11 的 profile 级设置。此文件由 pnpm 生成后手工收敛，请勿删。
+#
+# 为什么明确写 `esbuild: false`：pnpm 11 默认拦截依赖的 install 脚本（供应链防护）。
+# esbuild 的脚本只是"就地验证/放置平台二进制"，实测**不跑也能用**（平台二进制走
+# optionalDependencies），所以这里显式**拒绝**而不是留一句待办——本仓库不执行任何依赖脚本。
+allowBuilds:
+  esbuild: false
+
+# pnpm 的"最小发布年龄"放行名单：下面这些包因发布不足 N 天而被拦截，
+# 由 `pnpm install` 自动登记（typescript-eslint 8.71.2 一整套）。
+minimumReleaseAgeExclude:
+  - '@typescript-eslint/eslint-plugin@8.71.2'
+  - '@typescript-eslint/parser@8.71.2'
+  - '@typescript-eslint/project-service@8.71.2'
+  - '@typescript-eslint/scope-manager@8.71.2'
+  - '@typescript-eslint/tsconfig-utils@8.71.2'
+  - '@typescript-eslint/type-utils@8.71.2'
+  - '@typescript-eslint/types@8.71.2'
+  - '@typescript-eslint/typescript-estree@8.71.2'
+  - '@typescript-eslint/utils@8.71.2'
+  - '@typescript-eslint/visitor-keys@8.71.2'
+  - typescript-eslint@8.71.2

@@ -1,0 +1,18 @@
+root = true
+
+# 全仓库统一：UTF-8 / LF / 末尾换行 / 2 空格缩进。
+# 与 .prettierrc.json 一致；.gitattributes 另外强制 Git 侧的 LF。
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+# Markdown 里的行尾双空格是"换行"语法，不能裁掉。
+[*.md]
+trim_trailing_whitespace = false
+
+[*.{yml,yaml}]
+indent_size = 2

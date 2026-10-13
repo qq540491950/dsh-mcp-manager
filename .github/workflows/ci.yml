@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # 自检脚本是零依赖的：**没装 node_modules 也要能跑**。
+      # 这一步放在 install 之前是刻意的——它守住"克隆下来就能自检"这条性质。
+      - name: 自检（零依赖）
+        run: node tools/verify.mjs
+
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+
+      - name: 类型 + 风格 + 产物契约
+        run: pnpm check
