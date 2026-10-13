@@ -1,0 +1,32 @@
+// 客户端半边（Client half）的编译单元。
+//
+// 两条硬约束，与宿主那份互为镜像：
+//   1. `lib` 只有 DOM + ES2022 —— **没有 node 全局**。这一半跑在浏览器里，
+//      写 `process` / `require('node:fs')` 直接编译失败。
+//   2. `jsx: "react"` + `jsxFactory: "h"` —— **classic JSX runtime**：
+//      JSX 编译成我们本来就在用的 `h()`（= `react.createElement`）调用，运行时只
+//      `require("react")`（确定在基座模块表里），完全不碰 `react/jsx-runtime`。
+//      这样就不必赌"jsx-runtime 是否在平台种子表里"（原方案的风险 2，见 docs §8）。
+//
+// `types: ["react"]` 只为一个理由：@types/react 提供全局 `JSX` 命名空间，
+// 而 TSX 的类型检查需要它。它不引入任何 node 全局。
+//
+// 产物：只产出 .d.ts（`lib/types/client/**`）。真正的 .js 由 tools/build.mjs 打包成
+// classic script（懒 CJS 工厂）再包装，见 tools/build.mjs 的 client 目标。
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["react"],
+    "jsx": "react",
+    "jsxFactory": "h",
+    "jsxFragmentFactory": "Fragment",
+    "emitDeclarationOnly": true,
+    "declaration": true,
+    "declarationMap": false,
+    "rootDir": "src",
+    "outDir": "lib/types"
+  },
+  "include": ["src/client/**/*.ts", "src/client/**/*.tsx", "src/shared/**/*.ts"]
+}

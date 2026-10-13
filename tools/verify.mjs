@@ -214,9 +214,11 @@ check(
   // 「等宽」与「多行」必须分离：混用会把 url 这种单行字段渲染成 56px 的大框。
   check(
     'A28 mono 与 multiline 分离',
-    /multiline\s*\?\s*h\("textarea"/.test(clientSource) &&
+    // multiline 必须真的换成 <textarea>（不是只加个 class）。打包器会在每个 h(...) 前插
+    // `/* @__PURE__ */` 注解，所以不能断言 `? h("textarea"` 这种紧凑写法。
+    /h\(\s*"textarea"/.test(clientSource) &&
       /mcpm-input--mono/.test(code) &&
-      !clientSource.includes('mono ? "mcpm-input mcpm-textarea"'),
+      !clientSource.includes('mcpm-input mcpm-textarea'),
   )
   // 一卡一服务器：表单面板展开在**同一张卡内**，不在别处重复显示这一台。
   {
@@ -314,7 +316,9 @@ check(
       'A25 回退路径把 env/headers/args 转成文本',
       block.includes('flat.env = pairsToText') &&
         block.includes('flat.headers = pairsToText') &&
-        block.includes('flat.args = config.args.join'),
+        // args 必须被拼成"换行文本"再回传；具体是 config.args.join 还是先 map 成字符串再 join，
+        // 属于实现细节（产物由打包器生成，写法会变），所以只钉住"确实 join 了"。
+        /flat\.args = [^\n]*\.join\(/.test(block),
     )
   }
 }
@@ -325,13 +329,14 @@ check(
     'A13 标题行与说明文字分层（heading/titleRow）',
     clientSource.includes('mcpm-heading') && clientSource.includes('mcpm-titleRow'),
   )
-  const headerBlock = clientSource.slice(
-    clientSource.indexOf('const header = h('),
-    clientSource.indexOf('if (loadError !== null)'),
-  )
+  // 产物由打包器生成：`const` 可能被打印成 `var`，JSX 也不再是 `h(...)` 的字面写法，
+  // 所以这里用"声明关键字可选"的锚点，并且**显式断言锚点找到了**——否则 indexOf 返回 -1
+  // 会让切片变成一片空白，断言就成了永远通过的摆设。
+  const headerAt = clientSource.search(/\b(?:const|var|let) header =/)
+  const headerBlock = clientSource.slice(headerAt, clientSource.indexOf('if (loadError !== null)'))
   const rowAt = headerBlock.indexOf('mcpm-titleRow')
   const subtitleAt = headerBlock.indexOf('mcpm-subtitle')
-  check('A14 说明文字在标题行之外', rowAt >= 0 && subtitleAt > rowAt)
+  check('A14 说明文字在标题行之外', headerAt >= 0 && rowAt >= 0 && subtitleAt > rowAt)
 }
 
 // 导航图标护栏：DSH 的设置导航是**硬编码 id→图标**、未知 id 兜底成齿轮
@@ -406,7 +411,10 @@ check(
     markRule.includes('background-color:currentColor') &&
       markRule.includes('mask:url("${MCP_MARK_DATA_URI}")') &&
       markRule.includes('width:16px') &&
-      /const MCP_MARK_DATA_URI = `data:image\/svg\+xml,\$\{encodeURIComponent\(MCP_MARK_SVG\)\}`/.test(clientSource),
+      // 打包器会把 `const` 打印成 `var`，所以声明关键字要可选。
+      /(?:const|var|let) MCP_MARK_DATA_URI = `data:image\/svg\+xml,\$\{encodeURIComponent\(MCP_MARK_SVG\)\}`/.test(
+        clientSource,
+      ),
     markRule.slice(0, 120),
   )
 }

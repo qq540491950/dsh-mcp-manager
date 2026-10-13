@@ -14,11 +14,12 @@
  */
 import { build, version as esbuildVersion } from 'esbuild'
 import { createHash } from 'node:crypto'
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { dirname, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'))
 
 /** 递归列出目录下的所有文件，返回相对仓库根的 POSIX 路径（排序后，保证 manifest 稳定）。 */
 async function listFiles(dir) {
@@ -40,6 +41,39 @@ async function hashOf(relativePath) {
 
 /** 一个产物目标：产物路径 + 它的源码输入目录。 */
 const targets = []
+
+/**
+ * 把 CJS 产物包成官方同形的「懒 CJS 工厂」classic script。
+ *
+ * 为什么自己包而不是让打包器直接产出：包装文本是我们自己的常量，因此可以被自检逐字断言
+ * （A5/A6/A7/E8），不会因为打包器升级而悄悄破约。三处细节是刻意的：
+ *   1. `id` 从 `package.json.name` 注入 —— 包名只有一处来源；
+ *   2. `Symbol.toStringTag` 在**模块体之后**设置：esbuild 的 CJS 输出会把 `module.exports`
+ *      整个换掉（`__toCommonJS`），先设置会丢在旧对象上；
+ *   3. 不写 sourceMappingURL：官方产物带 map，但 map 是可选调试产物，我们不发。
+ */
+function wrapClient(body, id) {
+  return [
+    '/**',
+    ' * 本文件由 `tools/build.mjs` 从 `src/client/index.ts` 生成 —— **不要直接编辑**。',
+    ' *',
+    ' * 契约：classic script（不是 ESM）；执行时只向 `window.__ModuleLoader__.load` 注册一个 factory；',
+    ' * `id` 等于包名；`require` 只解析基座模块表（这里只用 react）。',
+    ' * 设计说明见 src/client/ 与 README.md。',
+    ' */',
+    'window.__ModuleLoader__.load({',
+    `\tid: ${JSON.stringify(id)},`,
+    '\tfactory: (require) => {',
+    '\t\tvar module = { exports: {} };',
+    '\t\tvar exports = module.exports;',
+    body,
+    '\t\tObject.defineProperty(module.exports, Symbol.toStringTag, { value: "Module" });',
+    '\t\treturn module.exports;',
+    '\t}',
+    '});',
+    '',
+  ].join('\n')
+}
 
 /** 宿主半边：ESM 单文件，src 内部模块全部内联，产物里不存在任何 import。 */
 {
@@ -69,6 +103,40 @@ const targets = []
     },
     logLevel: 'warning',
   })
+  targets.push({ output: outfile, inputs })
+}
+
+/**
+ * 客户端半边：先打成 CJS 单文件（唯一外部依赖是 react），再包成懒 CJS 工厂。
+ *
+ * `jsxFactory: 'h'` 是 classic runtime：JSX 编译成 `h(...)`（= `react.createElement`），
+ * 于是产物只需要 `require("react")` —— 不必赌 `react/jsx-runtime` 在不在基座模块表里。
+ * 中间产物 `lib/.client.cjs` 只是构建过程中的临时文件，包完立刻删掉。
+ */
+{
+  const inputs = (await Promise.all(['src/client', 'src/shared'].map(listFiles))).flat()
+  const outfile = 'lib/client.js'
+  const intermediate = join(root, 'lib', '.client.cjs')
+  await build({
+    entryPoints: [join(root, 'src/client/index.ts')],
+    outfile: intermediate,
+    bundle: true,
+    format: 'cjs',
+    platform: 'browser',
+    target: 'es2020',
+    charset: 'utf8',
+    minify: false,
+    jsx: 'transform',
+    jsxFactory: 'h',
+    // 注意 esbuild 的选项名是 `jsxFragment`（tsc 那边叫 `jsxFragmentFactory`）。
+    jsxFragment: 'Fragment',
+    // 基座模块表里的种子：只有 react 走 require，其余（含 node 内建）一律不该出现。
+    external: ['react'],
+    logLevel: 'warning',
+  })
+  const body = await readFile(intermediate, 'utf8')
+  await writeFile(join(root, outfile), wrapClient(body, pkg.name), 'utf8')
+  await rm(intermediate, { force: true })
   targets.push({ output: outfile, inputs })
 }
 

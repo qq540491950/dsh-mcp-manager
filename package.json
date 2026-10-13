@@ -21,7 +21,7 @@
   "packageManager": "pnpm@11.7.0",
   "scripts": {
     "build": "node tools/build.mjs",
-    "typecheck": "tsc -b",
+    "typecheck": "tsc -b --clean && tsc -b",
     "lint": "eslint .",
     "format": "prettier --write \"src/**/*.{ts,tsx}\" \"tools/**/*.mjs\" \"*.{json,js,mjs}\"",
     "format:check": "prettier --check \"src/**/*.{ts,tsx}\" \"tools/**/*.mjs\" \"*.{json,js,mjs}\"",

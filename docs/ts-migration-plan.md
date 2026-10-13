@@ -589,3 +589,68 @@ E1/E2/E3/E7 精确报错且**没有连带误报**（E6 保持绿），随后还�
   `ImportDeclaration[source.value=/^[^./]/]:not([importKind='type'])]` 选择器后语义才对。
 
 **尚未做**：`src/client`（P4：TSX 化 + 包装脚本）、纯函数抽取与单测（P2）、`lib/client.js` 仍是手写。
+
+### P4 客户端半边 TSX 化 + 产物包装 —— 已完成
+
+**产出**（`lib/client.js` 从手写 1104 行变成产物；源码拆成 10 个各管一件事的文件）
+
+| 文件 | 职责 |
+|---|---|
+| `src/client/index.ts` | 插件体：`apply()` 只导出这个；**`window.__ModuleLoader__.load` 由构建注入** |
+| `src/client/react.ts` | 平台依赖的**唯一入口**：`h` / `Fragment` / 三个 hook |
+| `src/client/core/status.ts` | 状态机（纯函数，P2 的成果） |
+| `src/client/core/draft.ts` | 记录 ↔ 草稿 ↔ 载荷（纯函数，P2 的成果） |
+| `src/client/core/api.ts` | 路由 / 超时预算 / 请求整理（不碰 React） |
+| `src/client/styles.ts` | 样式表 + MCP 标记 + `ensureStyles` |
+| `src/client/nav-mark.ts` | 全仓库唯一允许碰 DOM 的模块 |
+| `src/client/form.tsx` / `row.tsx` / `section.tsx` | 表单 / 一行摘要 / 整页 |
+| `src/client/service-types.ts` | 客户端 Service 最小接口 |
+| `src/shared/guards.ts` | 不可信输入的收窄守卫（两半边共用，宿主改为引用它） |
+
+**执行中的决定**
+
+1. **classic JSX runtime**（`jsxFactory: 'h'` + `jsxFragment: 'Fragment'`，esbuild 的选项名是
+   `jsxFragment`，tsc 那边叫 `jsxFragmentFactory`）：JSX 编译成 `h(...)`，产物**只 require `react`**。
+   §8 风险 2（"jsx-runtime 在不在基座种子表里"）就此消失。
+2. **`react.ts` 作为平台依赖唯一入口**：打包器会为每个"值 import 了 react"的模块各发一次
+   `require("react")`（第一次构建就出现了 3 次）。收敛到一处后产物里只有一次 ——
+   "我们到底从平台拿了什么"一眼可见。
+3. **`Symbol.toStringTag` 在模块体之后设置**：esbuild 的 CJS 输出会把 `module.exports`
+   整个换掉（`__toCommonJS`），按官方产物那样写在前面会丢在旧对象上。
+4. **包装文本是我们自己的常量**（`wrapClient()`），因此可以被断言逐字钉住；
+   `id` 从 `package.json.name` 注入，包名只有一处来源。
+
+**断言改造（产物由打包器生成，断言不得耦合其输出格式）**
+
+| 断言 | 原来 | 现在 | 为什么 |
+|---|---|---|---|
+| A14 | 锚点 `const header = h(` | 锚点 `\b(?:const\|var\|let) header =`，并**显式断言锚点找到了** | JSX 不再有 `h(` 字面写法；`const` 可能被打印成 `var`。原来的 `indexOf` 返回 -1 会切出空白，让断言变成摆设 |
+| A25 | `flat.args = config.args.join` | `flat\.args = [^\n]*\.join\(` | 实现改成"先 map 成字符串再 join"，写法变了但语义（拼成换行文本）不变 |
+| A28 | `multiline\s*\?\s*h\("textarea"` | `h\(\s*"textarea"` | 打包器在 `h(...)` 前插 `/* @__PURE__ */` |
+| A38 | `const MCP_MARK_DATA_URI = …` | `(?:const\|var\|let) …` | 模块级 `const` 被打印成 `var` |
+
+**行为差异（诚实清单）**
+
+- `serverOfExisting` 的 `args`：先 `asText` 成字符串再 `join`（`args: ['a', {}]` 不再产出 `"[object Object]"`）。
+- `targetOf` / `draftOf` / `pairsToText`：一律用 `asText`，对象/数组按"没写"处理。
+- `row.tsx` 的工具名先 `asText`：React 的 child/key 需要 string。
+- `ServerSnapshot.disabled` / `ToolRecord.truncated` / `Snapshot.configured` 改为**可选**：
+  客户端读的是 JSON，`=== true` / `!== false` 这类防御式写法是刻意的，字段可选才让它们有意义。
+- `servers` 用 `useMemo` 稳住（`react-hooks/exhaustive-deps` 指出 `?? []` 每轮都换新数组）；
+  自动检测的 `cancelled` 改成可变对象属性（`let` 会被 TS 窄化成字面量 `false`）。
+- `nav-mark`：`document.body` 与 `MutationObserver` 改从"运行时事实"读（cast / `globalThis`）——
+  lib.dom 说它们一定在，实际不一定，而直接写 `typeof MutationObserver` 会被 lint 判成恒真。
+
+**自检与反向验证**
+
+- `pnpm check` 全绿，`node tools/verify.mjs` → **PASS 203/203**。其中 **C 区（客户端协议 + 假 DOM 真跑）
+  与 D 区（40+ 条真实渲染：四态状态机、两条错误通道、自动检测、recheck 有界重读、工具名单折叠）
+  全部通过** —— 这是"TSX 搬迁没有改坏行为"的主要证据。
+- **反向验证（变异矩阵）**：对 4 条改过的断言各注入一个变异，逐条精确命中，且都是**双保险**：
+  A28 同时被渲染测试 D7 抓住，A38 同时被样式表断言 C15 抓住，A14 同时被 A13 抓住；
+  另外 E10（构建指纹）在四次变异中都报——产物被手改过就藏不住。
+  （第一次跑时 M-A14 的变异写成 `titleRow→titleRowX`，因为 `mcpm-titleRow` 仍是子串而"没打中"，
+  这本身就是一次"断言要能被怀疑"的教训。）
+
+**尚未做**：P5 的纯函数单测（`normalizeRow` / `toRecord` 还在 `src/host/index.ts` 里没抽出来）、
+`lib/client.js` 的 CSS 仍是原样搬过来的（P2 只抽了 TS 逻辑，没动样式）。

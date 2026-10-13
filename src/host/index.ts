@@ -61,6 +61,7 @@
  * 用 `isRecord` / `asRecord` 收窄后再读；`as` 只在"已经用运行时检查证明过"的地方出现。
  */
 import { GROUP_ID, MCP_PACKAGE, ROUTE } from '../shared/constants'
+import { asRecord, asText, isRecord, readString } from '../shared/guards'
 import type {
   FailureRecord,
   FiberPhase,
@@ -125,38 +126,6 @@ export const name = 'dsh-mcp-manager'
 export const inject: string[] = []
 
 const MISSING_GROUP = `找不到 group 条目 "${GROUP_ID}"。请先在 profile 的 cordis.patch.yml 里按插件 README 配置一个 cordis:group 条目。`
-
-/**
- * 判断一个值是不是"普通对象"（YAML / JSON 里的 record）。
- * 数组也是对象，但它的语义是"行列表"，所以单独排掉。
- */
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-}
-
-/** 把一个不可信的 config 值收窄成"可以安全读属性"的表；不是 record 就当作空表。 */
-function asRecord(value: unknown): Record<string, unknown> {
-  return isRecord(value) ? value : {}
-}
-
-/** 读一个字符串字段；非字符串一律当作"没写"（YAML 里 `serverName: 123` 这类不该被当成名字）。 */
-function readString(source: Record<string, unknown>, key: string): string | undefined {
-  const value = source[key]
-  return typeof value === 'string' ? value : undefined
-}
-
-/**
- * 把不可信的值读成字符串：**只认 string / number**，其余（对象、数组、null）一律当作"没写"。
- *
- * 不用 `String(value ?? '')`：那会把 `{}` 变成 `"[object Object]"`，于是一个畸形配置会以
- * "名字叫 [object Object] 的服务器"的形式出现在错误信息里，比直接说"没填"更难查。
- * 数字仍按原样转字符串（`serverName: 123` 这种手写 YAML 要能读出来）。
- */
-function asText(value: unknown): string {
-  if (typeof value === 'string') return value
-  if (typeof value === 'number') return String(value)
-  return ''
-}
 
 /**
  * 把任意抛出物整理成一句话。

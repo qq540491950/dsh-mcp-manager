@@ -15,31 +15,42 @@
  * `stopped` 是"条目被 disabled"，`absent` 是"没有活条目"。
  */
 export type FiberPhase = 'pending' | 'loading' | 'active' | 'failed' | 'disposed' | 'unloading' | 'stopped' | 'absent';
-/** 一台服务器最近一次失败的原文（本插件自己从 `ctx.logger` 收的）。 */
+/**
+ * 一台服务器最近一次失败的原文（本插件自己从 `ctx.logger` 收的）。
+ *
+ * 字段**全部可选**：这是跨半边传输的 JSON，客户端读到的可能来自旧宿主、也可能被人为改坏。
+ * 类型只描述"我们期望的形状"，客户端那些防御性判断（`typeof x === 'string'`）是刻意的，
+ * 所以这里必须允许字段缺失，否则那些判断会被类型系统判成"多余"。
+ */
 export interface FailureRecord {
-    message: string;
-    level: string;
-    at: number;
-    count: number;
+    message?: string | undefined;
+    level?: string | undefined;
+    at?: number | undefined;
+    count?: number | undefined;
 }
-/** 一台服务器最近一次**主动探测**的结果。`connected === null` = 这种传输探不了（stdio）。 */
+/**
+ * 一台服务器最近一次**主动探测**的结果。
+ * `connected === null` = 这种传输探不了（stdio 走子进程）；`status`/`detail` 同理允许缺失。
+ */
 export interface ProbeRecord {
     connected: boolean | null;
-    status: number | null;
-    detail: string;
-    at: number;
+    status?: number | null | undefined;
+    detail?: string | undefined;
+    at?: number | undefined;
 }
 /** 一台服务器**当前注册给模型**的工具名单。 */
 export interface ToolRecord {
     count: number;
     names: string[];
-    truncated: boolean;
+    /** 同样允许缺失：客户端按 `=== true` 判断"名单被截过"。 */
+    truncated?: boolean | undefined;
 }
 /** 快照里的一台服务器。 */
 export interface ServerSnapshot {
     index: number;
     rowId?: string | undefined;
-    disabled: boolean;
+    /** 允许缺失：客户端读的是 JSON，`=== true` / `!== true` 是刻意的防御式写法。 */
+    disabled?: boolean | undefined;
     /** 配置行的原始 config（用户手写的，所以是 unknown 值表，客户端按需读）。 */
     config: Record<string, unknown>;
     phase: FiberPhase;
@@ -51,7 +62,8 @@ export interface ServerSnapshot {
 /** GET 快照与每个写操作的返回值。 */
 export interface Snapshot {
     groupId: string;
-    configured: boolean;
+    /** 允许缺失：客户端把"没写"当成已配置（`!== false`）。 */
+    configured?: boolean | undefined;
     mcpPackage: string;
     /**
      * 能力协商：客户端据此决定用「宿主侧定点操作」还是退回整数组提交。
