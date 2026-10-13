@@ -453,13 +453,19 @@ window.__ModuleLoader__.load({
 
 两条路都**不要跳过 P7**。
 
-### 9.2 待决策点（状态见 §11）
+### 9.2 决策点（状态见 §11）
 
-1. **包名**：`@qq540491950/dsh-mcp-manager`（推荐，未占用）还是另起一个未被占用的无 scope 名（如 `dsh-mcp-console`）？
-2. **`lib/` 入库**：保持（支持 git clone + 路径行挂载）还是改成"发布时构建、仓库只留 src"？
-3. **客户端写法**：TSX + `react/jsx-runtime`（可读性好，需先验证基座表）还是继续 `h()`（零风险）？
-4. **测试栈**：只留 `tools/verify.mjs`（零依赖，现状）还是加 vitest + jsdom + RTL（更可信，引入 devDeps）？
-5. **先做哪条路**：先发布（P6/P7）还是先 TS 化（P2–P5）？—— **已定：先 TS 化**
+| # | 决策点 | 结论 |
+|---|---|---|
+| 1 | **包名** | **`@qq540491950/dsh-mcp-manager`**（2026-10 定）。`dsh-mcp-manager` 已被他人占用（npm v0.6.0，作者 Nichts0v0，功能相近但走 JSON 文件存储、无 bundle patch），不能再用；scope 名与 AGENTS §7 的仓库命名惯例一致。 |
+| 2 | `lib/` 入库 | **保持入库**（支持 git clone + 路径行挂载）。配套护栏：构建指纹 E9/E10 + CI `git diff --exit-code lib/`。 |
+| 3 | 客户端写法 | **classic JSX runtime**（`jsxFactory: 'h'`）：产物只 require `react`，不必赌 `react/jsx-runtime` 在不在基座种子表。§8 风险 2 因此消除。 |
+| 4 | 测试栈 | **不引入 vitest**：纯函数单测放进 `tools/verify.mjs` 的 F 区，直接 import TypeScript 源码。守住"自检零依赖、不装 node_modules 也能跑"。 |
+| 5 | 先做哪条路 | **先 TS 化**（P2–P5），发布向的 P6–P8 **暂缓**（2026-10 明确）。 |
+
+> **P6–P8 未开工**，且有一个必须先证伪的假设：bundle 层 `insert` 的 group 行能否被
+> profile 层的覆写行命中（机制上成立，但本仓库被同类假设坑过 —— 见 B70）。
+> 开工时按 §7 走，硬门槛是 P7 的端到端安装验证。
 
 ---
 
