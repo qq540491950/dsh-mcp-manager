@@ -7,6 +7,8 @@ dist/
 build/
 out/
 *.tsbuildinfo
+# tsc 的增量缓存目录（刻意放在 lib/ 之外：lib/ 是发布目录，不该夹带构建缓存）
+.tsbuildinfo/
 .cache/
 
 # 测试与覆盖率

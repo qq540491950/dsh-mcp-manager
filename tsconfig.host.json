@@ -18,7 +18,9 @@
     "declaration": true,
     "declarationMap": false,
     "rootDir": "src",
-    "outDir": "lib/types"
+    "outDir": "lib/types",
+    // 增量缓存不放 lib/：`files` 里会整目录带上 lib，发布时不该夹带构建缓存。
+    "tsBuildInfoFile": ".tsbuildinfo/host.tsbuildinfo"
   },
   "include": ["src/host/**/*.ts", "src/shared/**/*.ts"]
 }
