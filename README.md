@@ -220,14 +220,19 @@ ctx.inject(["slots"], (scope) => {
 
 ```
 dsh-mcp-manager/
-  AGENTS.md         agent 工作约束（硬性纪律 / 代码边界 / UI 纪律 / 交付标准）
+  AGENTS.md         agent 工作约束（分级：硬性纪律 / 边界 / 风格；流程 / Git 与发布）
+  docs/agent-rules-notes.md  AGENTS.md 的附注：取证、断言台账、官方证据索引（默认不必读）
   README.md         本文件：设计、通道选型、实测状态、尺寸基准、证据索引
   package.json      exports{"./client"} + dsh.client{platform:"web"} + name（= 客户端 bundle 的模块 id）
-  lib/index.js      宿主半边：/api/mcp-manager 路由 + 读写验证（零 import）
-  lib/client.js     浏览器半边：settings.section 页面 + 导航那一格的 MCP 标记（懒 CJS bundle）
+  src/client/**     客户端半边源码（TSX）——不要手改产物 lib/client.js
+  src/host/**       宿主半边源码（TS）——不要手改产物 lib/index.js
+  src/shared/**     两半边共享的协议值（ROUTE / GROUP_ID / MCP_PACKAGE / SECTION_ID / SECTION_LABEL）
+  lib/index.js      产物：宿主半边 /api/mcp-manager 路由 + 读写验证（零 import）
+  lib/client.js     产物：浏览器半边 settings.section 页面 + 导航那一格的 MCP 标记（懒 CJS bundle）
   assets/mcp-mark.svg  设置导航那一格用的 MCP 标记（16x16，几何取自官方 favicon）
   assets/nav-preview.png  改后导航那一格的模拟对照图（自绘，非截图；README 8.6 引用）
   tools/verify.ts   自检：243 条断言，纯 Node 零依赖（.ts 入口直接跑，无需构建）
+  tools/build.ts    esbuild 打包两半边 + 客户端包装 + 写 lib/.build-manifest.json 构建指纹
   .gitattributes    统一 LF（本仓库全 LF，混入 CRLF 会产生整文件 diff）
   .gitignore        node_modules / 构建产物 / 日志 / 编辑器 / 系统文件
 ```

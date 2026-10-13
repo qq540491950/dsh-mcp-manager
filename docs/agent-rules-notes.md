@@ -184,3 +184,34 @@
 4. **DSH 升级后的行号**：第 2 节所有行号都会漂移，复核请按关键字符串重新定位。
 5. **`dsh --profile "$DSH_PROFILE" --dump-config`**：官方文档与上游 README 都提到它，本轮未实际执行（未在会话中调用 `dsh` CLI）。
 6. **上游 insert 共享对象缺陷**：来自 discussions，未在本机复现；如果哪天真遇到"插件被静默 disable"或 `duplicate loader entry id`，先回到那两条讨论。
+
+---
+
+## 9. 交付用的编码检查一键脚本
+
+[AGENTS.md](../AGENTS.md) 的 4.6 引用本节。检查 `src/**`、`tools/**`、`lib/**` 里有没有 BOM、`U+FFFD`、CRLF（已验证可直接跑，输出 `encoding clean` 即通过）：
+
+```powershell
+node -e "const fs=require('fs'),p=require('path');const bad=[];const walk=d=>fs.readdirSync(d,{withFileTypes:true}).forEach(e=>{const f=p.join(d,e.name);e.isDirectory()?walk(f):/\.(ts|tsx|js|json|md)$/.test(e.name)&&(()=>{const b=fs.readFileSync(f),t=b.toString('utf8');(b[0]===0xEF||t.includes('\uFFFD')||t.includes('\r\n'))&&bad.push(f)})()});['src','tools','lib'].forEach(walk);console.log(bad.length?'BAD: '+bad.join(', '):'encoding clean (no BOM/FFFD/CRLF)')"
+```
+
+旧版 AGENTS.md 只检查 `lib/client.js` 一个文件——那是产物且已由构建生成，检查它抓不到手写源码的问题。
+
+---
+
+## 10. 从 AGENTS.md 精简出去的操作细节
+
+这些是"在 AGENTS 里占地方、但按需查一次就够"的内容，规则本身仍留在 AGENTS。
+
+**客户端座位台账的确切调用**（AGENTS §5 只留了方法名）：
+
+```
+cordis_inspect_query(platform: client, provider: Slots, method: listSubTree,
+                     input: {"root":"settings.section"})
+```
+
+**group 子条目不可单独寻址**：`plugin_manager` 对 `include:mcp-manager` 之类会报 `readOnlyReason: "unaddressable"`。这正是本插件"整体重写 group config 数组"设计的由来（子条目没有独立可寻址的写入路径）。契约侧字面量证据见第 2 节；运行时返回**本轮未复现**（本会话没有该工具）。
+
+**导航图标不可由插件提供**：`settings.section` 的注册契约只有 `id`/`order`/`label`，图标是 `navIcon(id)` 硬编码查表 + 齿轮兜底（证据见第 2 节）。本插件靠给自己那一格打 `data-mcpm-nav` + CSS 覆盖实现（AGENTS 3.8 的例外），代价是依赖官方 DOM 结构。上游 [discussion #1229](https://github.com/deepseek-ai/deepseek-harness/discussions/1229) 正是要补上可选 `icon`。
+
+**判据权威顺序**（AGENTS §5 的一句话展开）：① 本机**已安装**的 DSH 产物（`resources/app.asar` 内的 `lib/index.js` + `lib/types/**/*.d.ts`）——官方 skills 自己写着 *"the installed Harness is the authority"*；② 随安装附带的官方 skills 文档；③ 官方 GitHub 仓库与 discussions；④ 二手文章。**不要**用 ④ 去推翻 ①。
