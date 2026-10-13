@@ -18,7 +18,7 @@
  *      （启停/删除/保存）会让宿主清掉旧记录，所以那之后必然经过这一态，
  *      由 `recheck` 补一次探测把它推回绿/红（见 section.tsx）。
  */
-import type { FailureRecord, ServerSnapshot, Snapshot } from '../../shared/types'
+import type { FailureRecord, ServerSnapshot, Snapshot } from '../../shared/types.ts'
 
 /** 一条服务器的展示状态。`reason` 只有"红"的三种状态才有。 */
 export interface StatusView {

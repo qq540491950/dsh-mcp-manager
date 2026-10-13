@@ -2,7 +2,7 @@
  * 表单：文本字段 + 服务器新增/编辑面板。
  */
 import type { ReactElement } from 'react';
-import type { Draft } from './core/draft';
+import type { Draft } from './core/draft.ts';
 export interface FieldProps {
     label: string;
     value: string;

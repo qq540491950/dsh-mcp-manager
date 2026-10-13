@@ -10,7 +10,7 @@
  * 依赖官方 DOM 结构的代价是：DSH 改结构就静默失效（最坏只是继续显示齿轮）。
  * 若官方将来支持 `icon` 注册参数，就删掉这个文件。
  */
-import { SECTION_LABEL } from '../shared/constants'
+import { SECTION_LABEL } from '../shared/constants.ts'
 
 /** 官方设置面板的定位锚点：SettingsPanel 上写死的 data 属性，比 CSS-module 哈希名稳。 */
 const NAV_DIALOG_SELECTOR = '[data-shortcut-modal="settings"]'

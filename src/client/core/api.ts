@@ -8,9 +8,9 @@
  * 写入一律传**操作**而不是整份数组：「启停」「删除」由宿主按 serverName 定位那一行原地改，
  * 字段不可能丢（AGENTS 2.5）；只有表单提交才用整数组替换（`op: "save"`）。
  */
-import { ROUTE } from '../../shared/constants'
-import { asRecord } from '../../shared/guards'
-import type { Snapshot } from '../../shared/types'
+import { ROUTE } from '../../shared/constants.ts'
+import { asRecord } from '../../shared/guards.ts'
+import type { Snapshot } from '../../shared/types.ts'
 
 /**
  * 请求超时。没有它的话，一旦宿主侧的 reconcile 卡住，`fetch` 永不 settle，

@@ -13,6 +13,12 @@
     "noUnusedParameters": true,
     "verbatimModuleSyntax": true,
     "isolatedModules": true,
+    // 相对 import **必须带扩展名**（`./rows.ts`）。理由：自检脚本要直接 import TypeScript 源码
+    // 做单测（Node ≥22.18 的类型擦除），而 Node 的 ESM 解析器不认无扩展名的相对路径。
+    // 显式扩展名对 tsc / esbuild / Node 三方都成立；产物里的 .d.ts 由
+    // rewriteRelativeImportExtensions 改写成 .js。
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true
   }

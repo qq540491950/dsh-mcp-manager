@@ -2,7 +2,7 @@
  * 一条已有服务器的摘要行：圆点 + 名称 + 同一行内的三个控件。
  */
 import type { ReactElement } from 'react';
-import type { ServerSnapshot } from '../shared/types';
+import type { ServerSnapshot } from '../shared/types.ts';
 export interface ServerRowProps {
     server: ServerSnapshot;
     /** 宿主能不能主动探测：决定"active 但没记录"是报「未检测」还是报绿。 */

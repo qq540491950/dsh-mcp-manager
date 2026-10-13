@@ -1,4 +1,4 @@
-import type { ServerSnapshot, Snapshot } from '../../shared/types';
+import type { ServerSnapshot, Snapshot } from '../../shared/types.ts';
 /** 表单里的一份可编辑草稿（全部是字符串，多行字段用换行分隔）。 */
 export interface Draft {
     rowId?: string | undefined;

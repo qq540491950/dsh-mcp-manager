@@ -2,8 +2,8 @@
  * 表单：文本字段 + 服务器新增/编辑面板。
  */
 import type { ChangeEvent, FormEvent, ReactElement } from 'react'
-import type { Draft } from './core/draft'
-import { Fragment, h } from './react'
+import type { Draft } from './core/draft.ts'
+import { Fragment, h } from './react.ts'
 
 /** 传输方式（顺序即下拉框顺序）。 */
 const TRANSPORTS = ['streamable-http', 'stdio']

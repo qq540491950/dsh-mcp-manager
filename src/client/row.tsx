@@ -2,12 +2,12 @@
  * 一条已有服务器的摘要行：圆点 + 名称 + 同一行内的三个控件。
  */
 import type { ReactElement } from 'react'
-import { asRecord, asText } from '../shared/guards'
-import type { ServerSnapshot, ToolRecord } from '../shared/types'
-import { TOOL_PREVIEW_LIMIT } from './core/api'
-import { targetOf } from './core/draft'
-import { statusOf } from './core/status'
-import { Fragment, h, useState } from './react'
+import { asRecord, asText } from '../shared/guards.ts'
+import type { ServerSnapshot, ToolRecord } from '../shared/types.ts'
+import { TOOL_PREVIEW_LIMIT } from './core/api.ts'
+import { targetOf } from './core/draft.ts'
+import { statusOf } from './core/status.ts'
+import { Fragment, h, useState } from './react.ts'
 
 export interface ServerRowProps {
   server: ServerSnapshot

@@ -10,8 +10,8 @@
  *   · 行内操作 → 只带 `{ serverName, ... }`（宿主定点改，字段不可能丢）；
  *   · 表单提交 → `serverOfExisting()` 把对象**转成宿主认识的文本形状**再回传。
  */
-import { asRecord, asText, isRecord } from '../../shared/guards'
-import type { ServerSnapshot, Snapshot } from '../../shared/types'
+import { asRecord, asText, isRecord } from '../../shared/guards.ts'
+import type { ServerSnapshot, Snapshot } from '../../shared/types.ts'
 
 /** 表单里的一份可编辑草稿（全部是字符串，多行字段用换行分隔）。 */
 export interface Draft {

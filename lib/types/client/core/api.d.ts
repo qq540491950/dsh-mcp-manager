@@ -1,4 +1,4 @@
-import type { Snapshot } from '../../shared/types';
+import type { Snapshot } from '../../shared/types.ts';
 /**
  * 请求超时。没有它的话，一旦宿主侧的 reconcile 卡住，`fetch` 永不 settle，
  * `busy` 永远为 true → **按钮永久发灰、状态也不变**（正是"点击停用置灰但状态不变"

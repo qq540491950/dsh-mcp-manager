@@ -2300,6 +2300,230 @@ check(
 }
 //#endregion
 
+//#region F. 纯函数直接单测
+/**
+ * F 区是 P2（把纯函数从闭包里抽出来）的回报。
+ *
+ * 在这之前，状态机只能靠"渲染出某段文案"间接覆盖（D 区），宿主那三个整理函数只能靠
+ * B 区走一遍 handler。抽成模块之后这里直接 import **TypeScript 源码**（Node ≥22.18 的类型擦除），
+ * 一条分支一条断言，失败时直接指出是哪个分支错了，而不是"某个页面少了一行字"。
+ *
+ * 纪律不变：断言不碰实现细节，只钉输入 → 输出。
+ */
+{
+  const { statusOf, settling, failureText } = await import('../src/client/core/status.ts')
+  const { draftOf, serverOf, serverOfExisting, pairsToText, targetOf, supports, suggestName } =
+    await import('../src/client/core/draft.ts')
+  const { normalizeRow, toRecord, toStringArray } = await import('../src/host/rows.ts')
+  const { isRecord, asRecord, asText, readString } = await import('../src/shared/guards.ts')
+
+  /** 期望抛出（返回 true 表示确实抛了）。 */
+  const throws = (run) => {
+    try {
+      run()
+      return false
+    } catch {
+      return true
+    }
+  }
+  /** 造一条服务器记录；只写关心的字段。 */
+  const srv = (over) => ({ index: 0, config: {}, phase: 'active', ...over })
+  const probeOk = { connected: true, status: 200, detail: 'HTTP 200', at: 1 }
+  const probeFail = { connected: false, status: 401, detail: 'HTTP 401', at: 1 }
+
+  // —— statusOf：判定顺序就是优先级（AGENTS 3.10 的四色语义）——
+  check('F1 已停用 → 灰', statusOf(srv({ disabled: true }), true).text === '已停用')
+  check('F2 检测通过 + 条目 active → 绿', statusOf(srv({ probe: probeOk }), true).text === '运行中')
+  check(
+    'F3 检测失败 → 红，且原因带上 detail',
+    statusOf(srv({ probe: probeFail }), true).text === '连接失败' &&
+      statusOf(srv({ probe: probeFail }), true).reason.includes('HTTP 401'),
+  )
+  check(
+    'F4 探不了（connected null，stdio）但条目 active → 绿（相位是唯一证据）',
+    statusOf(srv({ probe: { connected: null, detail: '仅能探测 streamable-http', at: 1 } }), true).text === '运行中',
+  )
+  check(
+    'F5 有日志失败记录 → 连接异常（红），原因带原文',
+    statusOf(srv({ error: { message: 'connect ECONNREFUSED', at: 1, count: 1 } }), true).text === '连接异常',
+  )
+  check('F6 fiber FAILED → 加载失败', statusOf(srv({ phase: 'failed' }), true).text === '加载失败')
+  check(
+    'F7 pending / loading → 启动中（琥珀）',
+    statusOf(srv({ phase: 'pending' }), true).text === '启动中' &&
+      statusOf(srv({ phase: 'loading' }), true).text === '启动中',
+  )
+  check('F8 active 但没有探测记录 + 宿主能探测 → 未检测（**不报绿**）', statusOf(srv({}), true).text === '未检测')
+  check('F9 active 但没有探测记录 + 旧宿主（不能探测）→ 运行中（向后兼容）', statusOf(srv({}), false).text === '运行中')
+  check('F10 没有活条目 → 未启动', statusOf(srv({ phase: 'absent' }), true).text === '未启动')
+  check(
+    'F11 优先级：检测失败压过日志记录（"现在" > "过去"）',
+    statusOf(srv({ probe: probeFail, error: { message: '旧错误' } }), true).text === '连接失败',
+  )
+  check(
+    'F12 优先级：检测通过 + active 压过日志记录（旧失败不再代表现状）',
+    statusOf(srv({ probe: probeOk, error: { message: '旧错误' } }), true).text === '运行中',
+  )
+
+  // —— settling：写入之后"相位稳定了吗" ——
+  check(
+    'F13 探通了但条目还没挂上（loading）→ 还没稳定',
+    settling({ servers: [srv({ phase: 'loading', probe: probeOk })] }) === true,
+  )
+  check(
+    'F14 active 或 failed 是终态 → 不再等',
+    settling({ servers: [srv({ phase: 'active', probe: probeOk })] }) === false &&
+      settling({ servers: [srv({ phase: 'failed', probe: probeOk })] }) === false,
+  )
+  check(
+    'F15 停用的条目不算"没稳定"',
+    settling({ servers: [srv({ disabled: true, phase: 'loading', probe: probeOk })] }) === false,
+  )
+  check('F16 快照缺失时不抛（旧宿主/首屏）', settling(null) === false && settling(undefined) === false)
+
+  // —— failureText：时间 + 次数 + 原文 ——
+  check(
+    'F17 次数 > 1 时带上「已失败 N 次」',
+    failureText({ message: 'boom', count: 3, at: Date.UTC(2026, 0, 1) }).includes('已失败 3 次'),
+  )
+  check('F18 只有 message 时就是原文', failureText({ message: 'boom' }) === 'boom')
+  check('F19 空记录 → 空串（不抛）', failureText({}) === '')
+
+  // —— draft.ts：记录 ↔ 草稿 ↔ 载荷 ——
+  check(
+    'F20 draftOf 把对象 headers 转成 KEY=VALUE 多行文本',
+    draftOf(srv({ config: { serverName: 'x', headers: { A: '1', B: '2' } } })).headers === 'A=1\nB=2',
+  )
+  check(
+    'F21 serverOfExisting 把 headers/env 转成文本形状（否则旧宿主静默清空）',
+    (() => {
+      const flat = serverOfExisting(
+        srv({ config: { serverName: 'x', headers: { Authorization: 'Bearer k' }, env: { A: '1' } } }),
+      )
+      return flat.headers === 'Authorization=Bearer k' && flat.env === 'A=1'
+    })(),
+  )
+  check(
+    'F22 serverOfExisting 把 args 数组转成换行文本',
+    serverOfExisting(srv({ config: { serverName: 'x', args: ['-y', 'pkg'] } })).args === '-y\npkg',
+  )
+  check(
+    'F23 serverOf 按传输方式给出不同字段（http 不带 command，stdio 不带 url）',
+    (() => {
+      const http = serverOf({
+        serverName: 'a',
+        transport: 'streamable-http',
+        url: 'http://x/mcp',
+        command: 'npx',
+        args: '',
+        env: '',
+        headers: 'H=1',
+        cwd: '',
+        disabled: false,
+      })
+      const stdio = serverOf({
+        serverName: 'b',
+        transport: 'stdio',
+        url: 'http://x/mcp',
+        command: 'npx',
+        args: '-y',
+        env: 'E=1',
+        headers: 'H=1',
+        cwd: '/tmp',
+        disabled: false,
+      })
+      return !('command' in http) && !('url' in stdio) && http.url === 'http://x/mcp' && stdio.command === 'npx'
+    })(),
+  )
+  check(
+    'F24 targetOf：stdio 拼命令行，http 给 url，缺字段给占位文案',
+    targetOf({ transport: 'stdio', command: 'npx', args: ['-y', 'pkg'] }) === 'npx -y pkg' &&
+      targetOf({ transport: 'streamable-http', url: 'http://x' }) === 'http://x' &&
+      targetOf({ transport: 'streamable-http' }) === '(未填写 url)',
+  )
+  check(
+    'F25 supports：能力表缺失/不含该项 → false',
+    supports({ capabilities: ['probe'] }, 'probe') === true &&
+      supports({ capabilities: ['probe'] }, 'remove') === false &&
+      supports(null, 'probe') === false,
+  )
+  check(
+    'F26 suggestName 跳过已占用的名字',
+    suggestName([srv({ config: { serverName: 'server-1' } })]) === 'server-2' && suggestName([]) === 'server-1',
+  )
+  check('F27 pairsToText 对非对象返回空串', pairsToText(undefined) === '' && pairsToText('A=1') === '')
+
+  // —— rows.ts：表单值 → YAML 行 ——
+  check(
+    'F28 toRecord 认三种形状（对象 / 字符串数组 / KEY=VALUE 多行文本）',
+    JSON.stringify(toRecord({ A: '1' })) === '{"A":"1"}' &&
+      JSON.stringify(toRecord(['A=1'])) === '{"A":"1"}' &&
+      JSON.stringify(toRecord('A=1\nB=2')) === '{"A":"1","B":"2"}',
+  )
+  check(
+    'F29 toRecord 忽略注释行与空行，空输入 → undefined',
+    toRecord('# c\n\nA=1') !== undefined && toRecord('') === undefined,
+  )
+  check(
+    'F30 toRecord 遇到缺 "=" 的行**抛错**（不静默丢字段）',
+    throws(() => toRecord('NOEQUALS')),
+  )
+  check(
+    'F31 toStringArray：数组 / 换行文本都认，其余 → 空数组',
+    JSON.stringify(toStringArray(['a', 'b'])) === '["a","b"]' &&
+      JSON.stringify(toStringArray('a\nb')) === '["a","b"]' &&
+      JSON.stringify(toStringArray(42)) === '[]',
+  )
+  check(
+    'F32 normalizeRow 保留 rowId 与 disabled（Loader 才认得出是同一个条目）',
+    (() => {
+      const row = normalizeRow({
+        serverName: 'ctx',
+        transport: 'streamable-http',
+        url: 'http://x/mcp',
+        headers: 'H=1',
+        rowId: 'mcp-ctx',
+        disabled: true,
+      })
+      return row.id === 'mcp-ctx' && row.disabled === true && row.name === '@deepseek-ai/dsh-mcp-client'
+    })(),
+  )
+  check(
+    'F33 normalizeRow 校验 serverName / url / command（非法就抛，不落盘半截配置）',
+    throws(() => normalizeRow({ serverName: '有中文', transport: 'streamable-http', url: 'http://x' })) &&
+      throws(() => normalizeRow({ serverName: 'a', transport: 'streamable-http' })) &&
+      throws(() => normalizeRow({ serverName: 'a', transport: 'stdio' })),
+  )
+  check(
+    'F34 normalizeRow 只写合法字段：toolCallTimeoutMs 非有限数不写，空 args/env 不写',
+    (() => {
+      const row = normalizeRow({
+        serverName: 'a',
+        transport: 'stdio',
+        command: 'npx',
+        args: '',
+        env: '',
+        toolCallTimeoutMs: Number.POSITIVE_INFINITY,
+      })
+      const config = row.config
+      return !('args' in config) && !('env' in config) && !('toolCallTimeoutMs' in config)
+    })(),
+  )
+
+  // —— guards.ts：不可信输入的收窄 ——
+  check('F35 isRecord 排掉数组与 null', isRecord({}) === true && isRecord([]) === false && isRecord(null) === false)
+  check('F36 asRecord 非对象 → 空表（读属性不会炸）', JSON.stringify(asRecord('x')) === '{}')
+  check(
+    'F37 asText 只认 string/number：对象给 "" 而不是 "[object Object]"',
+    asText('a') === 'a' && asText(12) === '12' && asText({}) === '' && asText([1]) === '',
+  )
+  check(
+    'F38 readString 非字符串 → undefined（"没写"与"写了空串"可区分）',
+    readString({ a: '' }, 'a') === '' && readString({ a: 1 }, 'a') === undefined,
+  )
+}
+//#endregion
+
 const total = passed + failures.length
 if (failures.length === 0) {
   console.log(`PASS ${String(passed)}/${String(total)}`)

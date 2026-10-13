@@ -654,3 +654,59 @@ E1/E2/E3/E7 精确报错且**没有连带误报**（E6 保持绿），随后还�
 
 **尚未做**：P5 的纯函数单测（`normalizeRow` / `toRecord` 还在 `src/host/index.ts` 里没抽出来）、
 `lib/client.js` 的 CSS 仍是原样搬过来的（P2 只抽了 TS 逻辑，没动样式）。
+
+### P2 纯函数抽取 + P5 测试升级 —— 已完成
+
+**产出**
+
+| 文件 | 说明 |
+|---|---|
+| `src/shared/guards.ts` | 不可信输入的收窄守卫（`isRecord` / `asRecord` / `asText` / `readString`），两半边共用 |
+| `src/host/rows.ts` | 宿主纯函数：`normalizeRow` / `toStringArray` / `toRecord`（从 `apply()` 闭包里抽出来） |
+| `src/client/core/status.ts` / `draft.ts` | 状态机与记录↔草稿↔载荷整理（P4 已抽，此处确认导出齐全） |
+| `tools/verify.mjs` **F 区** | **38 条纯函数单测**，直接 `await import('../src/**/*.ts')` |
+
+**关键决定**
+
+1. **相对 import 一律带扩展名**（`./rows.ts`）。理由：自检脚本要直接 import TypeScript 源码，
+   而 Node 的 ESM 解析器不认无扩展名的相对路径（第一次跑 F 区就是被这个卡住的）。
+   配套打开 `allowImportingTsExtensions` + `rewriteRelativeImportExtensions`
+   （后者把产物 `.d.ts` 里的 `.ts` 改写成 `.js`）。三方（tsc / esbuild / Node）由此一致。
+2. **单测不引入任何测试框架**：`node tools/verify.mjs` 依然是唯一必跑命令，
+   依然**不装 node_modules 也能跑**。这是有意的取舍 —— 自检脚本是用户的最后一道防线，
+   不该因为依赖没装好而失效。
+3. **F 区只钉输入 → 输出**，不碰实现写法（D 区那些"渲染出某段文案"的断言留在 D 区）。
+
+**F 区覆盖**（38 条）
+
+| 范围 | 断言 | 覆盖点 |
+|---|---|---|
+| `statusOf` | F1–F12 | 四色语义的 8 条分支 + **优先级**（检测失败压过日志、检测通过压过旧日志、stdio 探不了照旧报绿、能探测但没记录报「未检测」、旧宿主退回相位） |
+| `settling` | F13–F16 | 探通但相位没稳 / 终态不再等 / 停用不算 / 快照缺失不抛 |
+| `failureText` | F17–F19 | 次数、原文、空记录 |
+| `draft.ts` | F20–F27 | 对象 headers → 多行文本、`serverOfExisting` 的文本化（丢字段事故的正解）、args 换行、两条传输分支的字段差异、`targetOf` 占位文案、能力协商、默认名避撞、非对象输入 |
+| `rows.ts` | F28–F34 | `toRecord` 三形状 + 注释行 + 缺 `=` 抛错、`toStringArray`、`normalizeRow` 的保留/校验/只写合法字段 |
+| `guards.ts` | F35–F38 | `isRecord` 排数组与 null、`asRecord` 降级、`asText` 不产出 `"[object Object]"`、`readString` 区分"没写"与"空串" |
+
+**自检与反向验证**
+
+- `pnpm check` 全绿；`node tools/verify.mjs` → **PASS 241/241**（203 + 38）。
+- **反向验证（变异矩阵，6 个变异）**：往纯函数里注入真实 bug，逐条确认命中它该命中的断言：
+
+  | 变异 | 命中 |
+  |---|---|
+  | statusOf 丢掉"检测失败"分支 | F3, F11 |
+  | settling 不再排除停用条目 | F15 |
+  | toRecord 不再认"对象形状"（headers/env 会被静默清空） | F28 |
+  | normalizeRow 不再校验 serverName | F33 |
+  | asText 退回 `String()` | F37, **F24, F33** |
+  | serverOfExisting 不再把 headers 转成文本 | F21 |
+
+  每次都附带 E10（src 改了但没重建产物）。`asText` 那次的多处连带命中是**合理**的：
+  它是"读不可信标量"的唯一出口，一退化就会让 `targetOf` 把缺失的 url 变成 `"undefined"`、
+  让 `normalizeRow` 把 `"undefined"` 当合法名字收下 —— 一处坏、三处报警，正是想要的效果。
+  （这也是本仓库第二次出现"我的期望集合写窄了"：断言比作者以为的更敏感，不算坏事。）
+
+**P1–P5 至此收口**：两半边都是 TypeScript，两个产物都由 `tools/build.mjs` 生成并带构建指纹，
+断言从 193 条涨到 241 条，其中 38 条是纯函数直接单测。
+剩余的是发布向的 P6–P8（bundle 打包 / 端到端安装验证 / 上架），与本轮"先 TS 化"的取舍无关。

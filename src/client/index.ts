@@ -26,11 +26,11 @@
  *   form.tsx        表单          row.tsx     一行摘要
  *   section.tsx     整页
  */
-import { SECTION_ID, SECTION_LABEL } from '../shared/constants'
-import { markNavCell } from './nav-mark'
-import { McpSection } from './section'
-import { ensureStyles } from './styles'
-import type { ClientContext } from './service-types'
+import { SECTION_ID, SECTION_LABEL } from '../shared/constants.ts'
+import { markNavCell } from './nav-mark.ts'
+import { McpSection } from './section.tsx'
+import { ensureStyles } from './styles.ts'
+import type { ClientContext } from './service-types.ts'
 
 /**
  * 客户端插件体：在设置导航最下方注册一页 MCP 管理，并把导航那一格的齿轮换成 MCP 标记。

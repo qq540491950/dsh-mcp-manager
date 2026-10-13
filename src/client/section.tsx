@@ -9,15 +9,15 @@
  * `call()` 的第三个参数就是"写进哪条通道"，**必须只写一条**（AGENTS 3.9 / D21–D23）。
  */
 import type { ReactElement } from 'react'
-import { asRecord, asText } from '../shared/guards'
-import type { ServerSnapshot, Snapshot } from '../shared/types'
-import { describeError, getSnapshot, postOp, SETTLE_ATTEMPTS, SETTLE_INTERVAL_MS, sleep } from './core/api'
-import { draftOf, serverOf, serverOfExisting, supports, suggestName } from './core/draft'
-import type { Draft } from './core/draft'
-import { settling } from './core/status'
-import { ServerForm } from './form'
-import { h, useCallback, useEffect, useMemo, useState } from './react'
-import { ServerRow } from './row'
+import { asRecord, asText } from '../shared/guards.ts'
+import type { ServerSnapshot, Snapshot } from '../shared/types.ts'
+import { describeError, getSnapshot, postOp, SETTLE_ATTEMPTS, SETTLE_INTERVAL_MS, sleep } from './core/api.ts'
+import { draftOf, serverOf, serverOfExisting, supports, suggestName } from './core/draft.ts'
+import type { Draft } from './core/draft.ts'
+import { settling } from './core/status.ts'
+import { ServerForm } from './form.tsx'
+import { h, useCallback, useEffect, useMemo, useState } from './react.ts'
+import { ServerRow } from './row.tsx'
 
 /** 表单提交的载荷：`op: "save"` + 整份数组。 */
 type SavePayload = { op: 'save'; servers: unknown[] }
