@@ -520,3 +520,72 @@ E1/E2/E3/E7 精确报错且**没有连带误报**（E6 保持绿），随后还�
 
 **尚未做**：`tools/build.mjs`（esbuild 打包 + 客户端包装）、`src/host`、`src/client`。
 在 P3 之前，`lib/index.js` 与 `lib/client.js` 仍是手写的那两份，E 区只是先把"唯一来源"钉住。
+
+### P3 宿主半边 TS 化 + 构建流水线 —— 已完成
+
+**产出**
+
+| 文件 | 说明 |
+|---|---|
+| `src/host/index.ts` | 由 `lib/index.js` **机械搬迁**（`git mv`，注释一行未丢）后再逐处补类型；行为不变 |
+| `src/host/service-types.ts` | 宿主用到的 Service **最小接口**（实测契约，不是官方声明的复刻） |
+| `src/shared/types.ts` | 两半边共享的协议类型：`Snapshot` / `ServerSnapshot` / `FiberPhase` / `FailureRecord` / `ProbeRecord` / `ToolRecord` / `ServerConfig` |
+| `tools/build.mjs` | esbuild 打包宿主半边 → 单文件 `lib/index.js`；写构建指纹 `lib/.build-manifest.json` |
+| `lib/index.js` | **从手写改为生成**（产物入库；指纹保证与 src 同步） |
+| `lib/types/**` | `tsc -b` 产出（`tsconfig.host.json` 是 composite + emitDeclarationOnly） |
+| `tools/verify.mjs` | 新增 E9/E10（构建指纹）；改造 8 条"耦合实现写法"的断言 |
+
+**执行中的决定**
+
+1. **构建器 esbuild `bundle: true`**：宿主半边必须"运行时零 import"，而 tsc 会留下
+   `import '../shared/constants.js'`；只有打包才能把相对模块内联成单文件。
+2. **`charset: 'utf8'` 是必须的**：esbuild 默认把非 ASCII 转义成 `\uXXXX`，
+   产物里全是中文错误文案 —— 转义后所有"按文案断言"的自检静默失效（第一次构建就踩到了）。
+3. **`tsconfig.host.json` 的 `types` 从 `[]` 改为 `["node"]`**：这一半就跑在 Node 里，
+   `fetch`/`Response`/`setTimeout` 本来就该有类型。真正的半边隔离是**没有 DOM**（`lib: ["ES2022"]`），
+   不是"没有 node 全局"。
+4. **不可信输入一律 `unknown` + 类型守卫**：`isRecord` / `asRecord` / `asText` / `readString`，
+   不用 `as` 糊过去。收益是 lint 的 `no-unsafe-*` 全绿，而且代码里"哪些值可信"一目了然。
+5. **断言改造原则：不得耦合构建器的输出格式。** 产物是生成的，`'x'` vs `"x"`、
+   `8000` vs `8e3` 都会随构建器变。改动如下（每条都做了反向验证）：
+
+   | 断言 | 原来 | 现在 | 理由 |
+   |---|---|---|---|
+   | A8 | 产物无 `import` | 产物无 `import` **且无 `require`** | 升级：打包没内联时 require 也会漏 |
+   | A9/A10 | 宿主用单引号 | 单双引号都认 | 守的是"同一个协议值"，不是引号风格 |
+   | A21 | `case 'save'` | `case ["']save["']` | 同上 |
+   | A22 | 正则匹配 `typeof value === 'object' && !Array.isArray(value)` | 结构存在性（`toRecord` 里仍有对象分支） | 那是**实现写法**；行为由 B18/B29/B34/B39/B40 守 |
+   | A24 | capabilities 单引号字面量 | 正则（单双引号都认） | 同上 |
+   | A24d | `PROBE_TIMEOUT_MS = \d+` | `[\d.eE+]+` | esbuild 把 8000 打印成 `8e3` |
+   | A24e | 相位表字面量 | 解析数组内容与顺序后比对 | 同上 |
+   | A24f | `Number(/(\d+)/)` | `Number(/([\d.eE+]+)/)` | 不修就会得到 `8`，把 B69 的夹具一起带偏 |
+
+6. **新增 E9/E10 构建指纹**：`lib/.build-manifest.json` 记录产物自身的 sha256 + 每个输入的 sha256；
+   自检逐项复核。这是"产物入库"这个选择的配套护栏 —— 没有它，"改了 src 忘了 build" 会静默通过。
+
+**行为差异（诚实清单，全部是畸形输入下的改进）**
+
+- `liveChildren()`：既没有 `serverName` 也没有 `id` 的畸形条目**跳过**（旧写法会以 `undefined` 为 Map 键，
+  永远不会被查中，效果等价）。
+- `asText()`：`serverName: {}` 这类畸形值按"没填"处理，错误信息是"serverName "" 非法"，
+  而不是把对象变成 `"[object Object]"` 当成名字（数字仍按原样读，`serverName: 123` → `"123"`）。
+- `response.ok !== true` → `!response.ok`（类型已知是 boolean，等价）。
+- 探测超时回调从箭头简写改成块体（`no-confusing-void-expression`），等价。
+
+**自检与反向验证**
+
+- `pnpm check` 全绿（tsc -b / eslint / prettier --check / build / verify），`node tools/verify.mjs` → **PASS 203/203**。
+  B 区（宿主行为，含写入、启停、删除、探测、日志采集、工具名单共 40+ 条）全部通过 ——
+  这是"搬迁没有改坏行为"的主要证据。
+- **断言反向验证（变异矩阵）**：对 9 条被改写的断言各注入一个变异（产物里塞 import、路由改错、
+  组 id 改错、删 `save` 分支、`toRecord` 不再认对象、capabilities 少一项、预算退回 3s、
+  相位表顺序错、探测丢 `AbortController`），逐条确认**只打中它该打中的那一条**，基线 9 条全绿。
+- **E10 真管线注入**：在 `src/host/index.ts` 加一行注释但不重新构建 → `FAIL 1/203`，
+  唯一失败项就是 E10，且直接点名 `src/host/index.ts` 与"先跑 pnpm build"。
+- **ESLint 宿主零 import 规则双向验证**：注入 `import { readFile } from 'node:fs/promises'` → 精确报错；
+  换成 `import type { Stats } from 'node:fs'` → 该规则**不报**（只剩 `no-unused-vars`）。
+  规则本身也踩过一次坑：最初的写法用 `patterns: ['**', '!./**', '!../**']`，
+  实测**把相对 import 也拦了**（eslint 的 minimatch 否定式不如预期），改成
+  `ImportDeclaration[source.value=/^[^./]/]:not([importKind='type'])]` 选择器后语义才对。
+
+**尚未做**：`src/client`（P4：TSX 化 + 包装脚本）、纯函数抽取与单测（P2）、`lib/client.js` 仍是手写。

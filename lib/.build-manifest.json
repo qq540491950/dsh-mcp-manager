@@ -1,0 +1,15 @@
+{
+  "tool": "esbuild@0.28.2",
+  "targets": [
+    {
+      "output": "lib/index.js",
+      "outputSha256": "7f8fef428cc04552abb33ac20b1dbdb83226b8f8fd07841d53eac0357b53662e",
+      "inputs": {
+        "src/host/index.ts": "71de0cc1ce146ce1ffa901c351138b8883f5938ac2f978e7cbabc4ef109cc1dd",
+        "src/host/service-types.ts": "e08327405d55d5ad270e0e35d5d41fe518dc2d21816332a5df10709297009695",
+        "src/shared/constants.ts": "2b22ccaf5b28a1e700a1b825f21f6438fb072f731c76239e5d992d7e18be3209",
+        "src/shared/types.ts": "b56f5ef6daa89730631229dba02dc1d743cc0fca83383d67a43ac59945966d33"
+      }
+    }
+  ]
+}

@@ -11,6 +11,7 @@
 import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { createHash } from 'node:crypto'
 import vm from 'node:vm'
 
 /**
@@ -52,10 +53,13 @@ const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'))
 const hostSource = await readFile(join(root, 'lib', 'index.js'), 'utf8')
 const clientSource = await readFile(join(root, 'lib', 'client.js'), 'utf8')
 /**
- * 实现里的探测预算（ms）。B69 的自限兜底与新断言都从源码里取，避免同一个数字写死两处
+ * 实现里的探测预算（ms）。B69 的自限兜底与新断言都从**产物**里取，避免同一个数字写死两处
  * ——否则改预算时自检会先炸在夹具上，让人误以为是实现错了。
+ *
+ * 这里必须容忍构建器的数字写法：esbuild 会把 `8000` 打印成 `8e3`（数字字面量缩短），
+ * 所以不能只匹配 `\d+`（那样会得到 8 而不是 8000，把 B69 的夹具一起带偏）。
  */
-const probeBudgetMs = Number(/PROBE_TIMEOUT_MS = (\d+)/.exec(hostSource)?.[1] ?? 0)
+const probeBudgetMs = Number(/PROBE_TIMEOUT_MS = ([\d.eE+]+)/.exec(hostSource)?.[1] ?? 0)
 
 //#region A. 包清单
 check('A1 package name', manifest.name === 'dsh-mcp-manager', manifest.name)
@@ -84,12 +88,26 @@ check(
   ),
   [...clientSource.matchAll(/require\((?:"|')([^"']+)(?:"|')\)/g)].map(([, s]) => s).join(', '),
 )
-check('A8 宿主半边零 import（磁盘路径解析不到裸模块）', !/^\s*import\s/m.test(hostSource))
+// 宿主产物现在由 tools/build.mjs 从 src/host/index.ts 打包生成（相对 import 被内联、
+// 类型被擦除），所以断言必须看**产物**：这里同时禁掉 import 与 require —— 只要产物里出现
+// 任何一个，说明打包没把依赖内联，Loader 从磁盘路径加载时就会解析失败。
+check(
+  'A8 宿主产物零 import/require（磁盘路径解析不到裸模块）',
+  !/^\s*import\s/m.test(hostSource) && !/\brequire\s*\(/.test(hostSource),
+)
+// 产物由构建器生成，所以下面这些"字面量一致"的断言**不得耦合引号风格**：
+// 它们守的是"两半边写着同一个协议值"，不是"宿主用单引号"。
+// 更严格的"值来自唯一来源（src/shared/constants.ts）"由 E 区守。
 check(
   'A9 两半边的路由字面量一致',
-  hostSource.includes("'/api/mcp-manager'") && clientSource.includes('"/api/mcp-manager"'),
+  (hostSource.includes('"/api/mcp-manager"') || hostSource.includes("'/api/mcp-manager'")) &&
+    clientSource.includes('"/api/mcp-manager"'),
 )
-check('A10 两半边的组条目 id 一致', hostSource.includes("'mcp-manager'") && clientSource.includes('mcp-manager'))
+check(
+  'A10 两半边的组条目 id 一致',
+  (hostSource.includes('"mcp-manager"') || hostSource.includes("'mcp-manager'")) &&
+    clientSource.includes('mcp-manager'),
+)
 
 // 主题适配护栏：硬编码颜色在深色主题下会造成「白底白字」这类不可见文本。
 // 规则：客户端里的十六进制颜色只允许作为 var() 的 fallback 出现。
@@ -228,14 +246,18 @@ check('A10 两半边的组条目 id 一致', hostSource.includes("'mcp-manager'"
   )
   check(
     'A21 宿主支持三种操作',
-    hostSource.includes("case 'setEnabled'") &&
-      hostSource.includes("case 'remove'") &&
-      hostSource.includes("case 'save'"),
+    ['setEnabled', 'remove', 'save'].every((op) => new RegExp(`case ["']${op}["']`).test(hostSource)),
   )
   // 已实测的字段丢失根因：toRecord 不认「快照回传的对象」形状。
+  //
+  // 这条原本用正则匹配实现文本（`typeof value === 'object' && !Array.isArray(value)`）——
+  // 那是在断言**实现写法**，不是行为：P3 把这段收窄逻辑抽成 isRecord() 之后正则就失效了，
+  // 而行为其实一点没变。真正守住"对象形状不被静默清空"的是行为断言：
+  // B18（解析成对象）/ B29、B34（启停后仍在）/ B39（表单路径保留对象）/ B40（文本形状也能解析）。
+  // 所以这里退成"结构存在性"检查，并在标签里写明行为守卫的归属。
   check(
-    'A22 toRecord 认对象形状（否则 headers/env 被静默清空）',
-    /typeof value === 'object' && !Array\.isArray\(value\)/.test(hostSource),
+    'A22 toRecord 仍按"对象形状"分支（行为由 B18/B29/B34/B39/B40 守）',
+    /function toRecord\(value\)[\s\S]{0,600}?isRecord\(value\)/.test(hostSource),
   )
   // 宿主半边不参与热重载，所以客户端必须能同时说两代协议。
   check(
@@ -244,7 +266,9 @@ check('A10 两半边的组条目 id 一致', hostSource.includes("'mcp-manager'"
   )
   check(
     'A24 宿主声明 capabilities',
-    hostSource.includes("capabilities: ['setEnabled', 'remove', 'save', 'lastError', 'probe', 'tools']"),
+    /capabilities: \[["']setEnabled["'], ["']remove["'], ["']save["'], ["']lastError["'], ["']probe["'], ["']tools["']\]/.test(
+      hostSource,
+    ),
   )
   // 失败原因必须由宿主自己从 ctx.logger 里捞：mcp-client 默认 failOnStartupError=false，
   // 连接失败不会让 fiber 变 FAILED，而内置日志缓冲的默认阈值是 1（WARN=2 会被丢掉）。
@@ -259,16 +283,22 @@ check('A10 两半边的组条目 id 一致', hostSource.includes("'mcp-manager'"
   // 主动探测必须有自己的超时：没有超时的话服务器挂死会把 UI 的按钮永久卡住。
   check(
     'A24d 主动探测带自己的超时（AbortController + PROBE_TIMEOUT_MS）',
-    /PROBE_TIMEOUT_MS = \d+/.test(hostSource) &&
+    /PROBE_TIMEOUT_MS = [\d.eE+]+/.test(hostSource) &&
       hostSource.includes('new AbortController()') &&
       hostSource.includes('controller.abort()') &&
       hostSource.includes('clearTimeout(timer)'),
   )
   // 相位映射必须补全 LOADING（那才是"启动中"），不能只区分 active/其它。
-  check(
-    'A24e 相位映射覆盖 LOADING（启动中）与 FAILED',
-    /FIBER_PHASE = \['pending', 'loading', 'active', 'failed', 'disposed', 'unloading'\]/.test(hostSource),
-  )
+  // 断言"数组内容与顺序"，不耦合引号风格：顺序就是 FiberState 的数值 → 相位的映射表。
+  {
+    const arrayText = /FIBER_PHASE\s*=\s*\[([^\]]*)\]/.exec(hostSource)?.[1] ?? ''
+    const phases = [...arrayText.matchAll(/["']([a-z]+)["']/g)].map(([, phase]) => phase)
+    check(
+      'A24e 相位映射覆盖 LOADING（启动中）与 FAILED',
+      same(phases, ['pending', 'loading', 'active', 'failed', 'disposed', 'unloading']),
+      phases.join(','),
+    )
+  }
   // 探测预算必须留够**冷连接**余量。实测（本机 + 真实 profile，与 probeServer 同形状）：
   // 远程 https://mcp.context7.com/mcp 冷路径 1.6–3.0s、热连接 ~360ms，局域网服务器 3–10ms。
   // 3s 正好卡在冷路径的抖动边缘 → 配置正确的远程服务器被反复报成假红
@@ -2223,6 +2253,42 @@ check(
     has(clientSource, `id: "${manifest.name}"`) || has(clientSource, `id: '${manifest.name}'`),
     manifest.name,
   )
+
+  /**
+   * E9/E10 —— 产物指纹。
+   *
+   * 宿主产物现在是**生成的**（`tools/build.mjs` → `lib/index.js`），于是出现了新的失败模式：
+   * 改了 `src/**` 却忘了重新构建，仓库里躺着一份与源码不符的产物，而所有断言照样绿。
+   * 构建脚本每次写 `lib/.build-manifest.json`（产物自身的 sha256 + 每个输入的 sha256），
+   * 这里逐项复核：任何一边对不上就 FAIL，并直接说"重新 build"。
+   */
+  const fingerprint = await (async () => {
+    try {
+      return JSON.parse(await readFile(join(root, 'lib', '.build-manifest.json'), 'utf8'))
+    } catch {
+      return null
+    }
+  })()
+  check('E9 存在构建指纹 lib/.build-manifest.json', fingerprint !== null, '先跑 pnpm build')
+
+  if (fingerprint !== null) {
+    const sha256Of = async (file) =>
+      createHash('sha256')
+        .update(await readFile(join(root, file)))
+        .digest('hex')
+    const stale = []
+    for (const target of fingerprint.targets ?? []) {
+      if ((await sha256Of(target.output)) !== target.outputSha256) stale.push(target.output)
+      for (const [file, expected] of Object.entries(target.inputs ?? {})) {
+        if ((await sha256Of(file)) !== expected) stale.push(file)
+      }
+    }
+    check(
+      'E10 产物与 src 同步（改了 src 必须重新 build）',
+      stale.length === 0,
+      stale.length === 0 ? '' : `与指纹不符：${stale.join(', ')} —— 先跑 pnpm build`,
+    )
+  }
 }
 //#endregion
 

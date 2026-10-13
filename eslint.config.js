@@ -15,6 +15,38 @@ import reactHooks from 'eslint-plugin-react-hooks'
 /** 需要类型信息的文件范围（其余 JS 配置只走基础规则）。 */
 const TYPED = ['src/**/*.{ts,tsx}']
 
+/**
+ * 把"踩过的坑"写成机检规则（AGENTS 3.1 / 3.2 / 3.8）。
+ * 抽成常量是因为 `no-restricted-syntax` 在后面的 override 里会**整体替换**，不是追加 ——
+ * 宿主那一段必须自己带上这几条，否则会被静默关掉。
+ */
+const BASE_RESTRICTED_SYNTAX = [
+  {
+    selector: "JSXAttribute[name.name='dangerouslySetInnerHTML']",
+    message: '禁止注入 HTML（AGENTS 3.2）。',
+  },
+  {
+    selector: "MemberExpression[object.name='document'][property.name='body']",
+    message: '禁止碰 document.body：唯一的 DOM 例外在 src/client/nav-mark.ts（AGENTS 3.8）。',
+  },
+  {
+    selector: "MemberExpression[object.name='window'][property.name='__ModuleLoader__']",
+    message: '__ModuleLoader__ 包装由 tools/build.mjs 注入，源码里不得手写。',
+  },
+]
+
+/**
+ * 宿主半边：**运行时零 import**。
+ *
+ * 判据是"裸模块说明符"，不是"有没有 import"：相对 import（`../shared/constants`）会被
+ * `tools/build.mjs` 内联进单文件，产物里一个都不剩（verify A8 守产物）；裸说明符在磁盘路径上
+ * 根本解析不到（AGENTS 2.1）。`import type` 被编译期擦除，所以放行。
+ */
+const HOST_BARE_IMPORT = {
+  selector: "ImportDeclaration[source.value=/^[^./]/]:not([importKind='type'])",
+  message: '宿主半边运行时零 import：相对 import 由打包器内联，裸模块说明符只能 import type（AGENTS 2.1）。',
+}
+
 export default [
   {
     ignores: ['lib/**', 'node_modules/**', 'tools/**', 'docs/**', 'assets/**', '.github/**'],
@@ -32,7 +64,9 @@ export default [
     plugins: { 'react-hooks': reactHooks },
     rules: {
       // 类型卫生
-      '@typescript-eslint/consistent-type-imports': ['error', { fixStyle: 'inline-type-imports' }],
+      // 用 separate-type-imports（默认值）：`import type {...}` 是**声明级**的 type-only，
+      // 宿主那条"裸说明符只能 import type"的选择器才认得出来。
+      '@typescript-eslint/consistent-type-imports': 'error',
       '@typescript-eslint/no-explicit-any': 'error',
       '@typescript-eslint/no-non-null-assertion': 'error',
       '@typescript-eslint/no-floating-promises': 'error',
@@ -47,22 +81,8 @@ export default [
       'no-console': 'error',
       eqeqeq: ['error', 'always'],
 
-      // 把"踩过的坑"写成机检规则（AGENTS 3.1 / 3.2 / 3.8）
-      'no-restricted-syntax': [
-        'error',
-        {
-          selector: "JSXAttribute[name.name='dangerouslySetInnerHTML']",
-          message: '禁止注入 HTML（AGENTS 3.2）。',
-        },
-        {
-          selector: "MemberExpression[object.name='document'][property.name='body']",
-          message: '禁止碰 document.body：唯一的 DOM 例外在 src/client/nav-mark.ts（AGENTS 3.8）。',
-        },
-        {
-          selector: "MemberExpression[object.name='window'][property.name='__ModuleLoader__']",
-          message: '__ModuleLoader__ 包装由 tools/build.mjs 注入，源码里不得手写。',
-        },
-      ],
+      // 把"踩过的坑"写成机检规则（选择器见文件头 BASE_RESTRICTED_SYNTAX）
+      'no-restricted-syntax': ['error', ...BASE_RESTRICTED_SYNTAX],
     },
   },
   {
@@ -74,23 +94,11 @@ export default [
     },
   },
   {
-    // 宿主半边：**运行时零 import**。
-    // 本文件由 Loader 以绝对路径 / 包名加载，裸模块说明符在磁盘路径上解析不到（AGENTS 2.1）；
-    // 相对 import 会被打包器内联，源码里可以写，产物里必须消失（verify A8 守产物）。
+    // 宿主半边：**运行时零 import**（判据与理由见文件头 HOST_BARE_IMPORT）。
     files: ['src/host/**/*.ts'],
     rules: {
-      '@typescript-eslint/no-restricted-imports': [
-        'error',
-        {
-          patterns: [
-            {
-              group: ['**', '!./**', '!../**'],
-              allowTypeImports: true,
-              message: '宿主半边运行时零 import：只用注入进来的 Service + 全局 fetch/Request/Response（AGENTS 2.1）。',
-            },
-          ],
-        },
-      ],
+      // no-restricted-syntax 是整体替换：必须自己带上通用那几条。
+      'no-restricted-syntax': ['error', ...BASE_RESTRICTED_SYNTAX, HOST_BARE_IMPORT],
     },
   },
   {
