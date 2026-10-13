@@ -9,7 +9,7 @@
  *   4. `require` 只能取平台种子模块（react / react-dom / cordis / …）。
  *
  * **这个文件里看不到上面那段包装**：源码只导出 `apply`，`window.__ModuleLoader__.load({...})`
- * 由 `tools/build.mjs` 在构建时注入（包名只有 package.json 一处来源）。
+ * 由 `tools/build.ts` 在构建时注入（包名只有 package.json 一处来源）。
  *
  * 本插件做什么：往 `settings.section`（list 座位）注册一页 **MCP** 设置页，
  * `order: 900` 使它落在设置导航的**最下方**（General 是 0，其余官方页在中间）；

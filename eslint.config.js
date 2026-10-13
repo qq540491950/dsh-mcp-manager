@@ -3,11 +3,13 @@
  *
  * 分工（不要重复防护，也别留盲区）：
  *   · **能机检的纪律** → 这里 + tsconfig：半边隔离、禁 any、禁碰 DOM、禁运行时 import、禁 console。
- *   · **只能看产物/文本的纪律** → 继续由 tools/verify.mjs 守（CSS 数值、inline style 禁令、
+ *   · **只能看产物/文本的纪律** → 继续由 tools/verify.ts 守（CSS 数值、inline style 禁令、
  *     座位注册契约、产物形状、包清单）。那些断言针对的是**出厂产物**，比 lint 更贴近用户拿到的东西。
- *   · **纯逻辑正确性** → tools/verify.mjs 的 E 区（直接 import src 里的纯函数）。
+ *   · **纯逻辑正确性** → tools/verify.ts 的 F 区（直接 import src 里的纯函数）。
  *
- * 注：`lib/**` 是产物，不 lint；`tools/**` 是自检脚本（零依赖、自成一套风格），也不 lint。
+ * 注：`lib/**` 是产物，不 lint；`tools/**` 已经是 TypeScript，但**仍然不 lint** ——
+ * 它是"测试替身 + 断言"风格的代码（假 DOM、假 React、按序号取下标、故意造多余变量），
+ * 严格 lint 规则在这里只会产出风格噪音。它的保障来自 `tsc`（tsconfig.tools*.json）与它自己。
  */
 import tseslint from 'typescript-eslint'
 import reactHooks from 'eslint-plugin-react-hooks'
@@ -31,7 +33,7 @@ const BASE_RESTRICTED_SYNTAX = [
   },
   {
     selector: "MemberExpression[object.name='window'][property.name='__ModuleLoader__']",
-    message: '__ModuleLoader__ 包装由 tools/build.mjs 注入，源码里不得手写。',
+    message: '__ModuleLoader__ 包装由 tools/build.ts 注入，源码里不得手写。',
   },
 ]
 
@@ -39,7 +41,7 @@ const BASE_RESTRICTED_SYNTAX = [
  * 宿主半边：**运行时零 import**。
  *
  * 判据是"裸模块说明符"，不是"有没有 import"：相对 import（`../shared/constants`）会被
- * `tools/build.mjs` 内联进单文件，产物里一个都不剩（verify A8 守产物）；裸说明符在磁盘路径上
+ * `tools/build.ts` 内联进单文件，产物里一个都不剩（verify A8 守产物）；裸说明符在磁盘路径上
  * 根本解析不到（AGENTS 2.1）。`import type` 被编译期擦除，所以放行。
  */
 const HOST_BARE_IMPORT = {

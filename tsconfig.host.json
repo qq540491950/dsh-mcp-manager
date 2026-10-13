@@ -7,7 +7,7 @@
 //      这些全局本来就该有类型。真正的隔离靠"没有 DOM"，不靠"没有 node"。
 //
 // 产物：只产出 .d.ts（`lib/types/**`）。真正的 .js 由 esbuild 打包成单文件
-// `lib/index.js`（见 tools/build.mjs），因为宿主半边**运行时必须零 import**。
+// `lib/index.js`（见 tools/build.ts），因为宿主半边**运行时必须零 import**。
 {
   "extends": "./tsconfig.base.json",
   "compilerOptions": {

@@ -1,0 +1,41 @@
+// 工具脚本的类型检查 —— **门禁部分**（进 `pnpm check`）。
+//
+// 这里只包含 `tools/build.ts`：它已经完全通过 strict 类型检查。
+//
+// `tools/verify.ts`（2237 行断言）**已经改成 .ts 并能直接运行**（`node tools/verify.ts`，
+// Node ≥22.18 原生类型擦除，零构建），但它的 strict 类型检查**还没做完**：P0–P5 期间它
+// 完全没有类型检查，改名后一次性暴露出 360 条错误（全文件普查：360 → 240，已完成的部分见
+// docs/tools-ts.md）。把没修完的文件塞进 include 会让 `pnpm check` 变红，所以这里先不包含它，
+// 用下面那个"进度计"配置单独度量：
+//
+//     pnpm typecheck:tools:wip        # 打印剩余错误（当前约 240 条）
+//
+// 修完时：把本文件的 include 改成 `["tools/**/*.ts"]`，删掉 tsconfig.tools.wip.json 与那条脚本。
+//
+// 三条刻意设定：
+//   1. `noEmit`：不产出 .d.ts。tools 不是发布内容，产物只该有 lib/**（见 package.json 的 files）。
+//   2. `lib` 只有 ES2022 + `types: ["node"]` —— **没有 DOM**。自检脚本跑在 Node 里，
+//      写 `document` 应当直接编译失败。
+//   3. 不进 tsconfig.json 的 references（那会要求 composite + 产出声明）。
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2022"],
+    "types": ["node"],
+    "noEmit": true,
+    // 四处**刻意关掉**的开关（只对 tools 生效，产品侧 src/** 全部保持开启）。
+    //
+    // 理由：自检脚本是"测试替身 + 断言"的代码，风格与产品代码不同 —— 它必须往数组里塞
+    // 各种形状的假对象、按序号取下标（registered[0]、cells[2]）、故意造出多余变量。
+    // 开着这四项会产出几百条风格噪音，把真正的信号（下面 strict 带来的隐式 any、
+    // 属性名写错、参数类型不符）淹没掉。
+    //
+    // 关掉它们**不损失**我们要的那部分安全性：implicit any、never 误用、属性不存在、
+    // 传参不符 —— 全部由 strict 自己覆盖，也正是这次要修的东西。
+    "noUncheckedIndexedAccess": false,
+    "exactOptionalPropertyTypes": false,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false
+  },
+  "include": ["tools/build.ts"]
+}

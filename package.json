@@ -20,13 +20,15 @@
   },
   "packageManager": "pnpm@11.7.0",
   "scripts": {
-    "build": "node tools/build.mjs",
+    "build": "node tools/build.ts",
     "typecheck": "tsc -b --clean && tsc -b",
+    "typecheck:tools": "tsc -p tsconfig.tools.json",
+    "typecheck:tools:wip": "tsc -p tsconfig.tools.wip.json",
     "lint": "eslint .",
-    "format": "prettier --write \"src/**/*.{ts,tsx}\" \"tools/**/*.mjs\" \"*.{json,js,mjs}\"",
-    "format:check": "prettier --check \"src/**/*.{ts,tsx}\" \"tools/**/*.mjs\" \"*.{json,js,mjs}\"",
-    "verify": "node tools/verify.mjs",
-    "check": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm build && pnpm verify"
+    "format": "prettier --write \"src/**/*.{ts,tsx}\" \"tools/**/*.ts\" \"*.{json,js,mjs}\"",
+    "format:check": "prettier --check \"src/**/*.{ts,tsx}\" \"tools/**/*.ts\" \"*.{json,js,mjs}\"",
+    "verify": "node tools/verify.ts",
+    "check": "pnpm typecheck && pnpm typecheck:tools && pnpm lint && pnpm format:check && pnpm build && pnpm verify"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.0.4"

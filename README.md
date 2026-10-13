@@ -224,7 +224,7 @@ dsh-mcp-manager/
   lib/client.js     浏览器半边：settings.section 页面 + 导航那一格的 MCP 标记（懒 CJS bundle）
   assets/mcp-mark.svg  设置导航那一格用的 MCP 标记（16x16，几何取自官方 favicon）
   assets/nav-preview.png  改后导航那一格的模拟对照图（自绘，非截图；README 8.6 引用）
-  tools/verify.mjs  自检：193 条断言，纯 Node 零依赖
+  tools/verify.ts   自检：243 条断言，纯 Node 零依赖（.ts 入口直接跑，无需构建）
   .gitattributes    统一 LF（本仓库全 LF，混入 CRLF 会产生整文件 diff）
   .gitignore        node_modules / 构建产物 / 日志 / 编辑器 / 系统文件
 ```
@@ -279,7 +279,7 @@ dsh-mcp-manager/
 ## 6. 自检
 
 ```powershell
-node D:\project\dsh-plugins\dsh-mcp-manager\tools\verify.mjs
+node D:\project\dsh-plugins\dsh-mcp-manager\tools\verify.ts
 # → PASS 193/193
 ```
 
@@ -356,7 +356,7 @@ account -10 | general 0 | models 10 | plugins 15 | agent-presets 20 | mcp 900 �
 - 写：用 `write` / `edit` 工具（自带版本护栏）。
 - 必须用 shell 时：`Get-Content -Encoding UTF8` / `Set-Content -Encoding UTF8`，但仍不如上述工具可靠。
 
-`tools/verify.mjs` 的 **A11–A31** 断言守住了目前踩过的全部坑：硬编码前景色（深色主题下白底白字）、「按钮/长说明文字挤在同一 flex 行」、间距尺寸擅自发明、操作区换行、行内渲染 URL、字段形状不兼容、能力协商缺失、inline 尺寸压过样式表、`mono` 与 `multiline` 混用、编辑表单嵌进卡片。改代码时先跑一遍自检。
+`tools/verify.ts` 的 **A11–A31** 断言守住了目前踩过的全部坑：硬编码前景色（深色主题下白底白字）、「按钮/长说明文字挤在同一 flex 行」、间距尺寸擅自发明、操作区换行、行内渲染 URL、字段形状不兼容、能力协商缺失、inline 尺寸压过样式表、`mono` 与 `multiline` 混用、编辑表单嵌进卡片。改代码时先跑一遍自检。
 
 ### 7.6 MCP 启动失败的原因：为什么必须我们自己收（本轮新增）
 
@@ -493,7 +493,7 @@ account -10 | general 0 | models 10 | plugins 15 | agent-presets 20 | mcp 900 �
 | 页面 | `padding:4px 0; gap:12px; width:100%; max-width:720px` | 官方 `.section { max-width:720px }` |
 | 圆点 | `6px` | — |
 
-`tools/verify.mjs` 的 **A15**（尺寸）、**A31**（表单面板配色）、**A16** 断言守住这些数值。反向验证：把按钮 `height` 改成 `40px`、或给表单面板加回描边，断言都能精确报出违规。
+`tools/verify.ts` 的 **A15**（尺寸）、**A31**（表单面板配色）、**A16** 断言守住这些数值。反向验证：把按钮 `height` 改成 `40px`、或给表单面板加回描边，断言都能精确报出违规。
 
 ### 8.2 自适应
 

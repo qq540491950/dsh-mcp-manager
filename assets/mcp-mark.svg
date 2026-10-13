@@ -15,7 +15,7 @@
   颜色用 currentColor：本文件同时用于两处——CSS mask（只取 alpha，data URI 里
   currentColor 会退化成初始色，颜色由 `background-color:currentColor` 提供）与将来的内联 SVG。
 
-  自检（tools/verify.mjs A32/A33）会逐字比对本文件与 lib/client.js 里内联的那份，防止两边漂移。
+  自检（tools/verify.ts A32/A33）会逐字比对本文件与 lib/client.js 里内联的那份，防止两边漂移。
 -->
 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-linecap="round">
   <g transform="translate(-0.44525 -0.50229) scale(0.0942473)" stroke-width="10.61038">

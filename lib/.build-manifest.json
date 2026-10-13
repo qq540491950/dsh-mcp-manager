@@ -3,9 +3,9 @@
   "targets": [
     {
       "output": "lib/index.js",
-      "outputSha256": "265f4b77cd323e345c38327987797254e6c3c940e1b6cdf175a2c8928cdcf22f",
+      "outputSha256": "57d48afde48a0972a1368057744c9517b4e09f80d026a4a231b81de1e1ad419b",
       "inputs": {
-        "src/host/index.ts": "5fd6eab0c8e3efe9c8909b9e78b53ee6fe711a6fe34a83efdb6b05dc0fb57535",
+        "src/host/index.ts": "7be8001a2c7c905e620e31fc2d9eaaae8044e5c6287112127f6f099f82b58b91",
         "src/host/rows.ts": "0d6ebb8a09c9d4243ddf9df3eab31ed59e480b98a6be77ad5997d95f18aae3e9",
         "src/host/service-types.ts": "e08327405d55d5ad270e0e35d5d41fe518dc2d21816332a5df10709297009695",
         "src/shared/constants.ts": "2b22ccaf5b28a1e700a1b825f21f6438fb072f731c76239e5d992d7e18be3209",
@@ -15,19 +15,19 @@
     },
     {
       "output": "lib/client.js",
-      "outputSha256": "fb1bf46c5e5aeee5f9066e80c3340aab612608edcead5d93dbe5676214f0693b",
+      "outputSha256": "78862a5171648e3bb69c86211376b6eb8af1ada53284160143ecf1562971e7f1",
       "inputs": {
         "src/client/core/api.ts": "3d21093d096293ba8d48f87a19e3766702d3ffe094bd438e45b77e4063b1d427",
         "src/client/core/draft.ts": "d91bf2a6688fc0e10a808c746d070753ac9baad3f64e7db7b0e972c8c25f474f",
         "src/client/core/status.ts": "fa2a61046dd405b3bb426dd55ba4586eaa530e5317e2a4ad3e18de52969a1024",
         "src/client/form.tsx": "039bced1bb5dd437b044f644717ac77f242df964d76b0b1abff79374f5efa370",
-        "src/client/index.ts": "02d67c02c71378321e862f83e79bfbe10c38b943d844d0365e57ac74d732229b",
+        "src/client/index.ts": "c404605baf01b605ef1069f7e865713c162a631f816295081d6cdfce188dda83",
         "src/client/nav-mark.ts": "36b58fd7fdbc44a8bdb4a5c5ba8937cebf9a4bbffe5a162e85fd9c1dda8a2666",
         "src/client/react.ts": "21a4a5cdb8072953c7fbf3b08d5c6503ef3dd8d8b059412fa4f6d04cdfd40cd5",
         "src/client/row.tsx": "8208a0c00ca5a3c9a1e265c37f02d7d3e739421320df9184f4cb91e18373d3c4",
         "src/client/section.tsx": "176613365fd6035684144bff3e8d3da88d6dca451bc0624f7a14bc861c6cea09",
         "src/client/service-types.ts": "b911f5168b14ac2e463424cf94a2b668e0a943f6d2346ba052851ac638d69b29",
-        "src/client/styles.ts": "69d9a16bf2595fa8c54f2c4b5146d8fb4e71194f1899aee3ad9f272bd3ecd600",
+        "src/client/styles.ts": "cb604026e835db1a9cd2106db11b2db96a7bd1a719d7b5d70e87b47f6f9e8b25",
         "src/shared/constants.ts": "2b22ccaf5b28a1e700a1b825f21f6438fb072f731c76239e5d992d7e18be3209",
         "src/shared/guards.ts": "26406e95e3377c1d4c7a47e2f1dec05186f71b8c666b6c00b460fd3d2dc295c7",
         "src/shared/types.ts": "25fc3c86740c427256d24ce326c009cf83d7fac2489d493c9490f88faad253eb"

@@ -6,9 +6,10 @@
  *   B. 宿主半边行为（路由注册、GET 快照、POST 全量写入、非法输入拒绝）
  *   C. 客户端半边行为（懒 CJS 协议、只 require 种子模块、settings.section 注册契约）
  *
- * 用法：node tools/verify.mjs
+ * 用法：node tools/verify.ts
  */
 import { readFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { createHash } from 'node:crypto'
@@ -33,10 +34,16 @@ try {
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 let passed = 0
-const failures = []
+const failures: string[] = []
 
-/** 断言辅助。 */
-function check(label, condition, detail = '') {
+/**
+ * 断言辅助。
+ *
+ * `condition` 收 `unknown` 而不是 `boolean`：调用处会传各种真值表达式（字符串包含、可选链比较、
+ * 计数相等……），写成 `boolean` 会逼着每一处都加 `=== true`，反而让断言更难读。
+ * 这里只当"真值"用，所以 `unknown` 是最贴切的签名。
+ */
+function check(label: string, condition: unknown, detail = ''): void {
   if (condition) {
     passed += 1
     return
@@ -45,9 +52,164 @@ function check(label, condition, detail = '') {
 }
 
 /** 深度相等（够用的 JSON 形状比较）。 */
-function same(a, b) {
+function same(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b)
 }
+
+//#region 类型脚手架（测试替身的最小形状）
+/**
+ * 为什么需要这一段。
+ *
+ * 自检脚本到处在造假对象（假 ctx、假 Loader、假 DOM、假 React）。这些容器若用 `[]` / `null`
+ * 初始化，TypeScript 会把它们推成 `never[]` / `never`，于是后面每一处"读它的某个字段"
+ * 都报一条错 —— **一个容器能连带几十条噪音**（P0–P5 结束时全文件 360 条，其中约 200 条
+ * 只来自十几个容器）。
+ *
+ * 显式声明一次把噪音消掉，同时让替身**受约束**：产品侧要求或产出的字段一旦改名，
+ * 这里会立刻编译失败 —— 那正是想要的方向（断言跟着产品走，而不是自己跟自己玩）。
+ *
+ * 纪律：只列**断言真正读到**的字段。替身不是产品类型的复刻 ——
+ * 宿主/客户端的真实契约在 `src/host/service-types.ts` 与 `src/client/service-types.ts`。
+ */
+/** 一行 Loader 条目（断言会读 id / name / config / disabled）。 */
+interface StubEntry {
+  id?: string
+  name?: string
+  /** 比产品侧的 `unknown` 更具体一层：断言要读 `config.headers` / `config.args`。 */
+  config?: Record<string, unknown>
+  disabled?: boolean
+}
+/** `ctx.connection.fetch.register()` 收到的路由声明。 */
+interface StubRoute {
+  path: string
+  methods: string[]
+  requestBody: string
+  fetch(request: Request): Promise<Response>
+}
+/** 挂到 `ctx.logger.exporter()` 上的记录器。 */
+interface StubExporter {
+  levels: { default: number }
+  export(message: Record<string, unknown>): void
+}
+/** group 条目下的子条目（Loader 的运行时投影）。 */
+interface StubChild {
+  id?: string
+  config?: Record<string, unknown>
+  /** cordis FiberState 数值。 */
+  state?: number
+}
+/** `configEditor.configuration()` 的一层（B70 用它复现"覆写 replace insert"的分层现场）。 */
+interface StubLayerRow {
+  entry: { options: { id?: string } }
+  inherited?: StubEntry[]
+  override?: StubEntry[]
+}
+/** 假 ctx.inject 回调收到的 scope：只列宿主真正用到的成员。 */
+interface HostScopeStub {
+  /** 宿主只在自己声明了资源时才用；最小替身可以不给。 */
+  effect?(callback: () => (() => void) | void): void
+  /** 宿主用 `typeof scope.get === 'function'` 判断是否存在，所以是可选成员。 */
+  get?(name: string): unknown
+  logger?: {
+    exporter(options: { levels: { default: number }; export(message: Record<string, unknown>): void }): unknown
+  }
+  configEditor: {
+    entries(): Array<{ options: { id?: string; name?: string; config?: StubEntry[] } }>
+    configuration(): StubLayerRow[]
+    edit(entry: unknown, update: (rows: StubEntry[], again: StubEntry[]) => unknown): Promise<void>
+  }
+  loader: {
+    entries(): Array<{ options: { id?: string; name?: string; config?: unknown }; fiber?: { state: number } }>
+  }
+  connection: { fetch: { register(route: StubRoute): unknown } }
+}
+/** 快照里的一台服务器（只列断言真正读到的字段）。 */
+interface StubServer {
+  index?: number
+  rowId?: string
+  disabled?: boolean
+  phase?: string
+  config?: Record<string, unknown>
+  probe?: { connected?: boolean | null; status?: number | null; detail?: string; at?: number }
+  error?: { message?: string; level?: string; at?: number; count?: number }
+  tools?: { count?: number; names?: string[]; truncated?: boolean }
+}
+/** 宿主 GET/POST 返回的快照。 */
+interface StubSnapshot {
+  groupId?: string
+  configured?: boolean
+  mcpPackage?: string
+  /** 能力表：断言会 `includes(...)` 或直接比对数组。 */
+  capabilities?: string[]
+  servers?: StubServer[]
+}
+/** 响应体的线格式。**刻意不用 `any`**：字段名打错时必须编译失败（断言的价值就在这里）。 */
+interface WireBody {
+  ok?: boolean
+  data?: StubSnapshot
+  error?: string
+}
+
+/**
+ * 读一次响应体。
+ * `Response.json()` 在 undici 的类型里是 `unknown`（不是 `any`），所以每处都要收窄一次；
+ * 统一走这个函数，收窄点就只有一个。
+ */
+async function bodyOf(response: Response): Promise<WireBody> {
+  return (await response.json()) as WireBody
+}
+
+/** 取宿主注册的路由；为 null 就抛（B4 会先报这个失败，这里只是让类型收窄，行为不变）。 */
+function routeOrThrow(captured: { route: StubRoute | null }): StubRoute {
+  if (captured.route === null) throw new Error('宿主没有注册路由（B4 报过这个失败）')
+  return captured.route
+}
+
+/**
+ * "还没注册"的占位路由。
+ *
+ * 用它而不是 `null`：断言里 `captured.route.fetch(...)` 有十几处，让 `route` 恒为 `StubRoute`
+ * 可以把十几条"possibly null"一次消掉；B4 仍然靠**引用相等**检查"宿主到底注册了没有"。
+ * 真在注册前调用它会抛一条能看懂的错误，而不是 `Cannot read properties of null`。
+ */
+const unregisteredRoute: StubRoute = {
+  path: '',
+  methods: [],
+  requestBody: '',
+  fetch: () => Promise.reject(new Error('宿主还没有注册路由')),
+}
+
+/** 客户端 bundle 向 `window.__ModuleLoader__.load` 注册的模块定义。 */
+interface StubModuleDefinition {
+  id?: string
+  factory(require: (specifier: string) => unknown): { apply(ctx: unknown): void }
+}
+/** 假 React（C 区只验证协议，不渲染）。 */
+interface StubReact {
+  createElement(...args: unknown[]): unknown
+  Fragment: { $$typeof: symbol }
+  useState<T>(initial: T): [T, (next: T) => void]
+  useEffect(callback: () => void): void
+  useCallback<T>(fn: T): T
+  useMemo<T>(fn: () => T): T
+}
+
+/**
+ * 取数组首/尾项并收窄类型。
+ * 为空就抛 —— 前置断言（C1「注册了一个模块」之类）已经报过这个失败，这里只是让类型收窄，
+ * **不改变行为**：真为空时原来也会在下一行 `Cannot read properties of undefined` 崩掉。
+ */
+function firstOrThrow<T>(items: T[], what: string): T {
+  const [head] = items
+  if (head === undefined) throw new Error(`${what} 为空（前面的断言已经报过这个失败）`)
+  return head
+}
+function lastOrThrow<T>(items: T[], what: string): T {
+  const tail = items[items.length - 1]
+  if (tail === undefined) throw new Error(`${what} 为空（前面的断言已经报过这个失败）`)
+  return tail
+}
+//#endregion
 
 const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'))
 const hostSource = await readFile(join(root, 'lib', 'index.js'), 'utf8')
@@ -88,7 +250,7 @@ check(
   ),
   [...clientSource.matchAll(/require\((?:"|')([^"']+)(?:"|')\)/g)].map(([, s]) => s).join(', '),
 )
-// 宿主产物现在由 tools/build.mjs 从 src/host/index.ts 打包生成（相对 import 被内联、
+// 宿主产物现在由 tools/build.ts 从 src/host/index.ts 打包生成（相对 import 被内联、
 // 类型被擦除），所以断言必须看**产物**：这里同时禁掉 import 与 require —— 只要产物里出现
 // 任何一个，说明打包没把依赖内联，Loader 从磁盘路径加载时就会解析失败。
 check(
@@ -136,8 +298,11 @@ check(
   // 只保留代码本身（剥掉注释）再做声明匹配。
   const code = clientSource.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
   // 锚定到行首，否则 `.mcpm-row--off .mcpm-name {}` 会先被匹配到。
-  const ruleOf = (cls) => code.match(new RegExp('(?:^|\\n)\\s*\\' + cls + '\\s*\\{[^}]*\\}'))?.[0] ?? ''
-  const missing = (pairs) => pairs.filter(([cls, decl]) => !ruleOf(cls).includes(decl))
+  const ruleOf = (cls: string): string => code.match(new RegExp('(?:^|\\n)\\s*\\' + cls + '\\s*\\{[^}]*\\}'))?.[0] ?? ''
+  // 参数收到 `[类名, 声明]` 的字符串对数组：标注之后，下面那些数组字面量会被**上下文推断**，
+  // 回调里的 `([cls, decl]) => …` 也就自动有了 string 类型（否则每个回调都要单独标注）。
+  const missing = (pairs: ReadonlyArray<readonly string[]>): ReadonlyArray<readonly string[]> =>
+    pairs.filter(([cls, decl]) => !ruleOf(cls).includes(decl))
 
   const metrics = [
     ['.mcpm-page', 'padding:4px 0'], // 左右/底部留白由设置外壳的 0 24px 24px 提供，不能重复叠加
@@ -365,7 +530,7 @@ check(
   )
 
   // 变换必须能把官方墨迹放进 16x16：高 = 15、居中、有效描边 = 1.0。
-  const numbers = (text) => {
+  const numbers = (text: string): { tx: number; ty: number; scale: number; stroke: number } | null => {
     const transform = text.match(/translate\((-?[\d.]+) (-?[\d.]+)\) scale\(([\d.]+)\)/)
     const stroke = text.match(/stroke-width="([\d.]+)"/)
     return transform === null || stroke === null
@@ -374,7 +539,7 @@ check(
   }
   const inline = numbers(clientSource)
   const inAsset = numbers(assetMarkup)
-  const near = (a, b, tol) => Math.abs(a - b) <= tol
+  const near = (a: number, b: number, tol: number): boolean => Math.abs(a - b) <= tol
   const geometryOk =
     inline !== null &&
     inAsset !== null &&
@@ -439,27 +604,46 @@ function makeHostCtx({
   withLogger = true,
   layers = undefined,
   registeredTools = undefined,
+}: {
+  configRows?: StubEntry[]
+  mcpChildren?: StubChild[]
+  withLogger?: boolean
+  layers?: { inherited?: StubEntry[]; override?: StubEntry[] } | undefined
+  registeredTools?: string[] | undefined
 } = {}) {
-  const captured = { deps: null, route: null, writes: [], exporters: [] }
-  const state = { rows: structuredClone(configRows) }
+  const captured: {
+    deps: string[] | null
+    /** 恒为 StubRoute；"还没注册"用 `unregisteredRoute` 这个占位表示（见类型脚手架）。 */
+    route: StubRoute
+    /** 每次写入都是**整份数组**（`configEditor.edit` 的语义就是"给我一份新数组"）。 */
+    writes: StubEntry[][]
+    exporters: StubExporter[]
+  } = {
+    deps: null,
+    route: unregisteredRoute,
+    writes: [],
+    exporters: [],
+  }
+  const state: { rows: StubEntry[] } = { rows: structuredClone(configRows) }
   const groupEntry = {
     options: {
       id: 'mcp-manager',
       name: 'cordis:group',
-      get config() {
+      get config(): StubEntry[] {
         return state.rows
       },
     },
   }
   /** cordis LoggerLevel：ERROR=0 / INFO=1 / WARN=2 / DEBUG=3（数字越大越啰嗦）。 */
-  const LEVELS = { error: 0, info: 1, warn: 2, debug: 3 }
+  const LEVELS: Record<string, number> = { error: 0, info: 1, warn: 2, debug: 3 }
   /** 假 `ctx.tools`：只提供宿主用到的 `schemas()`；`registeredTools` 为 undefined 时视作"没有该服务"。 */
-  const fakeTools =
+  const fakeTools:
+    { schemas(): Array<{ name: string; description: string; parameters: Record<string, unknown> }> } | undefined =
     registeredTools === undefined
       ? undefined
       : { schemas: () => registeredTools.map((name) => ({ name, description: '', parameters: {} })) }
   /** 把一条结构化日志喂给宿主注册的 exporter，模拟 mcp-client 自己打的日志。 */
-  const log = (type, text, ts = 1_700_000_000_000) => {
+  const log = (type: string, text: string, ts = 1_700_000_000_000): void => {
     for (const exporter of captured.exporters) {
       exporter.export({
         sn: captured.exporters.length,
@@ -472,16 +656,16 @@ function makeHostCtx({
     }
   }
   const ctx = {
-    inject(deps, callback) {
+    inject(deps: string[], callback: (scope: HostScopeStub) => void): void {
       captured.deps = deps
       callback({
-        effect: (factory) => factory(),
+        effect: (factory: () => (() => void) | void) => factory(),
         // 宿主半边用 `scope.get('tools')` 取**可选**服务（不进 inject 声明，缺了也能跑）。
-        get: (name) => (name === 'tools' ? fakeTools : undefined),
+        get: (name: string): unknown => (name === 'tools' ? fakeTools : undefined),
         ...(withLogger
           ? {
               logger: {
-                exporter: (exporter) => {
+                exporter: (exporter: StubExporter) => {
                   captured.exporters.push(exporter)
                   return () => {}
                 },
@@ -499,8 +683,10 @@ function makeHostCtx({
                 layers === undefined || layers.override === undefined ? undefined : structuredClone(layers.override),
             },
           ],
-          edit: async (entry, change) => {
-            const next = change(state.rows, state.rows)
+          edit: async (entry: unknown, change: (rows: StubEntry[], again: StubEntry[]) => unknown) => {
+            // 宿主回调的返回类型是 `unknown`（它只承诺"给我一份新数组"）；这里是我们自己的假 ctx，
+            // 知道那就是条目数组，所以就地收窄一次。
+            const next = change(state.rows, state.rows) as StubEntry[]
             captured.writes.push(structuredClone(next))
             state.rows = next
           },
@@ -514,7 +700,7 @@ function makeHostCtx({
         },
         connection: {
           fetch: {
-            register: (route) => {
+            register: (route: StubRoute) => {
               captured.route = route
               return async () => {}
             },
@@ -548,14 +734,14 @@ function makeHostCtx({
     same(captured.deps, ['connection', 'configEditor', 'loader']),
     JSON.stringify(captured.deps),
   )
-  check('B4 注册了路由', captured.route !== null)
+  check('B4 注册了路由', captured.route !== unregisteredRoute)
   check('B5 路由路径', captured.route?.path === '/api/mcp-manager', String(captured.route?.path))
   check('B6 路由方法', same(captured.route?.methods, ['GET', 'POST']), JSON.stringify(captured.route?.methods))
   check('B7 路由带 requestBody 模式', captured.route?.requestBody === 'buffered', String(captured.route?.requestBody))
   check('B7b 路由路径符合 /api/<name> 约定', /^\/api\/[^/]+$/.test(String(captured.route?.path ?? '')))
 
   const getResponse = await captured.route.fetch(new Request('http://localhost/api/mcp-manager', { method: 'GET' }))
-  const getBody = await getResponse.json()
+  const getBody = await bodyOf(getResponse)
   check('B8 GET 200', getResponse.status === 200, String(getResponse.status))
   check('B9 GET 汇报 configured', getBody.data?.configured === true)
   check(
@@ -586,7 +772,7 @@ function makeHostCtx({
       }),
     }),
   )
-  const saveBody = await saveResponse.json()
+  const saveBody = await bodyOf(saveResponse)
   check('B14 POST 200', saveResponse.status === 200, `${String(saveResponse.status)} ${JSON.stringify(saveBody)}`)
   const written = captured.writes.at(-1)
   check('B15 写的是数组', Array.isArray(written), JSON.stringify(written))
@@ -636,16 +822,16 @@ function makeHostCtx({
 
 {
   // 组条目缺失时必须给出可读报错，而不是静默失败。
-  const captured = { route: null }
+  const captured = { route: unregisteredRoute }
   host.apply({
-    inject(_deps, callback) {
+    inject(_deps: string[], callback: (scope: HostScopeStub) => void) {
       callback({
-        effect: (factory) => factory(),
+        effect: (factory: () => (() => void) | void) => factory(),
         configEditor: { entries: () => [], configuration: () => [], edit: async () => {} },
         loader: { entries: () => [] },
         connection: {
           fetch: {
-            register: (route) => {
+            register: (route: StubRoute) => {
               captured.route = route
               return async () => {}
             },
@@ -655,7 +841,7 @@ function makeHostCtx({
     },
   })
   const response = await captured.route.fetch(new Request('http://localhost/api/mcp-manager', { method: 'GET' }))
-  const body = await response.json()
+  const body = await bodyOf(response)
   check('B25 组条目缺失时 configured=false', body.data?.configured === false, JSON.stringify(body.data))
   const save = await captured.route.fetch(
     new Request('http://localhost/api/mcp-manager', {
@@ -685,13 +871,13 @@ function makeHostCtx({
   }
   const { ctx, captured } = makeHostCtx({ configRows: [context7, other] })
   host.apply(ctx)
-  const post = (payload) =>
+  const post = (payload: Record<string, unknown>): Promise<Response> =>
     captured.route.fetch(
       new Request('http://localhost/api/mcp-manager', { method: 'POST', body: JSON.stringify(payload) }),
     )
 
   const off = await post({ op: 'setEnabled', serverName: 'context7', enabled: false })
-  const offBody = await off.json()
+  const offBody = await bodyOf(off)
   check('B27 停用 → 200', off.status === 200, `${String(off.status)} ${JSON.stringify(offBody)}`)
   const offRows = captured.writes.at(-1)
   check('B28 停用确实写入了 disabled', offRows?.[0]?.disabled === true, JSON.stringify(offRows?.[0]))
@@ -708,7 +894,7 @@ function makeHostCtx({
   )
 
   const on = await post({ op: 'setEnabled', serverName: 'context7', enabled: true })
-  const onBody = await on.json()
+  const onBody = await bodyOf(on)
   check('B32 启用 → 200', on.status === 200, String(on.status))
   const onRows = captured.writes.at(-1)
   check('B33 启用移除了 disabled', !('disabled' in (onRows?.[0] ?? {})), JSON.stringify(onRows?.[0]))
@@ -724,7 +910,7 @@ function makeHostCtx({
   )
 
   const gone = await post({ op: 'remove', serverName: 'fs' })
-  const goneBody = await gone.json()
+  const goneBody = await bodyOf(gone)
   check(
     'B36 删除 → 200 且只剩一台',
     gone.status === 200 && goneBody.data?.servers?.length === 1,
@@ -804,8 +990,8 @@ function makeHostCtx({
     ],
   })
   host.apply(ctx)
-  const snapshotOf = async () =>
-    (await (await captured.route.fetch(new Request('http://localhost/api/mcp-manager', { method: 'GET' }))).json()).data
+  const snapshotOf = async (): Promise<StubSnapshot | undefined> =>
+    (await bodyOf(await captured.route.fetch(new Request('http://localhost/api/mcp-manager', { method: 'GET' })))).data
 
   check('B43 宿主注册了自己的 logger exporter', captured.exporters.length === 1, String(captured.exporters.length))
   // 阈值必须**自己声明**：cordis 内置缓冲没声明 levels → 取 Logger.level ?? 1，
@@ -873,7 +1059,7 @@ function makeHostCtx({
       body: JSON.stringify({ op: 'setEnabled', serverName: 'fs', enabled: false }),
     }),
   )
-  const writeBody = await write.json()
+  const writeBody = await bodyOf(write)
   check(
     'B53 任一次配置写入会清空旧失败记录（旧实例的记录不代表现状）',
     write.status === 200 && !('error' in (writeBody.data?.servers?.[1] ?? {})),
@@ -1080,7 +1266,7 @@ function makeHostCtx({
         body: JSON.stringify({ op: 'setEnabled', serverName: 'ok', enabled: false }),
       }),
     )
-    const writtenBody = await written.json()
+    const writtenBody = await bodyOf(written)
     check(
       'B68 配置写入清空旧探测结果',
       !('probe' in (byName(writtenBody, 'ok') ?? {})),
@@ -1114,7 +1300,7 @@ function makeHostCtx({
     const response = await hangCaptured.route.fetch(
       new Request('http://localhost/api/mcp-manager', { method: 'POST', body: JSON.stringify({ op: 'probe' }) }),
     )
-    const body = await response.json()
+    const body = await bodyOf(response)
     check(
       'B69 挂死的服务器 → 超时（' + String(probeBudgetMs / 1000) + 's 预算内给出结论）',
       body.data?.servers?.[0]?.probe?.connected === false && body.data?.servers?.[0]?.probe?.detail.includes('超时'),
@@ -1128,7 +1314,7 @@ function makeHostCtx({
   // 证据：cordis-plugin-include 的 applyEntryPatches 对非 insert 补丁逐键赋值
   // （`target[key] = value`，lib/index.js:99-102 / src/index.ts:120-123），于是
   // `target.config = 覆写数组` —— insert 行里同 id 的那份声明被**整体丢弃**。
-  // 线上就是这么中的：profile 的 insert 行一直写着 `Authorization: Bearer ctx7sk-…`，
+  // 线上就是这么中的：profile 的 insert 行一直写着 `Authorization: Bearer <context7 key>`，
   // 而权威的覆写行没有 headers → 运行时这个头根本不存在，可文件看上去"key 已经配好了"。
   // 这条钉住插件侧的读法：覆写非空时**只认覆写**，绝不把两层合并（也别"补回"继承层的字段）——
   // 合并会让那份死配置重新变成生效值，还会凭空多出一台服务器。
@@ -1139,7 +1325,7 @@ function makeHostCtx({
         serverName: 'context7',
         transport: 'streamable-http',
         url: 'https://mcp.context7.com/mcp',
-        headers: { Authorization: 'Bearer ctx7sk-insert-layer' },
+        headers: { Authorization: 'Bearer FAKE-insert-layer-value' },
       },
     }
     const overrideRow = {
@@ -1152,7 +1338,7 @@ function makeHostCtx({
     })
     host.apply(layered.ctx)
     const response = await layered.captured.route.fetch(new Request('http://localhost/api/mcp-manager'))
-    const body = await response.json()
+    const body = await bodyOf(response)
     const rows = body.data?.servers ?? []
     check(
       'B70 覆写层整数组替换：只认覆写行，不合并 insert 层（合并会把死配置当成生效）',
@@ -1183,7 +1369,7 @@ function makeHostCtx({
     const { ctx, captured } = makeHostCtx({ configRows: [context7, gva], registeredTools: registry })
     host.apply(ctx)
     const response = await captured.route.fetch(new Request('http://localhost/api/mcp-manager'))
-    const body = await response.json()
+    const body = await bodyOf(response)
     const byName = Object.fromEntries(body.data.servers.map((s) => [s.config.serverName, s]))
     check(
       'B71 每台服务器都带上当前注册的工具（count = 前缀命中的个数）',
@@ -1220,7 +1406,7 @@ function makeHostCtx({
     })
     host.apply(ctx)
     const response = await captured.route.fetch(new Request('http://localhost/api/mcp-manager'))
-    const body = await response.json()
+    const body = await bodyOf(response)
     check(
       'B75 一台都没注册时 count=0（不谎报）',
       body.data.servers[0].tools?.count === 0 && same(body.data.servers[0].tools.names, []),
@@ -1240,7 +1426,7 @@ function makeHostCtx({
     })
     host.apply(ctx)
     const response = await captured.route.fetch(new Request('http://localhost/api/mcp-manager'))
-    const body = await response.json()
+    const body = await bodyOf(response)
     check(
       'B76 没有 tools 服务时省略该键（客户端读不到就不渲染）',
       !('tools' in body.data.servers[0]) && body.data.capabilities.includes('tools'),
@@ -1251,20 +1437,20 @@ function makeHostCtx({
 //#endregion
 
 //#region C. 客户端半边
-const registered = []
-const sandbox = {
-  window: { __ModuleLoader__: { load: (definition) => registered.push(definition) } },
+const registered: StubModuleDefinition[] = []
+const sandbox: Record<string, unknown> = {
+  window: { __ModuleLoader__: { load: (definition: StubModuleDefinition) => registered.push(definition) } },
   console,
 }
 sandbox.globalThis = sandbox
 vm.runInNewContext(clientSource, sandbox, { filename: 'lib/client.js' })
 
 check('C1 注册了一个模块', registered.length === 1, String(registered.length))
-const definition = registered[0]
-check('C2 模块 id 等于包名', definition?.id === manifest.name, String(definition?.id))
-check('C3 factory 是函数', typeof definition?.factory === 'function')
+const definition = firstOrThrow(registered, '客户端模块注册表')
+check('C2 模块 id 等于包名', definition.id === manifest.name, String(definition.id))
+check('C3 factory 是函数', typeof definition.factory === 'function')
 
-const fakeReact = {
+const fakeReact: StubReact = {
   createElement: () => null,
   Fragment: { $$typeof: Symbol.for('react.fragment') },
   useState: (initial) => [initial, () => {}],
@@ -1272,7 +1458,7 @@ const fakeReact = {
   useCallback: (fn) => fn,
   useMemo: (fn) => fn(),
 }
-const stubRequire = (specifier) => {
+const stubRequire = (specifier: string): unknown => {
   if (specifier === 'react') return fakeReact
   if (specifier === '@deepseek-ai/dsh-client-ui-primitives') return {}
   throw new Error(`unexpected require: ${specifier}`)
@@ -1280,10 +1466,24 @@ const stubRequire = (specifier) => {
 const clientExports = definition.factory(stubRequire)
 check('C4 导出 apply', typeof clientExports.apply === 'function')
 
-const registrations = []
-const injectedNames = []
-const effects = []
-clientExports.apply({
+/** C 区只验证"协议与座位注册"，不渲染 —— 所以这里的 ctx 只提供 apply 真正用到的那两个成员。 */
+interface ClientCtxStub {
+  effect(callback: () => (() => void) | void, label?: string): void
+  inject(
+    names: string[],
+    callback: (scope: {
+      slots: {
+        inject(name: string, register: () => void): void
+        register(options: Record<string, unknown>, component: unknown): void
+      }
+    }) => void,
+  ): void
+}
+
+const registrations: Array<{ options: Record<string, unknown>; component: unknown }> = []
+const injectedNames: string[] = []
+const effects: Array<{ label?: string; dispose?: unknown }> = []
+const clientCtx: ClientCtxStub = {
   // 资源登记：官方客户端插件就是 `ctx.effect(() => disposer, label)`。
   effect(callback, label) {
     effects.push({ label, dispose: callback() })
@@ -1302,7 +1502,8 @@ clientExports.apply({
       },
     })
   },
-})
+}
+clientExports.apply(clientCtx)
 
 check('C5 只注入 slots', same(injectedNames, ['slots']), JSON.stringify(injectedNames))
 check('C6 注册了一个座位条目', registrations.length === 1, String(registrations.length))
@@ -2265,7 +2466,7 @@ check(
   /**
    * E9/E10 —— 产物指纹。
    *
-   * 宿主产物现在是**生成的**（`tools/build.mjs` → `lib/index.js`），于是出现了新的失败模式：
+   * 宿主产物现在是**生成的**（`tools/build.ts` → `lib/index.js`），于是出现了新的失败模式：
    * 改了 `src/**` 却忘了重新构建，仓库里躺着一份与源码不符的产物，而所有断言照样绿。
    * 构建脚本每次写 `lib/.build-manifest.json`（产物自身的 sha256 + 每个输入的 sha256），
    * 这里逐项复核：任何一边对不上就 FAIL，并直接说"重新 build"。
@@ -2295,6 +2496,22 @@ check(
       'E10 产物与 src 同步（改了 src 必须重新 build）',
       stale.length === 0,
       stale.length === 0 ? '' : `与指纹不符：${stale.join(', ')} —— 先跑 pnpm build`,
+    )
+  }
+
+  /**
+   * E11 —— 脚本指向的文件必须真实存在。
+   *
+   * 这条是"把 tools/*.mjs 改名成 *.ts"当天该有的护栏：改名要同时改 package.json、CI、
+   * AGENTS、README 里的好几处，漏一处只会在别人手打命令时才发现。有了它，漏改立刻红。
+   */
+  for (const scriptName of ['verify', 'build']) {
+    const command = manifest.scripts?.[scriptName] ?? ''
+    const target = /node\s+(\S+)/.exec(command)?.[1] ?? ''
+    check(
+      `E11 package.json 的 ${scriptName} 脚本指向真实存在的文件`,
+      target !== '' && existsSync(join(root, target)),
+      `${scriptName}: ${command}`,
     )
   }
 }

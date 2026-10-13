@@ -22,8 +22,8 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'))
 
 /** 递归列出目录下的所有文件，返回相对仓库根的 POSIX 路径（排序后，保证 manifest 稳定）。 */
-async function listFiles(dir) {
-  const found = []
+async function listFiles(dir: string): Promise<string[]> {
+  const found: string[] = []
   for (const entry of await readdir(dir, { withFileTypes: true })) {
     const absolute = join(dir, entry.name)
     if (entry.isDirectory()) found.push(...(await listFiles(absolute)))
@@ -33,14 +33,14 @@ async function listFiles(dir) {
 }
 
 /** 文件内容的 sha256（十六进制）。 */
-async function hashOf(relativePath) {
+async function hashOf(relativePath: string): Promise<string> {
   return createHash('sha256')
     .update(await readFile(join(root, relativePath)))
     .digest('hex')
 }
 
 /** 一个产物目标：产物路径 + 它的源码输入目录。 */
-const targets = []
+const targets: Array<{ output: string; inputs: string[] }> = []
 
 /**
  * 把 CJS 产物包成官方同形的「懒 CJS 工厂」classic script。
@@ -52,10 +52,10 @@ const targets = []
  *      整个换掉（`__toCommonJS`），先设置会丢在旧对象上；
  *   3. 不写 sourceMappingURL：官方产物带 map，但 map 是可选调试产物，我们不发。
  */
-function wrapClient(body, id) {
+function wrapClient(body: string, id: string): string {
   return [
     '/**',
-    ' * 本文件由 `tools/build.mjs` 从 `src/client/index.ts` 生成 —— **不要直接编辑**。',
+    ' * 本文件由 `tools/build.ts` 从 `src/client/index.ts` 生成 —— **不要直接编辑**。',
     ' *',
     ' * 契约：classic script（不是 ESM）；执行时只向 `window.__ModuleLoader__.load` 注册一个 factory；',
     ' * `id` 等于包名；`require` 只解析基座模块表（这里只用 react）。',
@@ -86,7 +86,7 @@ function wrapClient(body, id) {
     format: 'esm',
     platform: 'node',
     target: 'node22',
-    // 不压缩：产物要能被 tools/verify.mjs 按文本断言（常量名、错误文案、探测预算都要可读）。
+    // 不压缩：产物要能被 tools/verify.ts 按文本断言（常量名、错误文案、探测预算都要可读）。
     minify: false,
     // esbuild 默认把非 ASCII 转义成 \uXXXX（charset 默认 ascii）。产物里全是中文错误文案，
     // 转义后既难读、也会让"按文案断言"的自检全部失效 —— 所以显式要求 UTF-8 输出。
@@ -96,7 +96,7 @@ function wrapClient(body, id) {
     banner: {
       js: [
         '/**',
-        ' * 本文件由 `tools/build.mjs` 从 `src/host/index.ts` 生成 —— **不要直接编辑**。',
+        ' * 本文件由 `tools/build.ts` 从 `src/host/index.ts` 生成 —— **不要直接编辑**。',
         ' * 设计说明（为什么零 import、为什么启停是定点操作、为什么探测要 8s）见 src/host/index.ts 与 README.md。',
         ' */',
       ].join('\n'),

@@ -31,7 +31,7 @@
 | `dsh.client.inject` | 留空 | composition 对"缺失供应方"是拒绝组合，等于给自己钉一条硬依赖 |
 | 客户端 JSX | classic runtime（`jsxFactory: h`） | 产物只 `require("react")`，不必赌 `react/jsx-runtime` 在不在基座表 |
 | `lib/` | 入库（含 `lib/types/**`） | 支持 `git clone` + 路径行挂载；漂移由构建指纹 E9/E10 + CI `git diff --exit-code lib/` 守 |
-| 自检 | 零依赖、`node tools/verify.mjs` 是唯一必跑命令 | 不装 `node_modules` 也能跑（已实测） |
+| 自检 | 零依赖、`node tools/verify.ts` 是唯一必跑命令 | 不装 `node_modules` 也能跑（已实测） |
 
 ---
 

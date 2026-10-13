@@ -1,0 +1,16 @@
+// **进度计，不是门禁** —— 这个配置刻意不参与 `pnpm check`。
+//
+// 它把 tools 下**全部** .ts 都纳进来，所以现在会打印 `tools/verify.ts` 剩余的类型错误
+// （那一份 2237 行的断言集合尚未完成 strict 化）。
+//
+//     pnpm typecheck:tools:wip
+//
+// 用途只有一个：让"还差多少"可度量、可下降（每修一批，数字就降一批），而不是靠记忆。
+// 修完时把 `tsconfig.tools.json` 的 include 改成 `["tools/**/*.ts"]`，然后删掉本文件与
+// package.json 里的 `typecheck:tools:wip` 脚本。
+//
+// 续做方法与剩余清单见 docs/tools-ts.md。
+{
+  "extends": "./tsconfig.tools.json",
+  "include": ["tools/**/*.ts"]
+}

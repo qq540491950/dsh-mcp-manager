@@ -6,7 +6,7 @@
  * 1. **运行时零 import**。本文件由 Loader 以 `file:///...` 绝对路径或包名加载，裸模块说明符
  *    （`@deepseek-ai/cordis` 等）在磁盘路径上解析不到。所以宿主半边只使用注入进来的 Service
  *    与全局 `fetch`/`Request`/`Response`，不 import 任何**运行时值**。
- *    源码里可以写相对 import（`../shared/constants`）与 `import type`：前者由 `tools/build.mjs`
+ *    源码里可以写相对 import（`../shared/constants`）与 `import type`：前者由 `tools/build.ts`
  *    用 esbuild **内联进单文件**，后者被编译期擦除 —— 产物 `lib/index.js` 里一个 import 都没有
  *    （自检 E0/E10 守这一点）。类型从 `./service-types` 来，那是**实测出来的最小契约**，
  *    不是官方声明的复刻：本插件刻意只依赖一个 peer（`@deepseek-ai/cordis`），

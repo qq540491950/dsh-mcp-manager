@@ -11,8 +11,8 @@
 // `types: ["react"]` 只为一个理由：@types/react 提供全局 `JSX` 命名空间，
 // 而 TSX 的类型检查需要它。它不引入任何 node 全局。
 //
-// 产物：只产出 .d.ts（`lib/types/client/**`）。真正的 .js 由 tools/build.mjs 打包成
-// classic script（懒 CJS 工厂）再包装，见 tools/build.mjs 的 client 目标。
+// 产物：只产出 .d.ts（`lib/types/client/**`）。真正的 .js 由 tools/build.ts 打包成
+// classic script（懒 CJS 工厂）再包装，见 tools/build.ts 的 client 目标。
 {
   "extends": "./tsconfig.base.json",
   "compilerOptions": {

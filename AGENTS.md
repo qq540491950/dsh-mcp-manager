@@ -22,7 +22,7 @@
 **唯一必跑的命令**：
 
 ```powershell
-node tools/verify.mjs      # 期望 PASS；当前 193 条断言
+node tools/verify.ts      # 期望 PASS；当前 243 条断言
 ```
 
 **详细设计/证据索引**：`README.md`（第 3 节通道选型、第 7 节实测状态、第 8 节尺寸基准、第 9 节证据出处）。
@@ -179,7 +179,7 @@ Loader 的 `EntryTree.write()`（`dsh-app-boot` 的 `Include` 类）是 `writeFi
 
 `call(payload, after, onError)` 的第三个参数就是"写进哪条通道"，**必须只写一条**。D21–D23 守住（反向验证：把重复渲染注入回去，断言会打印出重复的那两条）。
 
-> 新增状态时记得同步 `tools/verify.mjs` D 区的 `scene(...)` 夹具（`useState` 是按顺序发值的，少一位就整体错位）。
+> 新增状态时记得同步 `tools/verify.ts` D 区的 `scene(...)` 夹具（`useState` 是按顺序发值的，少一位就整体错位）。
 
 ### 3.10 状态色必须有**正面证据** —— 禁止只看 fiber 相位报绿
 
@@ -203,7 +203,7 @@ Loader 的 `EntryTree.write()`（`dsh-app-boot` 的 `Include` 类）是 `writeFi
 ### 4.1 动手前先跑自检
 
 ```powershell
-node tools/verify.mjs
+node tools/verify.ts
 ```
 
 改动前是 PASS、改动后是 FAIL，才能证明是你的改动引起的。
@@ -240,7 +240,7 @@ node tools/verify.mjs
 
 声称"做完了"之前，必须给出：
 
-1. `node tools/verify.mjs` 的输出（`PASS n/n`）
+1. `node tools/verify.ts` 的输出（`PASS n/n`）
 2. 编码检查：无 BOM、无 `U+FFFD`、LF 行尾
 
    ```powershell
@@ -257,7 +257,7 @@ node tools/verify.mjs
 
 ```powershell
 # 自检（唯一必跑）
-node tools/verify.mjs
+node tools/verify.ts
 
 # 看运行时条目状态（本插件相关）
 #   用 plugin_manager(action: list_plugins) 找 include:dsh-mcp-manager / include:mcp-manager

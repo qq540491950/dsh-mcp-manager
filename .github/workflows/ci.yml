@@ -17,8 +17,9 @@ jobs:
 
       # 自检脚本是零依赖的：**没装 node_modules 也要能跑**。
       # 这一步放在 install 之前是刻意的——它守住"克隆下来就能自检"这条性质。
+      # 注意：它是 .ts，但**不需要构建**（Node ≥22.18 原生类型擦除，入口直接跑）。
       - name: 自检（零依赖）
-        run: node tools/verify.mjs
+        run: node tools/verify.ts
 
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
