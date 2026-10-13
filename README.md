@@ -17,6 +17,9 @@
 
 数据模型的关键取舍：**所有 MCP 服务器放进一个 `cordis:group` 条目的 config 数组**。于是「增 / 删 / 改 / 启停」四件事全部退化为「重写这一个数组」，全部走官方的配置写入通道。
 
+**怎么装**：见第 5 节。现在就能用 profile 路径行接线（零依赖）；"一键安装"需要先做成 bundle（P6，见 `docs/publish-plan.md`）。
+**改了代码怎么生效**：见 6.2 —— 客户端半边热替换、宿主半边要重启、profile 补丁秒级生效。
+
 ---
 
 ## 1. 界面接入点：「设置界面下方」到底接哪个座位
@@ -233,7 +236,28 @@ dsh-mcp-manager/
 
 ---
 
-## 5. 接线（两步，都在 profile 的 `cordis.patch.yml`）
+## 5. 安装与接线
+
+### 5.1 现在能"一键安装"吗？—— 还不能，但可以接线
+
+| 安装方式 | 现在 | 说明 |
+|---|---|---|
+| **`plugin_manager install_bundle`（一键）** | ❌ **不能** | 本包尚未声明 `dsh.bundle`。安装器在任何东西落地**之前**就拒绝，理由是 `not-a-bundle` / "*declares no dsh.bundle*"（`dsh-plugin-manager/lib/index.js:1587`；目录路径与注册表包名走同一判定，`lib/types/index.js:382` 是同一段逻辑）。 |
+| **profile 里的路径行（本仓库当前用法）** | ✅ **能，且零依赖** | 只需 `cordis.patch.yml` 两步（§5.2）；不需要 `pnpm`、`node_modules`，也不需要先发布。 |
+
+一键安装所需的打包（`cordis.patch.yml` + `dsh.bundle.patch` + `files`/`locale`/`icon`、去掉 `private`）
+是一份独立清单，已经写在 `docs/publish-plan.md`（P6）。做完之后用户侧就是这一条命令：
+
+```powershell
+# 将来形态（尚未实现）：先拿本地目录试装，发布后再按包名装
+plugin_manager install_bundle target='D:\project\dsh-plugins\dsh-mcp-manager'
+plugin_manager install_bundle target='@qq540491950/dsh-mcp-manager'
+```
+
+> 注意 `dsh plugin --profile <name> …` 是 **pnpm 的透传**；"把包装成 bundle / 选上 bundle" 是
+> `plugin_manager` 的活，不是 CLI 的活。
+
+### 5.2 手动接线（两步，都在 profile 的 `cordis.patch.yml`）
 
 文件：`C:\Users\admin\.dsh\profiles\desktop\cordis.patch.yml`
 
@@ -276,14 +300,71 @@ dsh-mcp-manager/
 
 ---
 
-## 6. 自检
+## 6. 自检与更新
+
+### 6.1 自检
 
 ```powershell
-node D:\project\dsh-plugins\dsh-mcp-manager\tools\verify.ts
-# → PASS 193/193
+pnpm verify                 # = node tools/verify.ts
+# → PASS n/n（**条数以实际输出为准**；撰写时 243）
 ```
 
-覆盖：包清单契约（`dsh.client.platform`、`exports["./client"]`、bundle 模块 id 必须等于包名、只 require 种子模块、宿主半边零 import）；宿主半边行为（依赖声明、路由路径/方法/requestBody、GET 快照与状态映射、**三种操作 `setEnabled`/`remove`/`save`**、`env`/`headers`/`args` 的三种输入形状、非法 `serverName`/空 `url`/未知操作被拒且**不落盘**、group 条目缺失时的可读报错）；**行内操作回归测试**（B27–B42：停用后 `headers` 必须仍在、启用后仍在、删除只删目标、名字找不到回 409、回退路径的文本形状解析正确）；**失败原因采集与主动检测**（A24b–A24f + B43–B70：宿主必须挂自己的 logger exporter、必须显式声明阈值（否则 warn 级原因被默认阈值 1 丢掉）、只认行首 `mcp-client(<name>):` 前缀（含"内嵌同名形状"的无关日志不入账）、warn/error 原文与级别/时间/count 进快照、多台互不串台、恢复信号与**任一次配置写入**清空旧记录、超长原文按 500 字符截断、缺 `logger` 服务时优雅降级；**相位映射**覆盖 `pending/loading/active/failed/disposed/unloading`；**主动探测**只打启用中的服务器、请求是 MCP `initialize` 且带上配置里的 headers、探测通过/HTTP 401/TCP 拒绝（报出 cause 而不是无用的 "fetch failed"）/200 但不是 MCP/stdio 无法探测/挂死服务器在自己的 8s 预算内超时/探测预算必须留够冷连接余量（A24f，≥8s）/可单探一台、探不存在的名字回 409、配置写入清空旧探测结果）；**配置分层语义**（B70：覆写层是整数组替换——只认覆写行，不合并 `insert:` 层，否则"写在 insert 里的死配置"会被当成生效，还会凭空多出一台服务器）；客户端半边行为（懒 CJS 协议、`settings.section` 注册契约、order 与 label、能力协商）；**主题 / 尺寸 / 自适应 / 表单结构护栏**（A11–A12c：不得裸硬编码颜色、主按钮必须用 foreground token、视觉必须走注入的样式表且有 hover 反馈；A13–A31：标题行与说明文字分层、紧凑档尺寸对齐官方 `.sm`/`.rowActions`、**表单面板对齐官方 models 页（底色分层 + 无描边 + 输入框 token）**、操作区不换行、不重复叠加外壳留白、不渲染 URL 详情、主体自适应且不撑破、不在 inline style 里写尺寸、`mono` 与 `multiline` 分离、一卡一服务器且表单展开在同一张卡内、编辑按钮可收起、**失败原因行可断行且不撑破卡片**）；**真实渲染测试**（D1–D41：用迷你渲染器递归展开函数组件，覆盖列表 / 展开编辑 / 新增 / 空 / 载入 / 错误 / 未配置 / **有失败记录** / **停用+旧记录** / **四态（灰·琥珀·绿·红）** 等状态，断言"展开时不会出现第二张同名卡"、**状态语义（有记录时是「连接异常」而不是「运行中」、LOADING 是「启动中」、FAILED 是「加载失败」、无活条目是「未启动」、宿主能探测却没有记录时是「未检测」而不是「运行中」、检测失败是「连接失败」+ 原因行、检测通过盖掉更早的失败记录、检测通过但条目没挂上时不报绿）**、**能力协商（旧宿主没有 `probe` 能力时「检测」禁用并提示要重启 DSH，而不是点了报「未知操作：probe」）**、**打开页面自动检测一次（先 GET 拿能力、再 POST probe；silent 模式只亮「检测中…」不锁按钮；旧宿主与读快照失败时不发探测）**、**写入之后自动补检测（在同一套沙箱里真点一次「启用」：`POST setEnabled → POST probe`；旧宿主不补；探通了但相位还没稳定时继续重读快照；相位一直不稳定时有界收手）**、原因行含原文与次数且落在那张卡片内部、标题行有刷新与检测两个按钮、**两条错误通道互斥——同一句文案在同一时刻只渲染一次，且表单失败落在表单里、行内操作失败落在页面级**）；**设置导航那一格的图标**（A32–A38：内联副本与 `assets/mcp-mark.svg` 的三条 path 逐字一致、几何与官方 favicon 同源、按官方比例缩进 16x16（墨迹高 15 / 居中 / 有效描边 1.0）、用官方 `data-shortcut-modal` 锚点而不是 CSS-module 哈希类名、只 setAttribute 不改 React 节点树、只隐藏官方 `<svg>` 而不隐藏整行；C12–C17 用**假 DOM 真跑一遍 `apply`**：只标记 label 为 `MCP` 的那一格、observer 挂在 body、注入的样式表已含那两行规则、面板关闭重开后能重新标记、卸载时 observer 与标记都清干净）。
+零依赖：不需要 `node_modules`，也不需要先 `build`（`.ts` 由 Node ≥22.18 的类型擦除直接执行）。
+命令名以 `package.json` 的 `scripts` 为唯一来源——本文件不抄死命令名。
+
+覆盖：包清单契约（`dsh.client.platform`、`exports["./client"]`、bundle 模块 id 必须等于包名、只 require 种子模块、宿主半边零 import）；宿主半边行为（依赖声明、路由路径/方法/requestBody、GET 快照与状态映射、**三种操作 `setEnabled`/`remove`/`save`**、`env`/`headers`/`args` 的三种输入形状、非法 `serverName`/空 `url`/未知操作被拒且**不落盘**、group 条目缺失时的可读报错）；**行内操作回归测试**（B27–B42：停用后 `headers` 必须仍在、启用后仍在、删除只删目标、名字找不到回 409、回退路径的文本形状解析正确）；**失败原因采集与主动检测**（A24b–A24f + B43–B76：宿主必须挂自己的 logger exporter、必须显式声明阈值（否则 warn 级原因被默认阈值 1 丢掉）、只认行首 `mcp-client(<name>):` 前缀（含"内嵌同名形状"的无关日志不入账）、warn/error 原文与级别/时间/count 进快照、多台互不串台、恢复信号与**任一次配置写入**清空旧记录、超长原文按 500 字符截断、缺 `logger` 服务时优雅降级；**相位映射**覆盖 `pending/loading/active/failed/disposed/unloading`；**主动探测**只打启用中的服务器、请求是 MCP `initialize` 且带上配置里的 headers、探测通过/HTTP 401/TCP 拒绝（报出 cause 而不是无用的 "fetch failed"）/200 但不是 MCP/stdio 无法探测/挂死服务器在自己的 8s 预算内超时/探测预算必须留够冷连接余量（A24f，≥8s）/可单探一台、探不存在的名字回 409、配置写入清空旧探测结果）；**配置分层语义**（B70：覆写层是整数组替换——只认覆写行，不合并 `insert:` 层，否则"写在 insert 里的死配置"会被当成生效，还会凭空多出一台服务器）；客户端半边行为（懒 CJS 协议、`settings.section` 注册契约、order 与 label、能力协商）；**主题 / 尺寸 / 自适应 / 表单结构护栏**（A11–A12c：不得裸硬编码颜色、主按钮必须用 foreground token、视觉必须走注入的样式表且有 hover 反馈；A13–A38：标题行与说明文字分层、紧凑档尺寸对齐官方 `.sm`/`.rowActions`、**表单面板对齐官方 models 页（底色分层 + 无描边 + 输入框 token）**、操作区不换行、不重复叠加外壳留白、不渲染 URL 详情、主体自适应且不撑破、不在 inline style 里写尺寸、`mono` 与 `multiline` 分离、一卡一服务器且表单展开在同一张卡内、编辑按钮可收起、**失败原因行可断行且不撑破卡片**）；**真实渲染测试**（D1–D47：用迷你渲染器递归展开函数组件，覆盖列表 / 展开编辑 / 新增 / 空 / 载入 / 错误 / 未配置 / **有失败记录** / **停用+旧记录** / **四态（灰·琥珀·绿·红）** 等状态，断言"展开时不会出现第二张同名卡"、**状态语义（有记录时是「连接异常」而不是「运行中」、LOADING 是「启动中」、FAILED 是「加载失败」、无活条目是「未启动」、宿主能探测却没有记录时是「未检测」而不是「运行中」、检测失败是「连接失败」+ 原因行、检测通过盖掉更早的失败记录、检测通过但条目没挂上时不报绿）**、**能力协商（旧宿主没有 `probe` 能力时「检测」禁用并提示要重启 DSH，而不是点了报「未知操作：probe」）**、**打开页面自动检测一次（先 GET 拿能力、再 POST probe；silent 模式只亮「检测中…」不锁按钮；旧宿主与读快照失败时不发探测）**、**写入之后自动补检测（在同一套沙箱里真点一次「启用」：`POST setEnabled → POST probe`；旧宿主不补；探通了但相位还没稳定时继续重读快照；相位一直不稳定时有界收手）**、原因行含原文与次数且落在那张卡片内部、标题行有刷新与检测两个按钮、**两条错误通道互斥——同一句文案在同一时刻只渲染一次，且表单失败落在表单里、行内操作失败落在页面级**）；**设置导航那一格的图标**（A32–A38：内联副本与 `assets/mcp-mark.svg` 的三条 path 逐字一致、几何与官方 favicon 同源、按官方比例缩进 16x16（墨迹高 15 / 居中 / 有效描边 1.0）、用官方 `data-shortcut-modal` 锚点而不是 CSS-module 哈希类名、只 setAttribute 不改 React 节点树、只隐藏官方 `<svg>` 而不隐藏整行；C12–C17 用**假 DOM 真跑一遍 `apply`**：只标记 label 为 `MCP` 的那一格、observer 挂在 body、注入的样式表已含那两行规则、面板关闭重开后能重新标记、卸载时 observer 与标记都清干净）。
+
+**分区索引**（条数以实际输出为准；撰写时为 **243** 条）：
+
+| 区 | 覆盖 | 编号 |
+|---|---|---|
+| A | 包清单 / 主题 / 尺寸 / 自适应 / 布局 / 表单结构护栏 / 导航标记几何 / 失败原因采集与探测的静态护栏 | A1–A38 |
+| B | 宿主半边行为 + 行内操作回归 + 失败原因采集 + 相位映射与主动探测 + 配置分层语义（B70）+ 工具名单 | B1–B76 |
+| C | 客户端协议与座位注册契约 + 导航标记的 DOM 行为（假 DOM 真跑 `apply`） | C1–C18 |
+| D | 真实渲染测试（迷你渲染器递归展开函数组件）+ 挂载行为（会真跑 `useEffect` 的沙箱）+ 工具名单渲染 | D1–D47 |
+| E | 共享常量 ↔ 出厂产物一致 + **构建指纹 E9/E10**（产物必须与 `src/**` 同步）+ **E11**（`pnpm verify`/`build` 指向的文件必须存在） | E0–E11 |
+| F | **38 条纯函数单测**：直接 `await import('../src/**/*.ts')`，不引入任何测试框架 | F1–F38 |
+
+工具脚本自身的类型检查另有两条命令（`tools/` 已 TS 化）：`pnpm typecheck:tools` 是门禁（0 错误），
+`pnpm typecheck:tools:wip` 是进度计（`tools/verify.ts` 还有 240 条待修，续做方法见 `docs/tools-ts.md`）。
+
+### 6.2 改了代码之后，DSH 怎么感知到（三层，机制各不相同）
+
+**改的东西不同，生效路径完全不同** —— 搞错就会以为"改了没用"。三层都来自官方源码实测：
+
+| 你改了什么 | 谁在监听 | 怎么生效 | 要重启吗 |
+|---|---|---|---|
+| **profile 的 `cordis.patch.yml`**（比如增删一台 MCP 服务器） | `dsh-hmr`：初始化时注册 profile manifest + profile/home 两个用户补丁监听 | HMR 重新组合 → 条目更新 → 插件被重新 `apply`（`dsh-hmr/README.zh.md:57`） | **不用**，秒级 |
+| **`lib/client.js`（客户端半边）** | `dsh-client-hmr`：Host 监听每个包的**入口产物**，通过 `/plugins/events` 推帧 | revision 变化（**mtime + ctime + size**，不哈希内容，`dsh-client-hmr/lib/index.js:31-38`）→ 浏览器把该条目**热替换** | **不用** |
+| **`lib/index.js`（宿主半边）** | **没人监听**：`hmr.root` 默认是 `[]`（"仅保留显式注册的配置监听"），本插件目录不在其中 | 不生效；且 Node 的 ESM 按 URL 缓存模块 | **要**（§7.4） |
+
+**所以开发循环是：**
+
+```powershell
+# 1) 改 src/** —— 不是 lib/**，lib 是产物
+# 2) 必须重建，否则运行中的仍是旧产物
+pnpm build                 # = node tools/build.ts
+# 3) 客户端半边：刷新页面（或等热替换）即生效；宿主半边：重启 DSH
+# 4) 交付前让门禁全绿（类型 + 风格 + 产物契约 + 自检）
+pnpm check
+```
+
+**为什么"忘了重建"不会悄悄过去**：`lib/**` 是产物，`lib/.build-manifest.json` 记着每个产物的
+sha256 与它**全部输入**的 sha256。`tools/verify.ts` 的 **E9/E10** 会比对这两者，
+"改了 `src/**` 没 `pnpm build`"会直接报出是哪个产物、哪些输入不一致（这是设计，不是误报）。
+
+**怎么确认真的生效了**（两条都实测可用）：
+
+- 宿主半边：`plugin_manager(action: 'list_plugins')` → 找 `include:dsh-mcp-manager`
+  → `enabled: true` + `fiberPhase: "active"`。
+- 客户端半边：`cordis_inspect_query(platform: 'client', provider: 'Slots', method: 'listSubTree',
+  input: { root: 'settings.section' })` → occupants 里出现 `{ id: 'mcp', order: 900, active: true }`。
+- **客户端热替换失败不会回滚**：旧 fiber 拆掉后若导入/激活失败，页面只显示一条页面级同步错误，
+  不会恢复上一版；「设置 → 插件 → 插件列表」会针对最新图重试一次（`dsh-client-hmr/README.md:74`）。
+
+**想让宿主半边也热重载**：把本插件目录加进 `hmr` 的 `root` 表。**当前刻意没做** —— `root` 是
+整表（`x-cordis.role: table`），而补丁层的 `config` 是**整份替换而非深合并**，直接写会丢掉基础
+bundle 里的原值，有把客户端 HMR 一起弄坏的风险（见 §7.4 与 §8 的"已知边界"）。
 
 ---
 
@@ -301,7 +382,7 @@ profile 已按第 5 节接线，`dsh-hmr` 监听该文件（`dsh-hmr/lib/index.j
 | **宿主半边生效** | `include:dsh-mcp-manager` → `fiberPhase: active`（`apply()` 内同步注册路由，抛错会挂掉 fiber） |
 | **客户端半边生效** | `settings.section` 台账 occupants 含 `{id:"mcp", order:900, active:true}`，且是 order 最大的一项 |
 | 路由受鉴权保护 | `GET/POST /api/mcp-manager` → **401**；伪造 `Host` → **403** |
-| 自检 | `PASS 193/193` |
+| 自检 | `PASS`（条数以实际输出为准） |
 | 文件编码 | 无 BOM、无 U+FFFD、LF 行尾、YAML 解析通过 |
 
 `readOnlyReason: "unaddressable"` 这一条尤其值得记下：它**正面印证了「group 子条目不可单独寻址」**——所以 `configEditor` 只能整体重写 group 的 config 数组，这正是本插件「单一数组」设计的由来，而不是实现偷懒。
@@ -457,7 +538,7 @@ account -10 | general 0 | models 10 | plugins 15 | agent-presets 20 | mcp 900 �
 - 已知取舍：**只在打开页面时探一次、以及每次写入后探一次，不轮询**（写入之后的相位稳定最多重读 10 × 200ms）。页面开着但什么都不做的时候状态不会自己变（要"现在"的结论就点「检测」）。这样后台不会一直敲服务器。
 - 已知取舍：**每次打开这一页（以及每次点「检测」）都是一次真实的 `initialize` 请求**，会在服务器侧留下一次连接（可能创建/丢弃一个会话）。它对服务端是无副作用的读操作，但确实"敲了一次门"。
 
-### 7.4 工具名单（每台服务器"有几个工具、分别叫什么"）
+### 7.9 工具名单（每台服务器"有几个工具、分别叫什么"）
 
 每张服务器卡下面都有一块「工具 N 个」+ 工具名（等宽 chip）。超过 6 个默认只显示前 6 个 +「+N 个」，旁边给「显示全部 / 收起」。
 
