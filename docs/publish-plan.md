@@ -275,3 +275,50 @@ plugin_manager(action: 'install_bundle', target: 'D:\\project\\dsh-plugins\\dsh-
 3. 本地路径这一轮全通过后 → `npm publish --access public`
 4. 从 registry 名再装一次（V3'）→ 同 V4 → 确认与本地路径行为一致
 5. `git push`（用户确认后）+ GitHub Release + 在 README 写兼容矩阵（DSH 版本 × 插件版本）
+
+> 第 3 步不一定要发 npm —— 见 §9 的四条 spec 形式（git / tarball / 路径都不经过 registry）。
+
+---
+
+## 9. 附：不必经过 npm 的分发路线（本轮源码复核）
+
+`install_bundle` 的 `target` **不是"包名字段"，而是一个 pnpm spec**。安装器先把它解析成四种形式之一——本机安装版
+`@deepseek-ai/dsh-plugin-manager/lib/index.js:72-117` 的 `parseInstallSpec`——再原样交给 `pnpm add`：
+
+| 形式 | 接受的样子 | 装前能不能判定 bundle |
+|---|---|---|
+| `registry` | npm 包名，可带范围（`@scope/name@1.2.3`） | ✅ 用 `pnpm view` 拿到 manifest 后判定 |
+| `path` | **绝对路径**（`D:\…\x`、`file:D:\…`、`link:…`） | ✅ 直接读该目录的 `package.json` |
+| `git` | `github:user/repo[#ref]`（也认 `gitlab:` / `bitbucket:` / `gist:`）、`git+https://…git`、`git@host:user/repo.git`、`https://github.com/user/repo[#ref]` | ❌ 要抓下来才知道 |
+| `tarball` | 本地绝对路径的 `.tgz` / `.tar.gz`，或 `https://…/x.tgz` | ❌ 同上 |
+
+（`https://github.com/user/repo` 走 `git`；以 `.tgz` / `.tar.gz` 结尾的 URL 一律按 `tarball` 走。）
+
+**所以"只发在 GitHub"完全可行：**
+
+```text
+plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manager#v0.1.0')
+```
+
+装完之后的机制与 npm 路线**完全相同**：包装进 profile 的 `node_modules`、包名写进 `dsh.profile.bundles`、
+`dsh.bundle.patch` 作为 overlay 层加载、`icon` / `locale` 从包目录读（`bundleManifest` + `resolveBundleDir`，`:1784-1789`）。
+
+**四条路线的差别**（都是源码事实）
+
+| | registry | 本地路径 | git / tarball |
+|---|---|---|---|
+| 装前检查 | 问注册表要版本与 peer；**不是 bundle 直接拒**（`:1638`） | 读目录 `package.json`；**不是 bundle 直接拒**（`:1587`） | 只答复"形式 + host"（`:1560-1575`），**不做 bundle 判定** |
+| 失败代价 | 什么都没下载 | 什么都没发生 | **先 `pnpm add` 再判定**：不是 bundle（`:1786`）或 peer 不兼容（`:1788`）→ 抛错并**恢复 profile 清单与锁文件**（`:1790-1793`） |
+| 版本 | 语义化范围 + `already-installed` 预检 | 跟着工作区变 | 钉 commit / tag（`#v0.1.0`） |
+| 额外成本 | 要 npm 账号与 scope | 机器上要有这份目录 | GitHub 先跑一次 `git ls-remote` 预检（默认 5s，`git` 必须在 PATH；**其他 git 主机与 tarball 跳过**，`:968-971`） |
+
+**GitHub 路线的硬前提**（少一条就会失败或静默失效）
+
+1. `package.json` 声明 `dsh.bundle.patch`，且 **patch 文件与 `lib/**` 都提交进仓库** —— pnpm 拉的是仓库内容，**不会替你跑 `pnpm build`**。本仓库"`lib/` 入库"的决策（§2）正好为此服务，`.gitignore` 也没有忽略 `lib/`。
+2. P6 加的 `files` 白名单决定 git 依赖实际拿到哪些文件 —— `cordis.patch.yml`、`locale/*.json`、图标都必须在里面。
+3. **同一个 spec 重复安装会报 `ambiguous-install`**（`:1779-1782`：依赖没变化 → 找不到"新装的那一个"）。升级请先 `remove_bundle` 再装，或换一个 `#ref`。
+4. 私有仓库需要 pnpm 自己能用的凭据：预检**特意禁用了凭据助手与交互提示**，认证失败留给 pnpm 处理（含 HTTPS→SSH 回退）。
+
+**未实测**：以上是"源码 + 包内官方 `README.zh.md`（`:46/48/54/63`）复核"的结论；本轮**没有真的用 `github:` spec 装过任何包**。
+另外 GitHub 的 `archive/refs/tags/*.tar.gz` 源码包**没有验证**——它以 `<repo>-<tag>/` 为根，不是 npm 包的 `package/` 前缀，
+作发行资产用 `npm pack` 出来的 `.tgz` 更稳。

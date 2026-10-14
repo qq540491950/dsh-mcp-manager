@@ -220,7 +220,7 @@ tools/build.ts           esbuild 打包两半边 + 客户端包装 + 写构建�
 
 ### 5.3 发布：怎么把它变成别人能一键装的插件
 
-**DSH 没有中央插件市场**：安装入口是 `plugin_manager install_bundle`，底层用 pnpm 向 registry 取包（本地绝对路径或包名都行）。所以**发布 = 发布一个声明了 `dsh.bundle.patch` 的 npm 包**。装一次即完成两件事：把包装进 profile 的 `node_modules`，并把包名写进 profile `package.json` 的 `dsh.profile.bundles`——它的 patch 层随后自动进 Loader，用户**不需要再手写 `cordis.patch.yml`**。
+**DSH 没有中央插件市场**：安装入口是 `plugin_manager install_bundle`，底层用 pnpm 把你给的那个 spec 装进 profile——而 spec 有四种形式（见本节末）。所以**发布 = 让别人能装上一个声明了 `dsh.bundle.patch` 的包**，这个包**不一定要在 npm 上**（GitHub / tarball / 本地路径都行）。装一次即完成两件事：把包装进 profile 的 `node_modules`，并把包名写进 profile `package.json` 的 `dsh.profile.bundles`——它的 patch 层随后自动进 Loader，用户**不需要再手写 `cordis.patch.yml`**。
 
 四步（详细清单、要同步改的自检断言、验证阶梯见 [docs/publish-plan.md](docs/publish-plan.md)）：
 
@@ -232,6 +232,14 @@ tools/build.ts           esbuild 打包两半边 + 客户端包装 + 写构建�
 2. **本地验证**（不用先发布）：`pnpm check` 全绿 → `npm pack` 审内容（有产物 / patch / locale / 图标 / README / LICENSE，无 `src`+`tools`+`docs`，无密钥）→ `plugin_manager(action:'install_bundle', target:'<本地绝对路径>')`（读返回值的 `application: applied`，`warnings` 里不该有 bundle skipped）→ 运行时四查（宿主 `fiberPhase: active`、客户端座位 `{id:"mcp",order:900,active:true}`、**新增一台服务器真的落盘且工具注册**、启停删检测全流程回归）→ `remove_bundle` 卸载回归。
 3. **发布**：`npm publish --access public` → 用包名再装一次（`target='@qq540491950/dsh-mcp-manager'`），确认与本地路径行为一致 → `git push` + GitHub Release + 在本文补一张兼容矩阵（DSH 版本 × 插件版本）。
 4. **发布前必须停下让用户确认**：`npm publish` 与 `git push` 都不代跑。
+
+**npm 不是必须的**——`install_bundle` 的 `target` 认四种 spec（本机安装版 `parseInstallSpec`）：**注册表包名**、**绝对本地路径**、**git 地址**（`github:user/repo`、`git+https://…git`、`https://github.com/user/repo#ref`，也可 `gitlab:` / `bitbucket:` / `gist:`）、**tarball**（本地 `.tgz` / `.tar.gz`，或 `https://…/x.tgz`）。所以"只发在 GitHub"完全可行：
+
+```text
+plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manager#v0.1.0')
+```
+
+四条路线的取舍、前提与代价见 [docs/publish-plan.md](docs/publish-plan.md) §9。GitHub 路线最要紧的三条：①仓库里 `package.json` 必须有 `dsh.bundle.patch`，且 **patch 文件与 `lib/**` 都要提交进仓库**（pnpm 拉的是仓库内容，不会替你构建）；②git/tarball 是**抓取之后才判定**是不是 bundle，不是 bundle 会先装上再回滚（本地路径与 registry 是**装前**就拒）；③GitHub 的 spec 会先跑一次 `git ls-remote` 预检（5s，`git` 要在 PATH 上）。
 
 ⚠️ **装 bundle 之前先摘掉 profile 里旧的路径行与手写 group 行**：否则会出现同 id 的重复行（两份 `dsh-mcp-manager`、两份 `mcp-manager`），最坏是两个 fiber 各自注册一次 `/api/mcp-manager`。保留 `- id: mcp-manager` 的**覆写行**（服务器列表就在里面）。升级插件后**宿主半边仍需重启 DSH**（§6.2）。
 

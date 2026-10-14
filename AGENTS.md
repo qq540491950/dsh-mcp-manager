@@ -107,3 +107,4 @@ DSH 插件：在设置界面最下方加一页「MCP」，可视化管理 `@deep
 - `.gitattributes` 强制 LF；不要引入 CRLF，也不要依赖 `core.autocrlf`（本机为 `true`，方向相反）。
 - `git push` 的 stderr 进度会被 PowerShell 记成错误并给出 `[exit code: 1]`——**假警报**，以 `git ls-remote origin refs/heads/main` 与 `git status -sb` 为准。
 - 发布（见 [docs/publish-plan.md](docs/publish-plan.md)）：包名用 **`@qq540491950/dsh-mcp-manager`**（裸名被占）；`files` 白名单不含 `src/`、`tools/`、`docs/`、`AGENTS.md`；升级后宿主半边仍需重启。
+- **npm 不是唯一渠道**：`install_bundle` 的 `target` 也认绝对路径 / git（`github:user/repo#ref`）/ tarball；git 路线要求 patch 文件与 `lib/**` **已提交**，且 bundle 判定发生在**抓取之后**（失败会回滚 profile）。四条 spec 形式的取舍见 [docs/publish-plan.md](docs/publish-plan.md) §9。
