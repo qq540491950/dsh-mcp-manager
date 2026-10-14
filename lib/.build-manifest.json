@@ -3,9 +3,9 @@
   "targets": [
     {
       "output": "lib/index.js",
-      "outputSha256": "c10ec08b959f0af167997cf54b16ba0e5af8283aeab6689f94483667d9ce2759",
+      "outputSha256": "d3037cc2de26aa342f48a0bb8365098efbc3a24de874da0ed6c8ba7c9fe5a62d",
       "inputs": {
-        "src/host/index.ts": "70a4911fd683568f9ec429ccbd5796a2e5daa20167bd6c27f5545cb833b8cb24",
+        "src/host/index.ts": "0b9e37c6497e1b86b82734976918fe9697b412d20865143480827a453eb572ea",
         "src/host/rows.ts": "0d6ebb8a09c9d4243ddf9df3eab31ed59e480b98a6be77ad5997d95f18aae3e9",
         "src/host/service-types.ts": "e08327405d55d5ad270e0e35d5d41fe518dc2d21816332a5df10709297009695",
         "src/shared/constants.ts": "2b22ccaf5b28a1e700a1b825f21f6438fb072f731c76239e5d992d7e18be3209",
@@ -15,7 +15,7 @@
     },
     {
       "output": "lib/client.js",
-      "outputSha256": "d4295bd201e0f282b2951922dd892e87e9b93db0a29521b4fac0cfd40f00d722",
+      "outputSha256": "7d175dac4bc71e334665a54441c0de0aa0eeebc8219cf7e9d02ca2fee8ce5ef7",
       "inputs": {
         "src/client/core/api.ts": "3d21093d096293ba8d48f87a19e3766702d3ffe094bd438e45b77e4063b1d427",
         "src/client/core/draft.ts": "d91bf2a6688fc0e10a808c746d070753ac9baad3f64e7db7b0e972c8c25f474f",
@@ -25,7 +25,7 @@
         "src/client/nav-mark.ts": "36b58fd7fdbc44a8bdb4a5c5ba8937cebf9a4bbffe5a162e85fd9c1dda8a2666",
         "src/client/react.ts": "21a4a5cdb8072953c7fbf3b08d5c6503ef3dd8d8b059412fa4f6d04cdfd40cd5",
         "src/client/row.tsx": "8208a0c00ca5a3c9a1e265c37f02d7d3e739421320df9184f4cb91e18373d3c4",
-        "src/client/section.tsx": "020acda1c2749f7499f657c6b818bbdee0b3b3222b6faf53a98ed86b7ad64139",
+        "src/client/section.tsx": "2d3a83dbf76e72c5669a09f39117f489c64b9368da43548046126a3f08fea106",
         "src/client/service-types.ts": "b911f5168b14ac2e463424cf94a2b668e0a943f6d2346ba052851ac638d69b29",
         "src/client/styles.ts": "cb604026e835db1a9cd2106db11b2db96a7bd1a719d7b5d70e87b47f6f9e8b25",
         "src/shared/constants.ts": "2b22ccaf5b28a1e700a1b825f21f6438fb072f731c76239e5d992d7e18be3209",

@@ -1,18 +1,28 @@
 # dsh-mcp-manager bundle 自带的补丁层（`package.json` 的 `dsh.bundle.patch` 指向本文件）。
 #
-# 两行都在**同一个 `insert:` 列表**里：
-#   · `mcp-manager`（cordis:group）是**数据容器** —— 所有 MCP 服务器都是它 config 数组里的一行。
-#     插件只读写这个数组，从不增删 Loader 条目（AGENTS 2.3 / 2.4）。
-#   · 第二行才是插件自身的 Loader 行。
+# 这里**只有插件自己这一行**。承载 MCP 服务器的 `cordis:group` 容器（id 见
+# src/shared/constants.ts 的 GROUP_ID）**刻意不在这里**，它由 profile 自己的补丁层声明：
 #
-# ⚠️ 两行都必须写在 `insert:` 下，**不能**写成顶层的 `- id: X`：顶层 `- id: X` 是"覆写已存在条目"，
+#   · <profile>/cordis.patch.yml —— 粘一次，永久有效
+#   - insert:
+#       - id: mcp-manager
+#         name: 'cordis:group'
+#         config: []
+#
+# 为什么必须这样分：bundle 是插件的一部分，卸载插件 = 这一层消失 = 容器消失 =
+# 里面所有 MCP 服务器一起停止加载。容器归 profile 之后，卸载 / 升级 / 从未安装
+# 都不影响已经配置好的 MCP —— 插件只是那套数据的一个可视化编辑器。
+# 自检 P2/P3 钉住"本文件不得出现容器行"，P11 钉住"缺容器时两个半边都要给出上面这段 YAML"。
+#
+# ⚠️ 本行必须写在 `insert:` 下，**不能**写成顶层的 `- id: X`：顶层 `- id: X` 是"覆写已存在条目"，
 #    目标不存在时 `applyEntryPatches` 会直接 warn 并丢弃（README 2.3）——bundle 装上了却没有这一行，
-#    表现就是"设置里没有 MCP 页"。自检 P2 专门守住这一点。
+#    表现就是"设置里没有 MCP 页"。
 #
-# profile 层随后可以写 `- id: mcp-manager` 覆写行来落服务器列表（补丁层在 bundle 层之后应用）。
+# ⚠️ 容器**只能声明一次**：profile 里已有那份，bundle 里若再写一份，同 id 两行会让
+#    configEditor 写盘前断言（dsh-config-editor:12/122，flatten 不去重）取到先出现的空 config，
+#    于是保存 / 启停 / 删除全部报错，而读取看着正常（README 2.4）。
+#
+# profile 层随后用顶层 `- id: mcp-manager` 覆写行落服务器列表（补丁层在 bundle 层之后应用）。
 - insert:
-    - id: mcp-manager # 必须等于 src/shared/constants.ts 的 GROUP_ID
-      name: 'cordis:group'
-      config: []
     - id: dsh-mcp-manager # Loader 条目 id（profile 里的 include:dsh-mcp-manager 就是它）
       name: '@qq540491950/dsh-mcp-manager' # 必须等于 package.json 的 name（自检 P4）

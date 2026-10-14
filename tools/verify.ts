@@ -1874,13 +1874,16 @@ check(
   check('D12 错误态', hasClass(scene(null, 'boom'), 'mcpm-notice--error'))
 
   // D13 组条目缺失
-  // 文案在 P6 改成了 bundle 形态的指引（group 由包自带的 patch 层提供；故障只剩"没装好"
-  // 与"被更高层覆写压掉"两种），所以断言同步跟上，**两项都守**：
+  // 文案在 v0.1.1 改成了「容器归 profile」的指引（容器由 profile 补丁层声明，不由 bundle 自带），
+  // 所以断言同步跟上，**三项都守**：
   // ①点名缺的是哪一类条目（`cordis:group`，原意图，不能被删）；
-  // ②指出成因在 bundle 侧（否则用户会照着旧文案去 profile 里手写一行，而现在那是错的指引）。
+  // ②指出要改的文件是 profile 的 cordis.patch.yml（含糊的"某处加个 group"等于没指路）；
+  // ③给出能整行照抄的 `insert:` 行（插件自己补不了这一行，只能给内容 —— P11 守同一件事）。
   check(
-    'D13 未配置 group 时给出可读提示（点名 cordis:group + 指出 bundle 侧的两个成因）',
-    textsOf(scene({ ...snapshot, configured: false })).some((t) => t.includes('cordis:group') && t.includes('bundle')),
+    'D13 未配置 group 时给出可读提示（点名 cordis:group + 指向 profile 的 cordis.patch.yml + 给出可照抄的 insert 行）',
+    textsOf(scene({ ...snapshot, configured: false })).some(
+      (t) => t.includes('cordis:group') && t.includes('cordis.patch.yml') && t.includes('insert:'),
+    ),
   )
 
   // D42–D47 工具名单：显示「N 个」，超过 TOOL_PREVIEW_LIMIT 就折叠，点开才显示全部。
@@ -2710,18 +2713,31 @@ check(
   // —— P2–P4：patch 的内容与跨文件一致性 ——
   const patchText = bundlePatchPath !== '' && existsSync(bundlePatchFile) ? await readFile(bundlePatchFile, 'utf8') : ''
   const patchEntries = insertEntriesOf(patchText)
-  checkAll('P2 patch 的 insert 列表里自带两条（group + 插件），且 id 不重复', {
-    两条: patchEntries.length === 2,
+  const containerEntry = patchEntries.find((entry) => entry.id === shared.GROUP_ID)
+  // P2/P3 在 v0.1.1 掉了个头：过去要求「本文件必须自带容器行」，现在要求「**必须不带**」。
+  // 这不是放宽断言，是同一条不变量的另一半：容器只能由**不随插件消失**的那一层声明。
+  // bundle 是插件的一部分 —— 它声明容器 = 卸载插件时容器一起消失 = 里面所有 MCP 服务器
+  // 停止加载（离线复现：`patch: entry mcp-manager not found`，合成结果 0 行）。容器归 profile
+  // 之后，卸载 / 升级 / 从未安装插件都不影响已配置的 MCP。反向验证：往本文件加一行容器行即红。
+  checkAll('P2 patch 的 insert 列表只声明插件自己那一行（容器归 profile，不许出现在这里）', {
+    只有一行: patchEntries.length === 1,
     'id 不重复': new Set(patchEntries.map((entry) => entry.id)).size === patchEntries.length,
+    不含容器行: containerEntry === undefined,
   })
-  const groupEntry = patchEntries.find((entry) => entry.id === shared.GROUP_ID)
-  checkAll('P3 patch 的 group 行：id == src/shared/constants.ts 的 GROUP_ID，name == cordis:group', {
-    'id 命中 GROUP_ID': groupEntry !== undefined,
-    'name 是 cordis:group': groupEntry?.name === 'cordis:group',
+  // 注释里出现容器 id 是**故意**的（这份 patch 的头部就写着"容器归 profile，长这样"），
+  // 所以正文检查必须先剥掉 `#` 之后的内容，否则会把示例当成声明（反向验证时也才分得清两者）。
+  const patchBody = patchText
+    .split('\n')
+    .map((line) => line.replace(/#.*$/, ''))
+    .join('\n')
+  checkAll('P3 patch 不出现容器 id（GROUP_ID）—— 出现即等于把 MCP 的可运行性绑在插件身上', {
+    '顶层 insert 里没有': containerEntry === undefined,
+    正文里也没有: !new RegExp(`^\\s*(?:-\\s*)?id:\\s*['"]?${shared.GROUP_ID}['"]?\\s*$`, 'm').test(patchBody),
   })
   const pluginEntry = patchEntries.find((entry) => entry.id !== shared.GROUP_ID)
-  checkAll('P4 patch 的插件行：name == package.json 的 name（改名漏改立刻红）', {
+  checkAll('P4 patch 的插件行：id == dsh-mcp-manager，name == package.json 的 name（改名漏改立刻红）', {
     插件行存在: pluginEntry !== undefined,
+    'id 是插件行': pluginEntry?.id === 'dsh-mcp-manager',
     'name 等于包名': pluginEntry?.name === manifest.name,
   })
 
@@ -2849,6 +2865,33 @@ check(
   checkAll('P10 peerDependencies 只有 @deepseek-ai/cordis（不许钉 @deepseek-ai/dsh-*），engines.node 存在', {
     '只有一个 peer 且是 cordis': peers.length === 1 && peers[0] === '@deepseek-ai/cordis',
     'engines.node 非空': typeof manifest.engines?.node === 'string' && manifest.engines.node !== '',
+  })
+
+  // —— P11：插件自己补不了容器行，两个半边必须把"要粘的那一行"原样给出来 ——
+  // P2/P3 定了归属（容器归 profile），而 `ctx.configEditor` 只能写覆写行、`ctx.loader.create()`
+  // 被 AGENTS 2.3 禁止 —— 所以"用户怎么把容器加上"全靠这条提示。少了它，用户看到的只是一句
+  // "找不到 group 条目"，只能猜。这里同时守两半边的**一致性**：两边给的行不一样，用户照哪边做都可能错。
+  /** 从源码里抠出那行可照抄的流式 YAML，并把两半边的插值还原成同一个 id 再做比较。 */
+  const rowIn = (text: string): string | null => {
+    const resolved = text
+      .replace(/\$\{GROUP_ID\}/g, shared.GROUP_ID)
+      .replace(/\$\{snapshot\.groupId\}/g, shared.GROUP_ID)
+    const matched = /- insert: \[[^\]]*\]/.exec(resolved)
+    return matched === null ? null : matched[0].replace(/\s+/g, ' ')
+  }
+  const hostSource = await readFile(join(root, 'src/host/index.ts'), 'utf8')
+  const clientSource = await readFile(join(root, 'src/client/section.tsx'), 'utf8')
+  const hostRow = rowIn(hostSource)
+  const clientRow = rowIn(clientSource)
+  checkAll('P11 缺容器时的提示：两半边都指向 profile 的 cordis.patch.yml，并给出同一行可照抄的 insert 行', {
+    宿主给出整行: hostRow !== null,
+    客户端给出整行: clientRow !== null,
+    两半边给出同一行: hostRow !== null && hostRow === clientRow,
+    '行里带 GROUP_ID': hostRow !== null && hostRow.includes(shared.GROUP_ID),
+    '行里是 cordis:group': hostRow !== null && hostRow.includes("name: 'cordis:group'"),
+    '行里 config 是空数组': hostRow !== null && hostRow.includes('config: []'),
+    两边都点了目标文件: hostSource.includes('cordis.patch.yml') && clientSource.includes('cordis.patch.yml'),
+    '旧的"bundle 自带"指引已撤': !hostSource.includes('bundle 自带') && !clientSource.includes('bundle 自带'),
   })
 }
 //#endregion

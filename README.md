@@ -3,7 +3,7 @@
 在 DSH（Web / 桌面端）的**设置面板最下方**加一页 **MCP**：可视化增删改、启停 MCP 服务器，并看到它们的加载状态、失败原因与**当前注册的工具名单（个数 + 名称，过多自动折叠）**。
 
 - **是什么**：一个「客户端半边 + 宿主半边」的 DSH 插件，运行时**零依赖**（§0）。
-- **怎么装**：见 §5（bundle 形态已就绪——一条命令；**但实装验证尚未跑**，见 §5.1；也仍可用 profile 路径行接线）。**怎么发布**见 §5.3。
+- **怎么装**：见 §5（bundle 形态已就绪：一条命令装插件；**另外 profile 里要有那一行容器**，否则页面会提示你去粘 —— §5.6）。**怎么发布**见 §5.3。
 - **改了代码怎么生效**：见 §6.2（客户端半边热替换、宿主半边要重启、profile 补丁秒级生效）。
 - **写代码前先读**：[AGENTS.md](AGENTS.md)（硬性纪律 / 边界 / 风格）。本文只留结论；"为什么这么设计、当时实测到什么、还有哪些没实测"在 [docs/design-notes.md](docs/design-notes.md)——**两边章节号一一对应**，默认不必读。每条结论的官方源码出处见 §9。
 
@@ -16,7 +16,7 @@
 | 客户端 | `lib/client.js` | 往 `settings.section`（list 座位）注册一页，`order: 900` → 落在设置导航最下方；纯 `window.__ModuleLoader__` 懒 CJS bundle |
 | 宿主 | `lib/index.js` | `ctx.connection.fetch.register()` 开一条**自带鉴权的同源 HTTP 路由**（`/api/mcp-manager`）；`ctx.configEditor.edit()` 做**外科手术式的配置写入** |
 
-**数据模型的关键取舍**：所有 MCP 服务器放进**一个** `cordis:group` 条目的 config 数组。于是「增 / 删 / 改 / 启停」四件事全部退化为「重写这一个数组」，全部走官方的配置写入通道（§4）。
+**数据模型的关键取舍**：所有 MCP 服务器放进**一个** `cordis:group` 条目的 config 数组。于是「增 / 删 / 改 / 启停」四件事全部退化为「重写这一个数组」，全部走官方的配置写入通道（§4）。这个容器条目**由 profile 声明、不由本插件包声明** —— 所以卸载 / 升级 / 从未安装插件都不影响已经配置好的 MCP（§5.6）。
 
 页面提供：服务器列表 + 状态四色 + 失败原因行 + 工具名单 + 行内启停/删除 + 表单增改 + 「检测」（向服务器发一次真实的 MCP `initialize`）。
 
@@ -118,7 +118,7 @@ ctx.inject(["slots"], (scope) => {
 
 ### 4.1 单一可编辑条目：`cordis:group`
 
-`cordis:group` 是 Cordis 内置插件，它的 config 就是一份 `entryList`。把 MCP 服务器全放进它的 config 数组：
+`cordis:group` 是 Cordis 内置插件，它的 config 就是一份 `entryList`。把 MCP 服务器全放进它的 config 数组（**这一段写在 profile 的 `cordis.patch.yml` 里** —— 容器由 profile 声明，不由插件包声明，理由见 §5.6）：
 
 ```yaml
 - insert:
@@ -145,6 +145,19 @@ ctx.inject(["slots"], (scope) => {
 | 新增 / 删除 / 修改 | 数组加一项 / 去一项 / 改一项（整数组重写，只给表单用） |
 | 启停 | 该项的 `disabled: true/false`——**行内操作走宿主定点改，不回传整数组**（AGENTS 2.5） |
 
+**等价写法（本插件实际写盘用的那一种）**：容器与列表分成两条 —— 容器留空、列表放在后面的顶层覆写行里。这样"加一行容器"是一次性的，之后所有增删改都只动列表那一条（§4.2 解释了为什么这条能写进去）：
+
+```yaml
+- insert:
+    - id: mcp-manager
+      name: 'cordis:group'
+      config: []          # 容器留空
+- id: mcp-manager          # ← 插件写盘的目标行（覆写是整数组替换）
+  config:
+    - name: '@deepseek-ai/dsh-mcp-client'
+      config: { serverName: context7, transport: streamable-http, url: https://mcp.context7.com/mcp }
+```
+
 **为什么不用 `ctx.loader.create()/remove()` 动态加条目**：Loader 的持久化实现 `Include.write()` 是 `this.writeFile(this.root.data)`，而 `_writeFile` 是 `yaml.dump(整份 config)`——**整体重写**，会压平用户手写的 `insert:` 分节，是不可接受的破坏性写入（AGENTS 2.3）。
 
 ### 4.2 写入路径的合法性闭环
@@ -163,7 +176,7 @@ docs/agent-rules-notes.md  AGENTS.md 的附注：取证、断言台账、官方�
 docs/publish-plan.md     发布为 bundle（P6–P8）的执行手册 + 四种 spec 形式（§9）
 docs/github-release-plan.md  只用 GitHub 发布：G0–G5 完整 runbook（顺序 / 命令 / 验收 / 回滚）
 package.json             name（= 客户端 bundle 的模块 id）+ exports + dsh.bundle.patch + files 白名单
-cordis.patch.yml         bundle 自带的补丁层：group 行（id 必须等于 src/shared/constants.ts 的 GROUP_ID）+ 插件行（name 必须等于包名）
+cordis.patch.yml         bundle 自带的补丁层：**只有插件行**（name 必须等于包名）；容器行不在这里（归 profile，§5.6，自检 P2/P3 守"不许出现容器行"）
 locale/en.json           插件卡片文案（meta.title / meta.description），经 exports["./locale/*.json"] 暴露
 locale/zh.json           同上（中文）
 assets/icon.svg          bundle 卡片图标（64x64，圆角底色 + 标记；三条 path 几何逐字取自 assets/mcp-mark.svg）
@@ -189,35 +202,30 @@ tools/build.ts           esbuild 打包两半边 + 客户端包装 + 写构建�
 
 ### 5.1 能"一键安装"吗——**能，GitHub 路线已实测**
 
-| 安装方式 | 现在 | 说明 |
+**先记住一条归属规则（v0.1.1 起）**：承载 MCP 服务器的那个容器条目（`mcp-manager`）由 **profile 自己的 `cordis.patch.yml`** 声明，**不由插件包声明**。理由见 §5.6，一句话版本：bundle 是插件的一部分，容器若由 bundle 声明，卸载插件 = 容器消失 = 里面所有 MCP 服务器一起停止加载；容器归 profile 之后，**卸载 / 升级 / 从未安装插件都不影响已经配置好的 MCP** —— 插件退化成纯"可视化配置器"。
+
+| 接线 / 安装方式 | 现在 | 说明 |
 |---|---|---|
-| **`plugin_manager install_bundle`（一键）** | ✅ **已实测**（2026-10-14，`github:` spec，本机 desktop profile） | `target:'github:qq540491950/dsh-mcp-manager#v0.1.0'` 装成功：profile 的 `dependencies` 落成 `github:…dsh-mcp-manager#v0.1.0`、`dsh.profile.bundles` 选上本包；装进 `node_modules` 的 **30 个文件与自检通过的那份逐字节一致**（patch / `lib/index.js` / `lib/client.js` / locale / 图标 五处 sha256 相同）。**不必重启即生效**：`dsh-hmr` 监听 profile 的 `package.json`，变更会重读 `dsh.profile.bundles` 并重新加载每个 bundle 的 patch 层。**没跑过**：npm 渠道、Release 里的 `.tgz` URL 安装、卸载回归（`remove_bundle`）。 |
+| **`plugin_manager install_bundle`（一键装插件）** | ✅ **已实测**（2026-10-14，`github:` spec，本机 desktop profile，`#v0.1.0`） | `target:'github:qq540491950/dsh-mcp-manager#v0.1.0'` 装成功：profile 的 `dependencies` 落成 `github:…dsh-mcp-manager#v0.1.0`、`dsh.profile.bundles` 选上本包；装进 `node_modules` 的 **30 个文件与自检通过的那份逐字节一致**（patch / `lib/index.js` / `lib/client.js` / locale / 图标 五处 sha256 相同）。**不必重启即生效**：`dsh-hmr` 监听 profile 的 `package.json`，变更会重读 `dsh.profile.bundles` 并重新加载每个 bundle 的 patch 层。**没跑过**：npm 渠道、Release 里的 `.tgz` URL 安装、卸载回归（`remove_bundle`）。 |
 | **profile 里的路径行（开发循环用法）** | ✅ **能，且零依赖** | 只需 `cordis.patch.yml` 两步（§5.2）；不需要 `pnpm`、`node_modules`，也不需要先发布。⚠️ **插件路径行与 bundle 绝不要同时存在**：同 id 的两行会让 Loader 只保留一行 —— bundle 层先应用、profile 补丁层后应用，**后插入的路径行会把 bundle 行静默盖掉**（现象就是"装完看着没变化"），删掉路径行后 bundle 行立刻现身。 |
-| **让 MCP 不依赖插件**（推荐） | ✅ **已在真机采用** | 在 profile 里**再声明一行 group 容器**（4 行，见 §5.6）。此后**卸载或升级插件都不会让 MCP 掉线**，插件退化成纯"可视化配置器"。bundle 那份同 id 声明留着供新用户一键上车；运行时只存在一条条目，实测 `cordis:group` 仍只有 1 条、三台服务器仍在。 |
+| **容器行（`cordis:group`）** | ⚠️ **必须由 profile 提供**（4 行，§5.6） | 它不是"可选加固"，而是"卸载插件不影响 MCP"的**唯一**来源：插件自己创建不了条目（`ctx.configEditor` 只能写覆写行、`ctx.loader.create()` 被 AGENTS 2.3 禁止），所以这一行只能由人来加。缺了它，页面会给出可整行照抄的 YAML（宿主与客户端两处文案都带这一行，自检 P11 守它）。 |
 
 ### 5.2 手动接线（两步，都在 profile 的 `cordis.patch.yml`）
 
-> **第一步（group 行）推荐长期保留**：它是"MCP 不依赖插件"的关键，见 §5.6。**第二步（插件路径行）在装过 bundle 之后不要再写** —— 两者同 id，后插入的路径行会把 bundle 行静默盖掉（§5.1）。
+> **第一步（容器行）无论走哪条安装路线都必须有**，长期保留（§5.6）。**第二步（插件路径行）只在没装过 bundle 时写** —— 装过 bundle 之后再写路径行，同 id 两行会让 Loader 只保留后插入的那条、把 bundle 行静默盖掉（§5.1）。
 
-**第一步**：把现有的 MCP 条目收进一个 group（`insert:` 在补丁层里是**必填**的，直接写顶层 `- id:` 会被丢弃）：
+**第一步**：声明容器（`insert:` 在补丁层里是**必填**的，直接写顶层 `- id:` 会被丢弃；`config` 留空即可，服务器列表由插件写进后面的覆写行）：
 
 ```yaml
-# 原来的 - insert: [{ id: mcp-context7, name: '@deepseek-ai/dsh-mcp-client', config: {...} }]
-# 换成：
 - insert:
     - id: mcp-manager
       name: 'cordis:group'
-      config:
-        - name: '@deepseek-ai/dsh-mcp-client'
-          config:
-            serverName: context7
-            transport: streamable-http
-            url: https://mcp.context7.com/mcp
-            headers:
-              Authorization: "Bearer ..."
+      config: []
 ```
 
-**第二步**：追加本插件的路径行（与同级 `codex-effort-picker` 完全同一套接线，不需要 pnpm / node_modules）：
+> 已有的 MCP 条目可以**原样收进这个容器的 config 数组**（§4.1 第一种写法），也可以用页面里的「新增」重新加一遍 —— 后者会把列表落到上面说的覆写行里，跟你手写哪种写法结果等价。
+
+**第二步**（仅开发循环，未装 bundle 时）：追加本插件的路径行（与同级 `codex-effort-picker` 完全同一套接线，不需要 pnpm / node_modules）：
 
 ```yaml
 - insert:
@@ -225,54 +233,54 @@ tools/build.ts           esbuild 打包两半边 + 客户端包装 + 写构建�
       name: 'file:///D:/project/dsh-plugins/dsh-mcp-manager/lib/index.js'
 ```
 
-**回滚**：删掉第二条 insert 行即可，设置面板里那一页立刻消失（`settings.section` 是 list 座位，不遮蔽任何官方 UI）。
+**回滚**：删掉插件那一条 insert 行即可，设置面板里那一页立刻消失（`settings.section` 是 list 座位，不遮蔽任何官方 UI），**MCP 服务器不受影响**（容器与列表都在 profile 里）。
 
 > `dsh plugin --profile <name> …` 是 **pnpm 的透传**；"把包装成 bundle / 选上 bundle"是 `plugin_manager` 的活，不是 CLI 的活。
 
 ### 5.3 发布：怎么把它变成别人能一键装的插件
 
-**DSH 没有中央插件市场**：安装入口是 `plugin_manager install_bundle`，底层用 pnpm 把你给的那个 spec 装进 profile——而 spec 有四种形式（见本节末）。所以**发布 = 让别人能装上一个声明了 `dsh.bundle.patch` 的包**，这个包**不一定要在 npm 上**（GitHub / tarball / 本地路径都行）。装一次即完成两件事：把包装进 profile 的 `node_modules`，并把包名写进 profile `package.json` 的 `dsh.profile.bundles`——它的 patch 层随后自动进 Loader，用户**不需要再手写 `cordis.patch.yml`**。
+**DSH 没有中央插件市场**：安装入口是 `plugin_manager install_bundle`，底层用 pnpm 把你给的那个 spec 装进 profile——而 spec 有四种形式（见本节末）。所以**发布 = 让别人能装上一个声明了 `dsh.bundle.patch` 的包**，这个包**不一定要在 npm 上**（GitHub / tarball / 本地路径都行）。装一次即完成两件事：把包装进 profile 的 `node_modules`，并把包名写进 profile `package.json` 的 `dsh.profile.bundles`——它的 patch 层随后自动进 Loader。
 
-**① 包改造（P6）——本轮已完成**（字段清单的唯一出处是 [docs/publish-plan.md](docs/publish-plan.md) §3）：
+> v0.1.1 起，"顺手把容器也装了"这件事不存在了：容器归 profile（§5.6）。所以安装说明里现在有**两步**——先有容器行，再装插件。
 
-- 新增 `cordis.patch.yml`：自带 group 条目（`id: mcp-manager`，`cordis:group`，`config: []`）+ 插件行（`id: dsh-mcp-manager`，`name: '@qq540491950/dsh-mcp-manager'`——必须是**发布后的包名**，自检 P3/P4 守它）。
+**① 包改造（P6）——已完成**（字段清单的唯一出处是 [docs/publish-plan.md](docs/publish-plan.md) §3）：
+
+- `cordis.patch.yml`：**只有插件行**（`id: dsh-mcp-manager`，`name: '@qq540491950/dsh-mcp-manager'`——必须是**发布后的包名**，自检 P4 守它）。**容器行刻意不在这里**，自检 P2/P3 反过来守"本文件不得出现容器 id"（v0.1.0 时它是反过来的，这是 v0.1.1 的行为变更）。
 - 新增 `locale/{en,zh}.json`（`meta.title` / `meta.description`）、`assets/icon.svg`（≤256 KiB、包内相对路径）、`LICENSE`（MIT）。
 - `package.json`：删 `private`；包名改 **`@qq540491950/dsh-mcp-manager`**（裸名 `dsh-mcp-manager` 被他人占用）；补 `dsh.bundle.patch`、`exports["."]`（条件导出 + `types`）、`files` 白名单（**不含 `src/`、`tools/`、`docs/`、`AGENTS.md`**）、`publishConfig.access = public`。
 - `peerDependencies` 只留 `@deepseek-ai/cordis`。**没有钉任何 `@deepseek-ai/dsh-*`**：bundle 兼容性只看这些 `dsh-*` peer，不满足就**整个 bundle 被 skip**。
 
-**② 本地验证——本轮只做到 V0/V1**：`pnpm check` 全绿 + `npm pack` 审内容（有产物 / patch / locale / 图标 / README / LICENSE，无 `src`+`tools`+`docs`，无密钥）。**V3–V5 未做**：把包装进 profile（读返回值的 `application: applied`，`warnings` 里不该有 bundle skipped）→ 运行时四查（宿主 `fiberPhase: active`、客户端座位 `{id:"mcp",order:900,active:true}`、**新增一台服务器真的落盘且工具注册**、启停删检测全流程回归）→ `remove_bundle` 卸载回归。这就是 [docs/github-release-plan.md](docs/github-release-plan.md) 的 G2，也是这套清单**唯一没被证实**的部分。
+**② 本地验证**：`pnpm check` 全绿（typecheck / typecheck:tools / lint / format:check / build / verify 255 条）+ `npm pack` 审内容（有产物 / patch / locale / 图标 / README / LICENSE，无 `src`+`tools`+`docs`，无密钥）。把包装进 profile、运行时四查、`remove_bundle` 回归见 [docs/github-release-plan.md](docs/github-release-plan.md) 的 G2/G4/G5。
 
-**③ 发布（GitHub 路线）**：`git push` → tag `v0.1.0`（与 `package.json.version` 逐字一致）→ GitHub Release（附 `npm pack` 产物给没有 git 的用户）。**本轮不发 npm**：两条渠道同时维护只会让版本口径分叉。
+**③ 发布（GitHub 路线）**：`git push` → tag（与 `package.json.version` 逐字一致）→ GitHub Release（附 `npm pack` 产物给没有 git 的用户）。**本轮不发 npm**：两条渠道同时维护只会让版本口径分叉。
 
 **④ 发布前必须停下让用户确认**：`npm publish` 与 `git push` 都不代跑。
 
 **npm 不是必须的**——`install_bundle` 的 `target` 认四种 spec（本机安装版 `parseInstallSpec`）：**注册表包名**、**绝对本地路径**、**git 地址**（`github:user/repo`、`git+https://…git`、`https://github.com/user/repo#ref`，也可 `gitlab:` / `bitbucket:` / `gist:`）、**tarball**（本地 `.tgz` / `.tar.gz`，或 `https://…/x.tgz`）。所以"只发在 GitHub"完全可行：
 
 ```text
-plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manager#v0.1.0')
+plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manager#v0.1.1')
 ```
 
 四条路线的取舍、前提与代价见 [docs/publish-plan.md](docs/publish-plan.md) §9；**从改造到 tag、Release、用户安装、升级回滚的完整步骤见 [docs/github-release-plan.md](docs/github-release-plan.md)**。GitHub 路线最要紧的三条：①仓库里 `package.json` 必须有 `dsh.bundle.patch`，且 **patch 文件与 `lib/**` 都要提交进仓库**（pnpm 拉的是仓库内容，不会替你构建）；②git/tarball 是**抓取之后才判定**是不是 bundle，不是 bundle 会先装上再回滚（本地路径与 registry 是**装前**就拒）；③GitHub 的 spec 会先跑一次 `git ls-remote` 预检（5s，`git` 要在 PATH 上）。
 
-⚠️ **装 bundle 之前先摘掉 profile 里旧的路径行与手写 group 行**：否则会出现同 id 的重复行（两份 `dsh-mcp-manager`、两份 `mcp-manager`），最坏是两个 fiber 各自注册一次 `/api/mcp-manager`。保留 `- id: mcp-manager` 的**覆写行**（服务器列表就在里面）。升级插件后**宿主半边仍需重启 DSH**（§6.2）。
+⚠️ **装/卸 bundle 与容器行无关**，这是 v0.1.1 的设计目的：容器在 profile 里，插件包只带插件行。唯一要守的是"**容器只能声明一次**"——profile 里那一份之外，任何地方（bundle patch、home patch、`--patch` 覆盖层）再出现一份同 id 的 insert 行，都会让 `configEditor` 写盘前的自检取到先出现的空 config，于是保存/启停/删除全部报错（§5.6 有复现细节）。升级插件后**宿主半边仍需重启 DSH**（§6.2）。
 
 ### 5.4 一键安装命令（bundle 形态）
 
 ```text
 # 主渠道：git + tag（用户机器上要有 git；GitHub 会先跑一次 5s 的 git ls-remote 预检）
-plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manager#v0.1.0')
+plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manager#v0.1.1')
 
 # 备选：Release 资产里的 .tgz（纯 HTTPS，不需要 git，也没有那个预检）
-plugin_manager(action:'install_bundle', target:'https://github.com/qq540491950/dsh-mcp-manager/releases/download/v0.1.0/qq540491950-dsh-mcp-manager-0.1.0.tgz')
+plugin_manager(action:'install_bundle', target:'https://github.com/qq540491950/dsh-mcp-manager/releases/download/v0.1.1/qq540491950-dsh-mcp-manager-0.1.1.tgz')
 
 # 只有开发机才有的本地目录形式（改完源码立刻试，不用先发布）
 plugin_manager(action:'install_bundle', target:'D:\project\dsh-plugins\dsh-mcp-manager')
 
 # 升级 / 回滚：先卸再装（同一个 spec 重复装会报 ambiguous-install）
-# ⚠️ 卸载会拿掉 bundle 自带的 patch 层。若 profile 里**没有**自己的 group 行，
-#    承载服务器列表的 `- id: mcp-manager` 覆写行会失去目标、被整条丢弃，
-#    三台 MCP 服务器随之停止加载（**配置不丢**）。按 §5.6 让 profile 自己声明
-#    group 之后，这一步就不再影响 MCP。
+# v0.1.1 起卸载**不再影响 MCP**：容器与服务器列表都在 profile 里，卸载只是拿掉插件行
+# （页面随之消失）。反过来，升级前请确认 profile 里那份容器行还在（§5.6）。
 plugin_manager(action:'remove_bundle', target:'@qq540491950/dsh-mcp-manager')
 ```
 
@@ -282,19 +290,12 @@ plugin_manager(action:'remove_bundle', target:'@qq540491950/dsh-mcp-manager')
 
 | 插件版本 | 安装 spec | DSH | 结果 |
 |---|---|---|---|
-| `v0.1.0`（tag `v0.1.0`，commit `a078ac8`） | `github:qq540491950/dsh-mcp-manager#v0.1.0` | 0.2.0-rc.2（desktop profile） | ✅ 装上即生效（未重启）：旧手动接线删净后三台 MCP 服务器照常挂载、`mcp__context7__*` 工具在注册表；**重启 DSH 后仍然正常** |
+| `v0.1.0`（tag `v0.1.0`，commit `a078ac8`） | `github:qq540491950/dsh-mcp-manager#v0.1.0` | 0.2.0-rc.2（desktop profile） | ✅ 装上即生效（未重启）：旧手动接线删净后三台 MCP 服务器照常挂载、`mcp__context7__*` 工具在注册表；**重启 DSH 后仍然正常**。⚠️ 但这一版的容器行在包里，卸载即带走（§5.6） |
+| `v0.1.1`（tag `v0.1.1`） | `github:qq540491950/dsh-mcp-manager#v0.1.1` | 0.2.0-rc.2（desktop profile） | ⏳ **待重装实测**：本版只改两处 —— patch 不再声明容器行、缺容器时的提示改成给出可照抄的整行。离线侧已验证：255 条自检全绿 + 用逐字抄来的 `applyEntryPatches`/`flatten` 跑过"装着 v0.1.0（过渡期重复）/ 重装后 / 卸载后 / 从未安装"四种状态的合成结果 |
 
-上面这一行就是"它到底能不能用"的全部实测；未跑的部分（npm 渠道 / `.tgz` URL / 卸载回归）见 §7.2。
+上面两行就是"它到底能不能用"的全部实测；未跑的部分（npm 渠道 / `.tgz` URL / 卸载回归 / v0.1.1 真机重装）见 §7.2。
 
-### 5.6 ❌ 不要用"profile 也声明一份容器"来换取卸载安全（2026-10-14 实测推翻本节原内容）
-
-> **本节原来的内容已作废，请不要照做。** 实测：bundle 与 profile 各声明一份同 id 的容器行，会让
-> `configEditor` 写盘前的自检（`dsh-config-editor:122` 的 `flatten().find()`，而 `:12` 的 `flatten`
-> **不去重**）取到 bundle 那条**空** config → **保存 / 启停 / 删除全部抛**
-> 「Configuration for mcp-manager is overridden by a home patch or command-line overlay」。
-> **读取不受影响**（运行时按 id 原地更新，取到的是后一条），所以页面看着完全正常、问题极隐蔽。
-> 硬约束：容器必须**只被一份 patch 声明**，且这一份不能由管理插件包提供（否则卸载即失去）。
-> 正确的形态见 §5.1 的安装说明。
+### 5.6 容器行归 profile（v0.1.1 起的唯一形态）
 
 在 profile 的 `cordis.patch.yml` 里加这一行（`id` 必须等于 `src/shared/constants.ts` 的 `GROUP_ID`）：
 
@@ -305,11 +306,15 @@ plugin_manager(action:'remove_bundle', target:'@qq540491950/dsh-mcp-manager')
       config: []
 ```
 
-**为什么需要它**：容器条目不可能由插件创建 —— `ctx.loader.create()` 会整份重写用户 YAML（AGENTS 2.3，禁止），而 `configEditor.edit()` 只能编辑**已存在**的条目。所以"谁声明容器"就等于"谁能在卸载时带走它"。bundle 自带的那份保证**一键装上就能用**；**这一份保证卸载/升级插件时 MCP 不受影响** —— 这正是"插件只是可视化配置器，不是 MCP 的所有者"所要求的。
+**为什么必须由 profile 提供**：容器条目不可能由插件创建 —— `ctx.loader.create()` 会整份重写用户 YAML（AGENTS 2.3，禁止），`configEditor.edit()` 只能编辑**已存在**的条目、且只会追加覆写行。于是"谁声明容器"就等于"谁能在卸载时带走它"：
 
-**为什么同 id 不冲突**（源码 + 实测）：Loader 的 `EntryTree.store` 按 id 索引（`cordis-plugin-loader:60` 的 `store[id] ??= new Entry(...)`），后一条同 id 行是**原地更新同一条目**；补丁层同理（`applyEntryPatches` 的 `buildMap` 后者覆盖前者）。实测：写入这种双声明后，`cordis:group` 在 Config 投影里仍是 **1 条**，三台服务器子条目仍是 3 条。
+- 容器写在 **bundle** 里（v0.1.0 的形态）：卸载插件 = 那一层消失 = 容器消失 = 承载服务器列表的 `- id: mcp-manager` 覆写行被判 `not found` **整条丢弃** → 三台服务器停止加载（配置仍在文件里，装回即恢复）。离线复现：容器相关 WARN 出现 `patch: entry mcp-manager not found`，合成结果 **0 行**。
+- 容器写在 **profile** 里（v0.1.1 起）：卸载 / 升级 / 从未安装插件，合成结果都是 **1 行容器 + 3 台服务器**，`mcp__*` 工具照常注册。
 
-**三条注意**：①这段的 `config` 留空即可 —— 最终生效的是后面那条 `- id: mcp-manager` 覆写行（覆写是整数组替换）；②该结论依赖 `store[id] ??=` 这个语义，**升 DSH 版本后这里是第一个要复核的地方**；③profile 与 bundle 各声明一份是**有意的冗余**，不要当成重复配置"清理"掉。
+**为什么不能两边都写**（这是我 2026-10-14 踩过的回归，别再试）：两份同 id 的 insert 行会让 `configEditor` 写盘前的自检（`dsh-config-editor:122` 的 `flatten().find()`，而 `:12` 的 `flatten` **不去重**）取到**先出现的**那条空 config → **保存 / 启停 / 删除全部抛**「Configuration for mcp-manager is overridden by a home patch or command-line overlay」。**读取不受影响**（运行时按 id 原地更新、后一条生效），所以页面看着完全正常、问题极隐蔽。离线复现（逐字抄 `applyEntryPatches` + `flatten`，喂真实 patch 文件）：两行时 `flatten().find().config` 是 0 台而待提交是 3 台 → 断言必失败；一行时两边都是 3 台 → 通过。
+
+**没加这一行会怎样**：页面本体照常打开，只多一条提示 —— 宿主与客户端都会把上面那 4 行 YAML 原样给出来（可直接复制粘贴），自检 P11 守住两半边给出**同一行**。粘完保存即热重载，不必重启。
+
 
 ---
 
@@ -322,7 +327,7 @@ pnpm verify                 # = node tools/verify.ts
 # → PASS n/n（条数以实际输出为准；本文不写死条数）
 ```
 
-零依赖：不需要 `node_modules`，也不需要先 build（`.ts` 由 Node ≥22.18 的类型擦除直接执行）。覆盖范围就是 [tools/verify.ts](tools/verify.ts) 里的 `//#region`：A 包清单/主题/尺寸/自适应/表单结构与导航标记几何、B 宿主行为 + 行内操作回归 + 失败原因采集 + 相位映射 + 主动探测 + 配置分层 + 工具名单、C 产物协议与座位契约 + 导航标记 DOM（假 DOM 真跑）、D 真实渲染逐状态、D2 挂载行为（真跑 `useEffect` 的沙箱 + fetch 桩）、E 共享常量 ↔ 出厂产物（含构建指纹 E9/E10 与文档引用一致性 E11/E12）、P 发布形态（`dsh.bundle.patch` / patch 内容 / `files` 白名单 / locale / 图标 / `private` / peer）、F 纯函数直接单测。**断言台账只有这一处**（AGENTS 4.2）；每修一个 bug 同时加断言，新断言必须反向验证。
+零依赖：不需要 `node_modules`，也不需要先 build（`.ts` 由 Node ≥22.18 的类型擦除直接执行）。覆盖范围就是 [tools/verify.ts](tools/verify.ts) 里的 `//#region`：A 包清单/主题/尺寸/自适应/表单结构与导航标记几何、B 宿主行为 + 行内操作回归 + 失败原因采集 + 相位映射 + 主动探测 + 配置分层 + 工具名单、C 产物协议与座位契约 + 导航标记 DOM（假 DOM 真跑）、D 真实渲染逐状态、D2 挂载行为（真跑 `useEffect` 的沙箱 + fetch 桩）、E 共享常量 ↔ 出厂产物（含构建指纹 E9/E10 与文档引用一致性 E11/E12）、P 发布形态（`dsh.bundle.patch` / patch 内容 —— **P2/P3 现在守的是"本文件不得出现容器行"** / `files` 白名单 / locale / 图标 / `private` / peer / **P11 缺容器时两半边给出同一行可照抄的 YAML**）、F 纯函数直接单测。**断言台账只有这一处**（AGENTS 4.2）；每修一个 bug 同时加断言，新断言必须反向验证。
 
 工具脚本自身另有类型检查：`pnpm typecheck:tools` 是门禁（0 错误），`typecheck:tools:wip` 是进度计（续做方法见 [docs/tools-ts.md](docs/tools-ts.md)）。
 
@@ -357,14 +362,14 @@ pnpm verify                 # = node tools/verify.ts
 | 验证项 | 证据 |
 |---|---|
 | 补丁热重载生效、**未重启应用** | 运行时条目总数 192 → **195** |
-| group 条目挂载 | `include:mcp-manager` → `cordis:group`，`fiberPhase: active` |
+| group 条目挂载 | `include:mcp-manager` → `cordis:group`，`fiberPhase: active`（v0.1.0 时它的声明来自 bundle 层；v0.1.1 起来自 profile 层，条目不改名、`include:` 前缀同理） |
 | context7 迁移成功 | `include:ef60a0d1` → `@deepseek-ai/dsh-mcp-client`，`active`，`readOnlyReason: "unaddressable"` |
 | **宿主半边生效** | `include:dsh-mcp-manager` → `fiberPhase: active`（`apply()` 内同步注册路由，抛错会挂掉 fiber） |
 | **客户端半边生效** | `settings.section` 台账 occupants 含 `{id:"mcp", order:900, active:true}`，且是 order 最大的一项 |
 | 路由受鉴权保护 | `GET/POST /api/mcp-manager` → **401**；伪造 `Host` → **403** |
 | 自检 / 文件编码 | `PASS`；无 BOM、无 U+FFFD、LF 行尾 |
-| **bundle 一键安装（`github:` spec）** | profile 落成 `"@qq540491950/dsh-mcp-manager": "github:…#v0.1.0"` 且列入 `dsh.profile.bundles`；`node_modules` 里 30 个文件与自检通过的那份**五处 sha256 一致** |
-| **bundle 层的 group 行能被 profile 覆写行命中**（原"★ 唯一未实测假设"） | 删掉 profile 手写的 `cordis:group` **insert** 行、只留 `- id: mcp-manager` 覆写行之后：3 台 `dsh-mcp-client` 子条目仍挂载，且 `mcp__context7__resolve-library-id` / `mcp__context7__query-docs` 在**活动工具注册表**里 |
+| **bundle 一键安装（`github:` spec）** | profile 落成 `"@qq540491950/dsh-mcp-manager": "github:…#v0.1.0"` 且列入 `dsh.profile.bundles`；`node_modules` 里 30 个文件与自检通过的那份**五处 sha256 一致**（这一版 bundle 自带容器行 —— v0.1.1 起不再自带，见 §5.6） |
+| **bundle 层的 group 行能被 profile 覆写行命中**（v0.1.0 的"★ 唯一未实测假设"） | 删掉 profile 手写的 `cordis:group` **insert** 行、只留 `- id: mcp-manager` 覆写行之后：3 台 `dsh-mcp-client` 子条目仍挂载，且 `mcp__context7__resolve-library-id` / `mcp__context7__query-docs` 在**活动工具注册表**里 |
 | **旧手动接线删净后仍然正常** | 同 id 的两行曾把 bundle 行静默遮住；删掉路径行后按包名立刻查到 `include:dsh-mcp-manager` |
 | **重启 DSH 后仍然正常** | 重启后 `include:dsh-mcp-manager` → `name: "@qq540491950/dsh-mcp-manager"`（**1 条**，旧 `file://` 行为 **0 条**）；context7 绿、dbx 红（`127.0.0.1:5225` 无监听，符合预期）、gva 灰（`disabled: true`） |
 
@@ -378,13 +383,12 @@ pnpm verify                 # = node tools/verify.ts
 3. **group 子条目当前没有显式 `id`**（Loader 自动生成 `ef60a0d1` 这类十六进制 id）；`serverName` 重命名按数组下标定位，会保留原 `rowId`，改的是 `insert:` 声明而非覆写行时可能新建条目。
 4. **导航那一格的 MCP 标记没在真实界面里点过**：离线侧已证明几何（A32–A38）与假 DOM 三条路径（C12–C17），缺"真机打开设置面板，齿轮确实变成 MCP 标记"这一环。
 5. **「停用 → 再启用之后自动复查」没在真机浏览器里点过**：离线 D38–D41 已断言请求序列与两条边界；2026-10-14 已重启 DSH（宿主半边随 bundle 重新加载，`probe` 能力应当就位），但"点完「启用」后约 1s 内那一行变色"仍未逐一点过。
-6. **卸载回归（`remove_bundle`）没跑**：装是实测过的（§5.5），卸没有。**卸载的后果取决于 profile 有没有自己的 group 行**（源码推导，未实跑）：
-   - **有**（§5.6 的推荐做法，本机已是这个状态）：卸载只拿掉插件行，group 与三台服务器由 profile 自己那行提供 → **MCP 照常工作**，只是「设置 → MCP」那一页随之消失。
-   - **没有**：bundle 一卸 group 就没了 → 承载服务器列表的 `- id: mcp-manager` 覆写行被判 **not found 整条丢弃** → **三台服务器停止加载**（模型看不到 `mcp__*` 工具）。配置仍原样留在文件里，装回即恢复、不用重输。
-   "先卸再装"式升级中间那段掉线窗口，同理只在"没有"的情况下存在。
+6. **卸载回归（`remove_bundle`）没跑**：装是实测过的（§5.5），卸没有。**v0.1.1 的设计目标就是让这一步与 MCP 无关**：容器与服务器列表都在 profile 里，卸载只拿掉插件行 → **MCP 照常工作**，只是「设置 → MCP」那一页随之消失。这一结论目前是**离线**证据（逐字抄 `applyEntryPatches`/`flatten`，"卸载后"合成 = 1 行容器 + 3 台服务器，写盘前断言通过），没实跑过 `remove_bundle`。
+   反例仍要记住：容器若写在 bundle 里（v0.1.0 的形态），卸载 = 容器消失 = 承载列表的覆写行被判 `not found` 整条丢弃 → 三台停止加载（配置仍在文件里、装回即恢复）。这就是 v0.1.1 改归属的原因，也是**别再把容器搬回包里**的理由。
 7. **npm 渠道没跑**：`npm publish` 与"用 registry 包名再装一次"都没做；本轮只走 GitHub（见 [docs/github-release-plan.md](docs/github-release-plan.md) §0）。
 8. **Release 资产 `.tgz` 的 URL 安装没跑**：`github:` spec 已实测；纯 HTTPS 的 `.tgz` 路线只做了 `npm pack` 内容审查与本地 git 依赖的对照。
 9. **逐按钮的点击回归没做**：页面渲染与数据读取已确认正常（重启前后各一次），但启停 / 删除 / 检测 / 刷新这几个按钮本轮没有逐个点过。
+10. **v0.1.1 的真机重装 + 重启后四查没做**：本次改动（patch 不再声明容器、缺容器时的提示改成给出可照抄的整行）在离线侧做到了「255 条自检全绿 + 四种状态的合成复现」，但**没装到运行中的 DSH 上跑过**。装法见 §5.4（本次必须重启一次：宿主半边变了，§6.2）。
 
 ### 7.3 行内操作曾经静默丢字段（已修）
 

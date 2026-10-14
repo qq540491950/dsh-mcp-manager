@@ -119,15 +119,24 @@ export const name = 'dsh-mcp-manager'
 export const inject: string[] = []
 
 /**
+ * 容器行 —— 缺容器时让用户**照抄**的那一行（散文里给出整行，不给"某处加个 group"这种没用的指引）。
+ *
+ * 写成 YAML 的流式单行：能被整行复制粘贴，也不会在只有一行高度的提示区里被拆散。
+ * `config: []` 是容器的子条目列表（MCP 服务器住在里面，由插件通过 configEditor 覆写行维护）。
+ */
+const GROUP_ROW = `- insert: [{id: ${GROUP_ID}, name: 'cordis:group', config: []}]`
+
+/**
  * 组条目缺失时的提示。
  *
- * 过去写的是"请先在 profile 的 cordis.patch.yml 里配置一个 cordis:group 条目"——那是**路径行接入**
- * 时代的正确指引。bundle 形态下这个 group 由**包自带的 patch 层**提供，所以出现这句的真实原因只剩两个：
- * ①bundle 没装好（`dsh.bundle.patch` / `files` 白名单 / patch 行没进 Loader）；
- * ②这一层被 profile 里更高层的覆写行压掉了（顶层 `- id: X` 是整键赋值）。
- * 文案里保留 `cordis:group` 字样：它仍然是"缺的是哪一类条目"的唯一判据（自检 D13 守这一点）。
+ * 这个容器**归 profile 的补丁层**，不由插件自带（v0.1.1 起，README 5.1）。归属划分的理由是硬的：
+ * bundle 是插件的一部分，卸载插件 = 这一层消失 = 容器消失 = 里面所有 MCP 服务器一起停止加载；
+ * 容器放在 profile 里，卸载 / 升级 / 从未安装都不影响已经配置好的 MCP —— 插件只是那套数据的可视化编辑器。
+ * （`ctx.configEditor` 只能写覆写行、`ctx.loader.create()` 被 AGENTS 2.3 禁止，所以插件**无法**自己补这一行，
+ * 只能把要粘的内容原样给出来。）
+ * 文案里保留 `cordis:group` 字样：它仍然是"缺的是哪一类条目"的唯一判据（自检 D13 / P11 守这一点）。
  */
-const MISSING_GROUP = `找不到 group 条目 "${GROUP_ID}"（cordis:group）。它应由 dsh-mcp-manager bundle 自带：若刚安装完仍看到这句，说明 bundle 未正确安装、或这一层被 profile 里更高层的覆写行压掉了；请检查 profile 的 cordis.patch.yml 与 package.json 的 dsh.profile.bundles。`
+const MISSING_GROUP = `找不到 group 条目「${GROUP_ID}」（cordis:group）。它由 profile 自己的补丁层声明，不由插件自带（这样卸载插件不会影响已配置的 MCP）：请把这一行粘进 profile 的 cordis.patch.yml —— ${GROUP_ROW}`
 
 /**
  * 把任意抛出物整理成一句话。

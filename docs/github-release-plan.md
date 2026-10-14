@@ -8,6 +8,10 @@
 >
 > ✅ **G4 的 `github:` 路线已于 2026-10-14 实跑通过**（用户在 DSH 界面里安装，审批由 GUI 完成）。
 > 文末 §9 列出**仍未**实测的部分（卸载 / 升级 / Release 资产 / 私有仓库）。
+>
+> ⚠️ **v0.1.1 起多了一条前置条件（G2 第 0 步）**：承载 MCP 服务器的容器条目由 **profile** 声明，
+> 不由插件包声明（理由与那 4 行 YAML 见 [README](../README.md) §5.6）。装插件之前 profile 里就该有
+> 那一行；装完没有页面入口时才需要人来补（页面会把整行给出来）。
 
 ---
 
@@ -69,15 +73,21 @@ tar -tzf qq540491950-dsh-mcp-manager-0.1.0.tgz
 
 ## 3. G2 本地路径三连验证（先证明"装得进、跑得起"，再去 GitHub）
 
-按 publish-plan §5 的 V3 → V4 → V5 走。**顺序是"先装、后删"—— 原来这里写反了，2026-10-14 实测纠正**：
+按 publish-plan §5 的 V3 → V4 → V5 走。**v0.1.1 的顺序是"先有容器行、再装、最后才删旧路径行"**（v0.1.0 那轮的顺序见 §10 的历史附注）：
 
+0. **先确认 profile 里有容器行**（v0.1.1 的前置条件，README §5.6）：`cordis.patch.yml` 里要有
+   `- insert: [{id: mcp-manager, name: 'cordis:group', config: []}]`，且 **bundle / home patch / 任何层都不许再有第二份同 id 的 insert 行**。
+   - 缺了它：插件装上也管不了任何服务器（页面会提示你粘这一行，并给出可复制的内容）。
+   - 多了第二份：`configEditor` 写盘前自检取到先出现的空 config → **保存 / 启停 / 删除全部报错**
+     （`overridden by a home patch or command-line overlay`），而读取与 MCP 运行看着都正常。
 1. **备份 profile**：`profiles/<名字>/package.json` 与 `cordis.patch.yml` → 带时间戳 `.bak`。
-2. **安装**：`plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manager#v0.1.0')`（或本地绝对路径形式）。装完**先别动** profile 里旧的 `file://` 路径行 —— 这一步只是加一层，任何失败都还能干净回滚。
-3. **删掉旧接入行**（确认第 4 步通过后再做）：删路径行 `- id: dsh-mcp-manager, name: file:///…` 与手写的 `mcp-manager` group **insert** 行；**保留 `- id: mcp-manager` 的覆写行**（服务器列表在里面）。
-   - **为什么不先删**（源码依据 `cordis-plugin-include:90-94`）：group 行一删，覆写行就失去目标，会被判 **not found 并整条丢弃**；后果不是"少一页"，而是**三台 MCP 服务器一起掉线**，直到 bundle 层补上那个 group。
-   - **并存期的现象**（实测）：同 id 两行**不报错**，只是**后插入者赢**（层序 bundle 先、profile 后）——bundle 行会被路径行**静默盖掉**，按包名在 `Config.listConfigs` 里查不到它，看着像"没装上"。判别：按 `name:` 分别用包名与 `file://` 路径各查一次。
+2. **安装**：`plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manager#v0.1.1')`（或本地绝对路径形式）。这一步只加一层插件行，任何失败都还能干净回滚。
+3. **删掉旧路径行**（确认第 4 步通过后再做）：删 `- id: dsh-mcp-manager, name: file:///…` 那条；**保留容器行与 `- id: mcp-manager` 覆写行**（服务器列表在覆写行里，容器是它的目标）。
+   - **为什么必须留容器行**（源码依据 `cordis-plugin-include:90-94`）：容器一没，覆写行就失去目标、被判 **not found 并整条丢弃**；后果不是"少一页"，而是**三台 MCP 服务器一起掉线**。
+   - **并且不要反过来把容器写进 bundle**（v0.1.0 的形态）：那样"卸载插件 = MCP 掉线"，正是 v0.1.1 要消除的耦合。
+   - **同 id 并存期的现象**（实测）：两行**不报错**，只是**后插入者赢**（层序 bundle 先、profile 后）——bundle 行会被路径行**静默盖掉**，按包名在 `Config.listConfigs` 里查不到它，看着像"没装上"。判别：按 `name:` 分别用包名与 `file://` 路径各查一次。
 4. **运行时四查**：①宿主 `list_plugins` 找 `include:dsh-mcp-manager` → `enabled: true` + `fiberPhase: active`；②客户端 `Slots.listSubTree {root:'settings.section'}` → occupants 含 `{id:'mcp', order:900, active:true}`；③在页面上**新增一台服务器** → 确认落盘进 profile 覆写行、且工具真的注册；④启停 / 删除 / 检测 / 刷新全流程回归。
-5. `plugin_manager(action:'remove_bundle', target:'D:\…')` → 行与座位都消失、profile 回初态。
+5. `plugin_manager(action:'remove_bundle', target:'@qq540491950/dsh-mcp-manager')` → 插件行与座位消失，但**容器与三台服务器仍在**（v0.1.1 的设计目的；v0.1.0 会一起掉线）。这一格要连"服务器是否随之下线、装回后是否自动恢复"一起验。
 6. **顺带查包装对不对**（git 路线的前置风险全在这）：
 
 ```powershell
@@ -199,7 +209,18 @@ plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manag
 
 先卸再装是**刻意的**：同一个 spec 重复安装会报 `ambiguous-install`（依赖没变化 → 安装器找不到"新装的那一个"，`:1779-1782`）。换成新 tag 通常能绕过，但显式先卸最稳。升级后**宿主半边仍需重启 DSH**。
 
-⚠️ **"先卸再装"有没有掉线窗口，取决于 profile 有没有自己的 group 行**：容器 `mcp-manager` 现在由 bundle 与 profile **同时**声明（后者见 README §5.6）—— Loader 的 `EntryTree.store[id] ??=` 是**原地更新同一条目**，运行时只有一条（实测：双声明后 `cordis:group` 仍是 1 条，三台服务器子条目仍是 3 条）。所以**加了 profile 那行 → 升级/卸载全程无窗口**；没加 → bundle 一卸，profile 里那条 `- id: mcp-manager` 覆写行失去目标、被 `applyEntryPatches` 整条丢弃（`cordis-plugin-include:90-94`），三台服务器停止加载（**配置不丢**，装回来即恢复）。
+⚠️ **v0.1.1 起"先卸再装"与 MCP 无关，可以无窗口完成**：容器 `mcp-manager` 由 **profile** 声明
+（README §5.6），插件包里只有插件行。所以：
+
+- **装了 v0.1.1 之后**：卸载只是拿掉插件行 → 容器与服务器列表留在 profile 里 → **升级/卸载全程无掉线窗口**。
+  离线复现（逐字抄 `applyEntryPatches`/`flatten`，喂真实 patch）：「卸载后」合成 = 1 行容器 + 3 台服务器。
+- **还在 v0.1.0 时**：容器由 bundle 声明 → 先卸再装之间容器会消失，`- id: mcp-manager` 覆写行被
+  `applyEntryPatches` 判 `not found` 整条丢弃（`cordis-plugin-include:90-94`），三台服务器停止加载
+  （**配置不丢**，装回来即恢复）。所以**第一次升级到 v0.1.1 之前，先确认 profile 里已经有那行容器**
+  （README §5.6；本机 2026-10-14 已加好），这样连这一次升级也没有窗口。
+- ⚠️ **别把容器搬回包里**：bundle 自带容器 = 卸载即掉线；而且 profile 与 bundle 各一份会让
+  `configEditor` 写盘前自检取到先出现的空 config → 保存/启停/删除全部抛
+  `overridden by a home patch or command-line overlay`（读取与 MCP 运行不受影响，很隐蔽）。
 
 **回滚**：
 
@@ -208,9 +229,14 @@ plugin_manager(action:'remove_bundle', target:'@qq540491950/dsh-mcp-manager')
 plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manager#v0.1.0')
 ```
 
+⚠️ 回滚到 `v0.1.0` 时它会**自带容器行**，而 profile 里已有那一行 → 又是"两份同 id" → 保存/启停/删除会报错
+（MCP 照常跑）。要么回滚后把 profile 那行**临时**删掉（此时 MCP 由 bundle 提供，仍不掉线），要么回滚后直接
+装回 v0.1.1。这是唯一需要注意的"降级陷阱"。
+
 profile 被改坏时用 G2 第 1 步的 `.bak` 还原（`package.json` + `cordis.patch.yml`），再按 §3 第 3 步清一下重复行。
-**只想把 MCP 服务器拿回来**（不重装 bundle 也行）：把 group 的 `- insert:` 段加回 `cordis.patch.yml` 即可 ——
-它比 bundle 那行后插入、会赢，服务器立刻回来（那段原文见 publish-plan §3.1，或本机 profile 目录里的 `.bak-*`）。
+**只想把 MCP 服务器拿回来**（不重装 bundle 也行）：确保 `cordis.patch.yml` 里有容器行
+（`- insert: [{id: mcp-manager, name: 'cordis:group', config: []}]`）—— 不需要插件就能跑；服务器列表本来就在
+同一文件的 `- id: mcp-manager` 覆写行里（原始段落见本机 profile 目录的 `.bak-*`）。
 
 **维护者侧"撤回一个版本"**：**不要动已有 tag**。要么发 `v0.1.1` 修好，要么 `git revert` 后新开 tag；同时在 README 的兼容矩阵里标注该版本作废。
 
@@ -226,7 +252,10 @@ profile 被改坏时用 G2 第 1 步的 `.bak` 还原（`package.json` + `cordis
 | `ambiguous-install` | 同一个 spec 重复装 | 先 `remove_bundle`（§6） |
 | `failedAt: 'spec-host'` | `git ls-remote` 预检失败：网络不通 / 机器上没有 git / 仓库不存在 / 私有仓库没凭据 | 装 git、查网络与仓库可见性；或改用 B 的 `.tgz` |
 | `pendingBuilds` 列出本包 | 包里被加了 `prepare` / `postinstall` | 删掉脚本，靠已提交的 `lib/**` 出货（§0 硬约束 1） |
-| 装上了但设置里没有 MCP 页 | `files` 白名单漏了 `cordis.patch.yml`；或 profile 里旧的路径行与 bundle 行**同 id 重复**（后插入者赢，bundle 行被静默盖掉） | 用 `cordis_inspect_query(host, Config, listConfigs, {name:'@qq540491950/dsh-mcp-manager'})` 查；**不要**用 `--dump-config`（见下一行）；按 §3 第 3 步清重复行 |
+| 装上了但设置里没有 MCP 页 | `files` 白名单漏了 `cordis.patch.yml`；或 profile 里旧的路径行与 bundle 行**同 id 重复**（后插入者赢，bundle 行被静默盖掉）；或 **profile 里缺容器行**（v0.1.1 起容器不由包提供） | 用 `cordis_inspect_query(host, Config, listConfigs, {name:'@qq540491950/dsh-mcp-manager'})` 查；**不要**用 `--dump-config`（见下一行）；按 §3 第 3 步清重复行；缺容器就把页面给出的那一行粘进 `cordis.patch.yml` |
+| 页面提示「找不到 group 条目「mcp-manager」（cordis:group）」 | profile 里没有容器行（v0.1.1 的容器前置条件） | 把提示里给出的 `- insert: [{id: mcp-manager, name: 'cordis:group', config: []}]` 粘进 profile 的 `cordis.patch.yml`，保存即热重载，**不用重启** |
+| 保存 / 启停 / 删除报 `Configuration for "mcp-manager" is overridden by a home patch or command-line overlay`（读取与 MCP 运行却正常） | 容器行被声明了**两份**（profile 一份 + 别处一份，典型是 v0.1.0 的 bundle 自带一份）；`configEditor` 写盘前用 `flatten().find()` 取到**先出现的空 config**（`dsh-config-editor:12/122`，flatten 不去重） | 保证只有一份：v0.1.1 的包不自带容器行，profile 里留那一行。过渡期（装了 v0.1.0 + profile 也有一份）**装回 v0.1.1 即消失**，不必改 profile |
+| 卸载插件后 `mcp__*` 工具全没了 | 机器上装的是 **v0.1.0**（容器随包走） | 升级到 v0.1.1 并在 profile 里补上容器行；此后卸载只拿掉插件行，MCP 不受影响（README §5.6） |
 | 装完"看着毫无变化"（条目总数没涨、按包名查不到） | 同 id 重复把 bundle 行盖住了；或那次 profile `package.json` 变更没被 watcher 收到 | 删掉旧接线；或改一下 `cordis.patch.yml`（会触发重读 `dsh.profile.bundles`）；还不行就重启 DSH |
 | `--dump-config` 报 `profile "desktop" is managed exclusively by the Electron application` | 应用托管的 profile 不允许 CLI 读 | 另建一次性 profile 验层序（publish-plan §5 V2），或改用运行时四查 |
 | 页面在、但「检测」按钮灰 | 宿主半边还是旧的（能力协商退回了旧底座） | 重启 DSH |
@@ -241,6 +270,8 @@ profile 被改坏时用 G2 第 1 步的 `.bak` 还原（`package.json` + `cordis
 - [x] G3 tag `v0.1.0` 与 `package.json.version` 一致且已推送到 GitHub；**Release 资产没建**（没跑 `release.yml` / `gh release create`）
 - [x] G4 用 `github:` spec 装成功并四查（2026-10-14）：profile 落成 `github:…#v0.1.0` + `dsh.profile.bundles`；①`include:dsh-mcp-manager` 的 name = 包名 ②座位 `{id:'mcp',order:900,active:true}` ③`mcp__context7__*` 在活动工具注册表 ④页面渲染与数据读取正常，重启后仍然正常
 - [ ] G5 卸载（`remove_bundle`）与升级（先卸再装）各走一遍 —— **没跑**
+- [x] G6（v0.1.1）容器归属改造：`cordis.patch.yml` 只留插件行（P2/P3 反过来守"不许出现容器 id"）、缺容器时两半边给出同一行可照抄的 YAML（P11）、`pnpm check` 全绿（**255 条**）+ 新断言注入式反向验证（3 处注入 → 精确报错 → 还原）；profile 侧容器行已加（备份 + 两个真实解析器校验 + 四种状态的离线合成复现）
+- [ ] G7（v0.1.1）真机重装 + 重启后四查 —— **没跑**（宿主半边变了，必须重启一次）
 - [x] README 写清：安装命令（§5.4）、兼容矩阵（§5.5）、升级后要重启宿主半边
 
 ---
@@ -252,3 +283,18 @@ profile 被改坏时用 G2 第 1 步的 `.bak` 还原（`package.json` + `cordis
 3. **GitHub `archive/refs/tags/*.tar.gz` 源码包没有验证**：它以 `<repo>-<tag>/` 为根，不是 npm 包的 `package/` 前缀，别当发行物；用 `npm pack` 的 `.tgz`。
 4. **`release.yml` 没有在本仓库跑过**：写法按 `ci.yml` 推导，首次要盯 CI 输出；`gh` 已预装在 GitHub runner 上，但 `--verify-tag` 的重复运行行为要自己确认。
 5. **没有验证私有仓库**：预检特意禁用了凭据助手与交互提示（`:981-996`），把认证交给 pnpm；私有仓库建议直接用 `.tgz` 资产，绕开这层不确定。
+6. **v0.1.1 的真机重装没跑**（本文写作时的最新状态）：本次改动是"容器不再随包走 + 缺容器时给出可照抄的整行"，
+   离线侧做到「255 条自检全绿 + 四种状态（装 v0.1.0 过渡期 / 重装后 / 卸载后 / 从未安装）的合成复现 +
+   新断言三处注入式反向验证」，但**没装到运行中的 DSH 上**。宿主半边变了 → 装完必须重启一次。
+
+---
+
+## 10. 历史附注：v0.1.0 那一轮的顺序（仅存档，别再照做）
+
+v0.1.0 的布局是"**容器由 bundle 自带** + profile 只留 `- id: mcp-manager` 覆写行"，所以当时的 G2 顺序是
+"先装 bundle → 四查 → 再删 profile 里手写的 group insert 行与 `file://` 路径行"（因为删早了容器就没了）。
+那一轮实测走通并写进了本文 §3。
+
+v0.1.1 把归属翻了过来（README §5.6），于是 §3 的顺序变成"**先有容器行 → 装 → 删旧路径行**"。
+两个版本混用时的唯一症状是"两份同 id 的容器行 → 写盘报 `overridden`"（§7 故障表第三行），
+装回 v0.1.1 即消失 —— **不要**为了消这个症状去删 profile 里的容器行（删掉它才是真正会掉线的做法）。
