@@ -187,14 +187,16 @@ tools/build.ts           esbuild 打包两半边 + 客户端包装 + 写构建�
 
 ## 5. 安装、接线与发布
 
-### 5.1 现在能"一键安装"吗——包改好了，但**还没实测装过**
+### 5.1 能"一键安装"吗——**能，GitHub 路线已实测**
 
 | 安装方式 | 现在 | 说明 |
 |---|---|---|
-| **`plugin_manager install_bundle`（一键）** | ⚠️ **清单齐了，实装未验证** | 本包**已经声明 `dsh.bundle.patch`**（`cordis.patch.yml`）——安装器"不是 bundle 就拒"的门槛（`not-a-bundle` / "*declares no dsh.bundle*"，本机安装版 `dsh-plugin-manager/lib/index.js:1587`）已经满足。**但这一轮只做到"包本身排干净"**：`pnpm check` 全绿、`npm pack` 内容审查通过、新断言（P 区）守住清单一致性。**没有真的装过一次**——没有实装安装、没有运行时四查（宿主相位 / 客户端座位 / 新增服务器是否落盘 / 启停删检测回归）。所以这一格是"**待验**"，不是"能"。验证步骤见 [docs/github-release-plan.md](docs/github-release-plan.md) G2（本地路径三连：装 → 四查 → 卸）与 G4（`github:` spec）。 |
-| **profile 里的路径行（本仓库当前用法）** | ✅ **能，且零依赖** | 只需 `cordis.patch.yml` 两步（§5.2）；不需要 `pnpm`、`node_modules`，也不需要先发布 |
+| **`plugin_manager install_bundle`（一键）** | ✅ **已实测**（2026-10-14，`github:` spec，本机 desktop profile） | `target:'github:qq540491950/dsh-mcp-manager#v0.1.0'` 装成功：profile 的 `dependencies` 落成 `github:…dsh-mcp-manager#v0.1.0`、`dsh.profile.bundles` 选上本包；装进 `node_modules` 的 **30 个文件与自检通过的那份逐字节一致**（patch / `lib/index.js` / `lib/client.js` / locale / 图标 五处 sha256 相同）。**不必重启即生效**：`dsh-hmr` 监听 profile 的 `package.json`，变更会重读 `dsh.profile.bundles` 并重新加载每个 bundle 的 patch 层。**没跑过**：npm 渠道、Release 里的 `.tgz` URL 安装、卸载回归（`remove_bundle`）。 |
+| **profile 里的路径行（开发循环用法）** | ✅ **能，且零依赖** | 只需 `cordis.patch.yml` 两步（§5.2）；不需要 `pnpm`、`node_modules`，也不需要先发布。⚠️ **两种接线绝不要同时存在**：同 id 的两行会让 Loader 只保留一行，而 bundle 层先应用、profile 补丁层后应用 —— **后插入的路径行会把 bundle 行静默盖掉**（现象就是"装完看着没变化"），删掉路径行后 bundle 行立刻现身。 |
 
 ### 5.2 手动接线（两步，都在 profile 的 `cordis.patch.yml`）
+
+> 这两步是**没有 bundle 时**的接线方式（开发循环用）。装过 bundle 之后**不要**再写它们：group 与插件行都由包自带的 patch 层提供，手写同 id 的行只会互相遮蔽（§5.1）。
 
 **第一步**：把现有的 MCP 条目收进一个 group（`insert:` 在补丁层里是**必填**的，直接写顶层 `- id:` 会被丢弃）：
 
@@ -269,7 +271,15 @@ plugin_manager(action:'install_bundle', target:'D:\project\dsh-plugins\dsh-mcp-m
 plugin_manager(action:'remove_bundle', target:'@qq540491950/dsh-mcp-manager')
 ```
 
-三条写法的差别（谁要 git、装前判不判定、怎么钉版本）见 [docs/github-release-plan.md](docs/github-release-plan.md) §5。**这三条命令本轮一条都没跑过**——`plugin_manager` 每个 action 都需要审批，本会话审批被禁用。
+三条写法的差别（谁要 git、装前判不判定、怎么钉版本）见 [docs/github-release-plan.md](docs/github-release-plan.md) §5。
+
+### 5.5 兼容矩阵（实测）
+
+| 插件版本 | 安装 spec | DSH | 结果 |
+|---|---|---|---|
+| `v0.1.0`（tag `v0.1.0`，commit `a078ac8`） | `github:qq540491950/dsh-mcp-manager#v0.1.0` | 0.2.0-rc.2（desktop profile） | ✅ 装上即生效（未重启）：旧手动接线删净后三台 MCP 服务器照常挂载、`mcp__context7__*` 工具在注册表；**重启 DSH 后仍然正常** |
+
+上面这一行就是"它到底能不能用"的全部实测；未跑的部分（npm 渠道 / `.tgz` URL / 卸载回归）见 §7.2。
 
 ---
 
@@ -323,17 +333,25 @@ pnpm verify                 # = node tools/verify.ts
 | **客户端半边生效** | `settings.section` 台账 occupants 含 `{id:"mcp", order:900, active:true}`，且是 order 最大的一项 |
 | 路由受鉴权保护 | `GET/POST /api/mcp-manager` → **401**；伪造 `Host` → **403** |
 | 自检 / 文件编码 | `PASS`；无 BOM、无 U+FFFD、LF 行尾 |
+| **bundle 一键安装（`github:` spec）** | profile 落成 `"@qq540491950/dsh-mcp-manager": "github:…#v0.1.0"` 且列入 `dsh.profile.bundles`；`node_modules` 里 30 个文件与自检通过的那份**五处 sha256 一致** |
+| **bundle 层的 group 行能被 profile 覆写行命中**（原"★ 唯一未实测假设"） | 删掉 profile 手写的 `cordis:group` **insert** 行、只留 `- id: mcp-manager` 覆写行之后：3 台 `dsh-mcp-client` 子条目仍挂载，且 `mcp__context7__resolve-library-id` / `mcp__context7__query-docs` 在**活动工具注册表**里 |
+| **旧手动接线删净后仍然正常** | 同 id 的两行曾把 bundle 行静默遮住；删掉路径行后按包名立刻查到 `include:dsh-mcp-manager` |
+| **重启 DSH 后仍然正常** | 重启后 `include:dsh-mcp-manager` → `name: "@qq540491950/dsh-mcp-manager"`（**1 条**，旧 `file://` 行为 **0 条**）；context7 绿、dbx 红（`127.0.0.1:5225` 无监听，符合预期）、gva 灰（`disabled: true`） |
 
 导航台账（order 升序）：`account -10 | general 0 | models 10 | plugins 15 | agent-presets 20 | mcp 900 ← 本插件`。
 `readOnlyReason: "unaddressable"` 尤其值得记下：它**正面印证了「group 子条目不可单独寻址」**——这正是 §4「单一数组」设计的由来。
 
 ### 7.2 仍未实测 / 已知取舍
 
-1. **点击进入页面的那一次 fetch 往返**：路由已注册、围栏已验证，但「打开 设置 → MCP 看到列表」需要在浏览器里点一次。客户端已内置失败态（「读取失败：<原因>」+ 重试），不会白屏。
+1. ~~**点击进入页面的那一次 fetch 往返**~~ **已确认**：2026-10-14 重启前后各打开过一次「设置 → MCP」，服务器列表正常。客户端的失败态（「读取失败：<原因>」+ 重试）仍未在真机触发过。
 2. **`configEditor.edit()` 对 insert 条目的 `document.add` 分支**尚未产生过一次真实写入（首次在 UI 点「保存」时才走）；失败是安全的（写入前断言、不落盘）。
 3. **group 子条目当前没有显式 `id`**（Loader 自动生成 `ef60a0d1` 这类十六进制 id）；`serverName` 重命名按数组下标定位，会保留原 `rowId`，改的是 `insert:` 声明而非覆写行时可能新建条目。
 4. **导航那一格的 MCP 标记没在真实界面里点过**：离线侧已证明几何（A32–A38）与假 DOM 三条路径（C12–C17），缺"真机打开设置面板，齿轮确实变成 MCP 标记"这一环。
-5. **「停用 → 再启用之后自动复查」没在真机浏览器里点过**：离线 D38–D41 已断言请求序列与两条边界；真机还需确认 ①宿主 `probe` 能力存在（**要重启 DSH**）②点完「启用」后约 1s 内那一行变色。
+5. **「停用 → 再启用之后自动复查」没在真机浏览器里点过**：离线 D38–D41 已断言请求序列与两条边界；2026-10-14 已重启 DSH（宿主半边随 bundle 重新加载，`probe` 能力应当就位），但"点完「启用」后约 1s 内那一行变色"仍未逐一点过。
+6. **卸载回归（`remove_bundle`）没跑**：装是实测过的（§5.5），卸没有 —— 卸完应当是 `include:dsh-mcp-manager` 行与 `settings.section` 座位同时消失、profile 回到装前状态。
+7. **npm 渠道没跑**：`npm publish` 与"用 registry 包名再装一次"都没做；本轮只走 GitHub（见 [docs/github-release-plan.md](docs/github-release-plan.md) §0）。
+8. **Release 资产 `.tgz` 的 URL 安装没跑**：`github:` spec 已实测；纯 HTTPS 的 `.tgz` 路线只做了 `npm pack` 内容审查与本地 git 依赖的对照。
+9. **逐按钮的点击回归没做**：页面渲染与数据读取已确认正常（重启前后各一次），但启停 / 删除 / 检测 / 刷新这几个按钮本轮没有逐个点过。
 
 ### 7.3 行内操作曾经静默丢字段（已修）
 

@@ -6,7 +6,8 @@
 > 四种 spec 形式的源码依据以 §9 为准**；本文只写"顺序 / 命令 / 验收 / 回滚"。行号都指本机安装版
 > `@deepseek-ai/dsh-plugin-manager/lib/index.js`（本轮复核过）。
 >
-> ⚠️ **G4 的 `github:` 路线本轮没有实跑过**（`plugin_manager` 每个 action 都需要审批，本会话审批被禁用）。文末 §7 列了全部未实测项。
+> ✅ **G4 的 `github:` 路线已于 2026-10-14 实跑通过**（用户在 DSH 界面里安装，审批由 GUI 完成）。
+> 文末 §9 列出**仍未**实测的部分（卸载 / 升级 / Release 资产 / 私有仓库）。
 
 ---
 
@@ -68,11 +69,13 @@ tar -tzf qq540491950-dsh-mcp-manager-0.1.0.tgz
 
 ## 3. G2 本地路径三连验证（先证明"装得进、跑得起"，再去 GitHub）
 
-按 publish-plan §5 的 V3 → V4 → V5 走，顺序是：
+按 publish-plan §5 的 V3 → V4 → V5 走。**顺序是"先装、后删"—— 原来这里写反了，2026-10-14 实测纠正**：
 
 1. **备份 profile**：`profiles/<名字>/package.json` 与 `cordis.patch.yml` → 带时间戳 `.bak`。
-2. **摘掉旧的接入行**：删掉路径行 `- id: dsh-mcp-manager, name: file:///…` 与手写的 `mcp-manager` group **insert** 行；**保留 `- id: mcp-manager` 的覆写行**（服务器列表在里面）。
-3. 安装（**路径形式**）：`plugin_manager(action:'install_bundle', target:'D:\project\dsh-plugins\dsh-mcp-manager')`
+2. **安装**：`plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manager#v0.1.0')`（或本地绝对路径形式）。装完**先别动** profile 里旧的 `file://` 路径行 —— 这一步只是加一层，任何失败都还能干净回滚。
+3. **删掉旧接入行**（确认第 4 步通过后再做）：删路径行 `- id: dsh-mcp-manager, name: file:///…` 与手写的 `mcp-manager` group **insert** 行；**保留 `- id: mcp-manager` 的覆写行**（服务器列表在里面）。
+   - **为什么不先删**（源码依据 `cordis-plugin-include:90-94`）：group 行一删，覆写行就失去目标，会被判 **not found 并整条丢弃**；后果不是"少一页"，而是**三台 MCP 服务器一起掉线**，直到 bundle 层补上那个 group。
+   - **并存期的现象**（实测）：同 id 两行**不报错**，只是**后插入者赢**（层序 bundle 先、profile 后）——bundle 行会被路径行**静默盖掉**，按包名在 `Config.listConfigs` 里查不到它，看着像"没装上"。判别：按 `name:` 分别用包名与 `file://` 路径各查一次。
 4. **运行时四查**：①宿主 `list_plugins` 找 `include:dsh-mcp-manager` → `enabled: true` + `fiberPhase: active`；②客户端 `Slots.listSubTree {root:'settings.section'}` → occupants 含 `{id:'mcp', order:900, active:true}`；③在页面上**新增一台服务器** → 确认落盘进 profile 覆写行、且工具真的注册；④启停 / 删除 / 检测 / 刷新全流程回归。
 5. `plugin_manager(action:'remove_bundle', target:'D:\…')` → 行与座位都消失、profile 回初态。
 6. **顺带查包装对不对**（git 路线的前置风险全在这）：
@@ -219,27 +222,29 @@ profile 被改坏时用 G2 第 1 步的 `.bak` 还原（`package.json` + `cordis
 | `ambiguous-install` | 同一个 spec 重复装 | 先 `remove_bundle`（§6） |
 | `failedAt: 'spec-host'` | `git ls-remote` 预检失败：网络不通 / 机器上没有 git / 仓库不存在 / 私有仓库没凭据 | 装 git、查网络与仓库可见性；或改用 B 的 `.tgz` |
 | `pendingBuilds` 列出本包 | 包里被加了 `prepare` / `postinstall` | 删掉脚本，靠已提交的 `lib/**` 出货（§0 硬约束 1） |
-| 装上了但设置里没有 MCP 页 | `files` 白名单漏了 `cordis.patch.yml`；或 profile 里旧的路径行与 bundle 行**同 id 重复** | `plugin_manager list_plugins` 看有没有 `include:dsh-mcp-manager`；`--dump-config` 看层序；按 §3 第 2 步清重复行 |
+| 装上了但设置里没有 MCP 页 | `files` 白名单漏了 `cordis.patch.yml`；或 profile 里旧的路径行与 bundle 行**同 id 重复**（后插入者赢，bundle 行被静默盖掉） | 用 `cordis_inspect_query(host, Config, listConfigs, {name:'@qq540491950/dsh-mcp-manager'})` 查；**不要**用 `--dump-config`（见下一行）；按 §3 第 3 步清重复行 |
+| 装完"看着毫无变化"（条目总数没涨、按包名查不到） | 同 id 重复把 bundle 行盖住了；或那次 profile `package.json` 变更没被 watcher 收到 | 删掉旧接线；或改一下 `cordis.patch.yml`（会触发重读 `dsh.profile.bundles`）；还不行就重启 DSH |
+| `--dump-config` 报 `profile "desktop" is managed exclusively by the Electron application` | 应用托管的 profile 不允许 CLI 读 | 另建一次性 profile 验层序（publish-plan §5 V2），或改用运行时四查 |
 | 页面在、但「检测」按钮灰 | 宿主半边还是旧的（能力协商退回了旧底座） | 重启 DSH |
 
 ---
 
 ## 8. 交付检查单
 
-- [ ] G0 基线 `PASS n/n`，`git check-ignore lib/client.js` 无输出
-- [ ] G1 `pnpm check` 全绿；`npm pack` 内容审查（有产物/patch/locale/图标，无 src/tools/docs/AGENTS，无密钥）；新断言反向验证过
-- [ ] G2 路径形式装 → 四查 → 卸，各一轮；`node_modules/` 里确实有 `lib/`、`cordis.patch.yml`、`locale/`
-- [ ] G3 tag 与 `package.json.version` 一致；Release 资产与 tag 同源（workflow 或手工）
-- [ ] G4 用 `github:` spec 装成功并四查 —— **本方案唯一无法离线证明的环节，必须真机做一次**
-- [ ] G5 升级（先卸再装）与回滚各走一遍
-- [ ] README 写清：安装命令、兼容矩阵（DSH 版本 × 插件版本）、升级后要重启宿主半边
+- [x] G0 基线 `PASS n/n`，`git check-ignore lib/client.js` 无输出
+- [x] G1 `pnpm check` 全绿；`npm pack` 内容审查（有产物/patch/locale/图标，无 src/tools/docs/AGENTS，无密钥）；新断言反向验证过（244 → 254 条）
+- [x] G2 装 → 四查（**没走"卸"**）；`node_modules/` 里确实有 `lib/`、`cordis.patch.yml`、`locale/`（30 个文件与自检通过的那份逐字节一致）
+- [x] G3 tag `v0.1.0` 与 `package.json.version` 一致且已推送到 GitHub；**Release 资产没建**（没跑 `release.yml` / `gh release create`）
+- [x] G4 用 `github:` spec 装成功并四查（2026-10-14）：profile 落成 `github:…#v0.1.0` + `dsh.profile.bundles`；①`include:dsh-mcp-manager` 的 name = 包名 ②座位 `{id:'mcp',order:900,active:true}` ③`mcp__context7__*` 在活动工具注册表 ④页面渲染与数据读取正常，重启后仍然正常
+- [ ] G5 卸载（`remove_bundle`）与升级（先卸再装）各走一遍 —— **没跑**
+- [x] README 写清：安装命令（§5.4）、兼容矩阵（§5.5）、升级后要重启宿主半边
 
 ---
 
 ## 9. 本方案的未实测项（不要把推断当结论）
 
-1. **G4 的 `github:` 路线没有实跑**。依据是源码（`parseInstallSpec`/`checkGithubConnection`/`installBundle`）与包内官方 `README.zh.md`:46/48/54/63；`plugin_manager` 需审批，本会话审批被禁用，调用只会被拒。
-2. **pnpm 对 git 依赖的实际打包结果没有实测**（`files` 白名单是否被严格遵守）。所以 §3 第 6 步与 §8 的"查 `node_modules/` 内容"不是多余的——它是这条路线唯一的第一手验收。
+1. ~~**G4 的 `github:` 路线没有实跑**~~ —— **2026-10-14 实跑成功**（用户在 DSH 界面里安装，审批由 GUI 完成）：`install_bundle(target:'github:qq540491950/dsh-mcp-manager#v0.1.0')` → profile 的 `dependencies` 与 `dsh.profile.bundles` 都落位，**不需要重启即生效**，重启后仍然正常。
+2. ~~**pnpm 对 git 依赖的实际打包结果没有实测**~~ —— **已实测**：装到 `node_modules` 的 30 个文件与自检通过的那份**逐字节一致**（`cordis.patch.yml` / `lib/index.js` / `lib/client.js` / `locale/en.json` / `assets/icon.svg` 五处 sha256 相同），`files` 白名单被严格遵守。§3 第 6 步仍值得做 —— 它是**别人机器上**的第一手验收。
 3. **GitHub `archive/refs/tags/*.tar.gz` 源码包没有验证**：它以 `<repo>-<tag>/` 为根，不是 npm 包的 `package/` 前缀，别当发行物；用 `npm pack` 的 `.tgz`。
 4. **`release.yml` 没有在本仓库跑过**：写法按 `ci.yml` 推导，首次要盯 CI 输出；`gh` 已预装在 GitHub runner 上，但 `--verify-tag` 的重复运行行为要自己确认。
 5. **没有验证私有仓库**：预检特意禁用了凭据助手与交互提示（`:981-996`），把认证交给 pnpm；私有仓库建议直接用 `.tgz` 资产，绕开这层不确定。

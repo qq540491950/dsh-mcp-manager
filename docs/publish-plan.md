@@ -183,6 +183,11 @@ $dsh = 'D:\Program Files\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd'
 
 看 `--dump-config` 的输出：每一行归哪个源文件、哪些 patch 层改过它。这一步**不碰实时 profile**。
 
+⚠️ **实测（2026-10-14）：`--dump-config` 不能用在 desktop profile 上。** 直接跑会得到
+`error: profile "desktop" is managed exclusively by the Electron application` —— 应用托管的 profile
+被 CLI 明确拒绝。所以 V2 只能按上面那样**先建一次性 profile**（`--from-default-profile web`），
+或者干脆跳过 V2、用 V4 的运行时四查代替。
+
 ### V3 真安装（本地绝对路径，不用先发布）
 
 ```
@@ -195,12 +200,16 @@ plugin_manager(action: 'install_bundle', target: 'D:\\project\\dsh-plugins\\dsh-
 ### V4 运行时四查
 
 1. **宿主相位**：`plugin_manager(action: 'list_plugins', limit: 100, offset: …)` → 找 `include:dsh-mcp-manager`
-   → 必须 `enabled: true`、`fiberPhase: 'active'`（`total: 202`，我们的行在 offset ≥100 那一页）。
+   → 必须 `enabled: true`、`fiberPhase: 'active'`（条目多，我们的行在 offset ≥100 那一页；`total` 以实际输出为准，别抄死）。
+   **不需要审批的替代查法**：`cordis_inspect_query(host, Config, listConfigs, { name: '@qq540491950/dsh-mcp-manager' })`
+   → 应当正好 1 条，且 `name` 是**包名**而不是 `file://` 路径。
 2. **客户端座位**：`cordis_inspect_query(platform: 'client', provider: 'Slots', method: 'listSubTree', input: { root: 'settings.section' })`
-   → occupants 里必须出现 `{ id: 'mcp', order: 900, active: true }`。
-3. **数据面（★ 未实测假设的证伪点）**：在页面上**新增一台服务器** → 确认
+   → occupants 里必须出现 `{ id: 'mcp', order: 900, active: true }`，且**只有一格**（两格＝同 id 重复，见 §6）。
+3. **数据面**：在页面上**新增一台服务器** → 确认
    - 落盘进了 profile 的覆写行；
    - 运行时该 MCP 工具真的注册（`mcp__<name>__*`，或在页面的"工具 N 个"里看到）。
+   已有服务器也能代替新增：`cordis_inspect_query(host, Tool, listTools)` 里看得到 `mcp__<name>__*`
+   就说明"group 在 → 子条目挂上 → 工具真注册"这条链是通的（2026-10-14 用 context7 验过）。
 4. **回归**：停用 → 启用 → 删除 → 「检测」→「刷新」全流程。
 
 ### V5 卸载回归
@@ -208,16 +217,21 @@ plugin_manager(action: 'install_bundle', target: 'D:\\project\\dsh-plugins\\dsh-
 `plugin_manager(action: 'remove_bundle', target: '@qq540491950/dsh-mcp-manager')`
 → 再查 V4 的 1/2：行与座位都消失、profile 回到初态。
 
-### ★ 唯一未实测的假设
+### ★ 曾经唯一未实测的假设 —— **2026-10-14 已证实**
 
 **bundle 层 `insert` 的 `mcp-manager`（`cordis:group`）行，能否被 profile 层（`configEditor` 写的）覆写行命中。**
+→ **能。** 实测：装好 `github:…#v0.1.0` 后，删掉 profile 手写的 `cordis:group` **insert** 行（只留
+`- id: mcp-manager` 覆写行），三台 `@deepseek-ai/dsh-mcp-client` 子条目仍然挂载，且
+`mcp__context7__resolve-library-id` / `mcp__context7__query-docs` 出现在**活动工具注册表**里 ——
+覆写行确实命中了 bundle 插入的那个空 group。**重启 DSH 后同样成立。**
 
-- 机制上成立：app-boot README 明说"`cordis.patch.yml` 是你的 tweak 层，**在每一个 bundle 层之后**应用"；
-  `applyEntryPatches` 对 `insert` 会先 `buildMap` 注册，同层（乃至后续层）的 `- id: X` 覆写因此能找到目标。
-- 但本仓库被同类假设坑过一次（B70：把"覆写"误当"继承层"，导致线上一个请求头根本不存在）。
-- **证伪点就是 V4 第 3 步**。
-- **失败退路**：回到"用户在 profile 里手写 group 行"（即当前形态），在 README 里写明即可 ——
-  插件本身不需要改代码（它只是按 `GROUP_ID` 找 group）。
+- 机制：app-boot README 明说"`cordis.patch.yml` 是你的 tweak 层，**在每一个 bundle 层之后**应用"；
+  `applyEntryPatches` 对 `insert` 会先 `buildMap` 注册（`cordis-plugin-include:83`），后续层的
+  `- id: X` 覆写因此能找到目标。
+- **失败退路（现在用不上了，留作回滚手段）**：回到"用户在 profile 里手写 group 行" ——
+  插件本身不用改代码（它只是按 `GROUP_ID` 找 group）。
+- **但同 id 重复这个坑是真的**（新发现，见 §6）：删旧接线之前，profile 的路径行会把 bundle 行
+  **静默盖掉**（后插入者赢），现象是"装完看着毫无变化"。
 
 ---
 
@@ -248,6 +262,20 @@ plugin_manager(action: 'install_bundle', target: 'D:\\project\\dsh-plugins\\dsh-
 - `cordis_inspect_query(Config)` 里的 `status: "absent"` 是 **Config 投影**字段（本项目不导出 `Config`），
   **不是**挂载状态。判断挂载/相位要用 `plugin_manager list_plugins` 的 `enabled` / `fiberPhase`。
 - 新建 `src/**` 文件后要跑 `tsc -b --clean && tsc -b`（已写进 `typecheck` 脚本），否则删掉源文件会留下陈旧 `.d.ts`。
+- **同 id 的 `insert` 行不报错，只是"后插入者赢"**（2026-10-14 实测）。`applyEntryPatches` 的顶层
+  `insert` 是 `data.push(...insert)`、`buildMap` 只是 `Map.set`（`cordis-plugin-include:82-83`），
+  所以 bundle 层先插入的 `dsh-mcp-manager` / `mcp-manager` 会被 profile 层后插入的同 id 行**静默盖掉**：
+  按包名在 `Config.listConfigs` 里查不到、条目总数不涨、客户端座位只有一格 —— 看起来就像"没装上"。
+  **判别方法**：按 `name:` 过滤查两次（一次包名、一次 `file://` 路径），或干脆删掉旧接线再看。
+- **`dsh --dump-config` 对 desktop 这类应用托管的 profile 会被拒**（`profile "desktop" is managed
+  exclusively by the Electron application`）→ 想用 V2 验层序只能另建一次性 profile。
+- **装完 bundle 若 HMR 没生效，改一下 `cordis.patch.yml` 就能触发重建**：`dsh-hmr` 除补丁文件外还
+  监听 profile 的 `package.json`（`dsh-hmr/lib/index.js:375-376`），`refresh` 会重读
+  `dsh.profile.bundles` 并重新解析各 bundle 的 patch（`:358-370`，经 `readProfilePatches` →
+  `loadProfileDirectory`）。本次实测：改了 `cordis.patch.yml` 立刻换了一批子条目 id（＝确实重建了）。
+- **兼容性预检只认 `@deepseek-ai/dsh` / `@deepseek-ai/dsh-*` 的 peer**（`dsh-app-boot:294` 直接
+  `continue` 跳过其它名字）→ 我们只留 `@deepseek-ai/cordis` 的决策**不可能**引发
+  `incompatible-version`（DSH 自带 cordis 正好 4.0.4，满足 `~4.0.4`）。
 
 ---
 
@@ -258,12 +286,14 @@ plugin_manager(action: 'install_bundle', target: 'D:\\project\\dsh-plugins\\dsh-
 2. **V3 会改用户的实时 profile**：装 bundle 会往 `profiles/desktop/package.json` 加依赖并选中 bundle。
    默认方案：**先在 desktop 上做（动手前备份 `package.json` + `cordis.patch.yml` 带时间戳）**；
    或者用户更愿意先建一次性 profile（那就得另起一个 DSH 实例，重一些）。
-3. ⚠️ **装 bundle 之前必须先摘掉旧的路径行**：desktop profile 里现在同时有
-   `- insert: [{ id: dsh-mcp-manager, name: 'file:///D:/project/dsh-plugins/dsh-mcp-manager/lib/index.js' }]`
-   与手写的 `mcp-manager` group 行。装上 bundle 后会出现**同 id 的重复行**（两份 `dsh-mcp-manager`、
-   两份 `mcp-manager`），最坏是两个 fiber 各自注册一次 `/api/mcp-manager`。
-   正确顺序：**先备份 → 装 bundle → 再删掉 profile 里那两行 `insert`，但保留 `- id: mcp-manager` 的覆写行**
-   （服务器列表就在那条覆写行里）。这一步恰好就是 §5 那个未实测假设的验证。
+3. ⚠️ **旧接线与 bundle 不能并存久留**：desktop profile 里曾有
+   `- insert: [{ id: dsh-mcp-manager, name: 'file:///D:/…/lib/index.js' }]` 与手写的 `mcp-manager`
+   group 行。装上 bundle 后就是**同 id 的重复行**，后插入者赢（§6）—— 不报错，只会让你以为"没装上"。
+   正确顺序（2026-10-14 实测走通）：**先备份 → 装 bundle → 确认 V4 → 再删** profile 里那两行
+   `insert`，但**保留** `- id: mcp-manager` 的覆写行（服务器列表就在那条覆写行里）。
+   **不要反过来先删**：group 行一删，`- id: mcp-manager` 覆写行就失去目标，会被 `applyEntryPatches`
+   判 **not found 整条丢弃**（README 2.3）—— 后果不是"少一页"，而是**三台 MCP 服务器一起掉线**，
+   直到 bundle 层补上那个 group。实测：删完 bundle 立即接管，服务器没断。
 4. **发布前停下来让用户确认**，不要自己 `npm publish`；也不要自己 `git push`（用户明确说推才推）。
 
 ---
@@ -324,6 +354,13 @@ plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manag
 3. **同一个 spec 重复安装会报 `ambiguous-install`**（`:1779-1782`：依赖没变化 → 找不到"新装的那一个"）。升级请先 `remove_bundle` 再装，或换一个 `#ref`。
 4. 私有仓库需要 pnpm 自己能用的凭据：预检**特意禁用了凭据助手与交互提示**，认证失败留给 pnpm 处理（含 HTTPS→SSH 回退）。
 
-**未实测**：以上是"源码 + 包内官方 `README.zh.md`（`:46/48/54/63`）复核"的结论；本轮**没有真的用 `github:` spec 装过任何包**。
+**已实测（2026-10-14，desktop profile）**：`github:` 路线走通了 ——
+`install_bundle(target:'github:qq540491950/dsh-mcp-manager#v0.1.0')` → profile 的 `dependencies`
+落成 `github:…#v0.1.0` 且列入 `dsh.profile.bundles`；**不需要重启即生效**；git 依赖实际拿到的
+30 个文件与自检通过的那份**逐字节一致**（`files` 白名单被严格遵守），`dsh.bundle.patch` /
+`icon` / `exports["./locale/*.json"]` 都活着。包装完 `remove_bundle` 那条路还没走过。
+
+**仍未实测**：npm 路线（`npm publish` 与按 registry 名再装一次）、Release 资产的 `.tgz` URL 安装、
+`remove_bundle` 卸载回归、私有仓库。
 另外 GitHub 的 `archive/refs/tags/*.tar.gz` 源码包**没有验证**——它以 `<repo>-<tag>/` 为根，不是 npm 包的 `package/` 前缀，
 作发行资产用 `npm pack` 出来的 `.tgz` 更稳。
