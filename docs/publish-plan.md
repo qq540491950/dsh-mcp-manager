@@ -217,9 +217,15 @@ plugin_manager(action: 'install_bundle', target: 'D:\\project\\dsh-plugins\\dsh-
 `plugin_manager(action: 'remove_bundle', target: '@qq540491950/dsh-mcp-manager')`
 → 再查 V4 的 1/2：行与座位都消失。
 
-⚠️ **卸载的连带后果**（2026-10-14 顺带查出的机制，未实跑）：group 容器 `mcp-manager` 由 bundle 自带，
-卸掉后 profile 里那条 `- id: mcp-manager` 覆写行就失去目标、被 `applyEntryPatches` 整条丢弃
-（`cordis-plugin-include:90-94`）→ **服务器停止加载**（配置仍在文件里，装回来即恢复）。
+⚠️ **卸载的连带后果取决于 profile 有没有自己的 group 行**（2026-10-14 源码 + 实测；卸载本身未实跑）：
+
+- **有**（推荐做法，见 README §5.6）：profile 自己声明 `- insert: [{id: mcp-manager, name: cordis:group, config: []}]`
+  → 卸载只拿掉插件行，group 与服务器改由 profile 提供 → **MCP 照常工作**。实测：双声明之后
+  `cordis:group` 在 Config 投影里仍只有 **1 条**（Loader 的 `EntryTree.store[id] ??=` 是**原地更新
+  同一条目**，`cordis-plugin-loader:60`），三台服务器子条目仍是 3 条。
+- **没有**：group 随 bundle 一起消失，`- id: mcp-manager` 覆写行被判 not found 整条丢弃
+  （`cordis-plugin-include:90-94`）→ **服务器停止加载**（配置仍在文件里，装回来即恢复）。
+
 所以这一格要连"**服务器是否随之下线、装回后是否自动恢复**"一起验，不能只看行与座位。
 
 ### ★ 曾经唯一未实测的假设 —— **2026-10-14 已证实**

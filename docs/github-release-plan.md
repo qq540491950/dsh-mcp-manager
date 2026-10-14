@@ -199,7 +199,7 @@ plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manag
 
 先卸再装是**刻意的**：同一个 spec 重复安装会报 `ambiguous-install`（依赖没变化 → 安装器找不到"新装的那一个"，`:1779-1782`）。换成新 tag 通常能绕过，但显式先卸最稳。升级后**宿主半边仍需重启 DSH**。
 
-⚠️ **"先卸再装"中间有一段 MCP 服务器掉线的窗口**：group 容器 `mcp-manager` 由 bundle 自带，卸掉后 profile 里那条 `- id: mcp-manager` 覆写行失去目标、被 `applyEntryPatches` **整条丢弃**（`cordis-plugin-include:90-94`）→ 三台服务器停止加载（**配置不丢**，装回来即恢复）。想彻底避开这段窗口，就在 profile 里**保留一份手写的 group `- insert:` 行**（与 bundle 那行同 id；后插入者赢，功能上没问题，代价是组合里多一行同 id —— 见 §3 第 3 步）。
+⚠️ **"先卸再装"有没有掉线窗口，取决于 profile 有没有自己的 group 行**：容器 `mcp-manager` 现在由 bundle 与 profile **同时**声明（后者见 README §5.6）—— Loader 的 `EntryTree.store[id] ??=` 是**原地更新同一条目**，运行时只有一条（实测：双声明后 `cordis:group` 仍是 1 条，三台服务器子条目仍是 3 条）。所以**加了 profile 那行 → 升级/卸载全程无窗口**；没加 → bundle 一卸，profile 里那条 `- id: mcp-manager` 覆写行失去目标、被 `applyEntryPatches` 整条丢弃（`cordis-plugin-include:90-94`），三台服务器停止加载（**配置不丢**，装回来即恢复）。
 
 **回滚**：
 
