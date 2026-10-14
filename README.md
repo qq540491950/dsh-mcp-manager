@@ -160,7 +160,8 @@ AGENTS.md                agent 工作约束（硬性纪律 / 边界 / 风格 / �
 README.md                本文件：是什么、怎么装、怎么改、约束速查
 docs/design-notes.md     设计抉择、取证、尺寸基准、实测状态（默认不必读）
 docs/agent-rules-notes.md  AGENTS.md 的附注：取证、断言台账、官方证据索引
-docs/publish-plan.md     发布为 bundle（P6–P8）的执行手册
+docs/publish-plan.md     发布为 bundle（P6–P8）的执行手册 + 四种 spec 形式（§9）
+docs/github-release-plan.md  只用 GitHub 发布：G0–G5 完整 runbook（顺序 / 命令 / 验收 / 回滚）
 package.json             exports{"./client"} + dsh.client.platform + name（= 客户端 bundle 的模块 id）
 src/client/**            客户端半边源码（TSX）  → 产物 lib/client.js
 src/host/**              宿主半边源码（TS）      → 产物 lib/index.js
@@ -239,7 +240,7 @@ tools/build.ts           esbuild 打包两半边 + 客户端包装 + 写构建�
 plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manager#v0.1.0')
 ```
 
-四条路线的取舍、前提与代价见 [docs/publish-plan.md](docs/publish-plan.md) §9。GitHub 路线最要紧的三条：①仓库里 `package.json` 必须有 `dsh.bundle.patch`，且 **patch 文件与 `lib/**` 都要提交进仓库**（pnpm 拉的是仓库内容，不会替你构建）；②git/tarball 是**抓取之后才判定**是不是 bundle，不是 bundle 会先装上再回滚（本地路径与 registry 是**装前**就拒）；③GitHub 的 spec 会先跑一次 `git ls-remote` 预检（5s，`git` 要在 PATH 上）。
+四条路线的取舍、前提与代价见 [docs/publish-plan.md](docs/publish-plan.md) §9；**从改造到 tag、Release、用户安装、升级回滚的完整步骤见 [docs/github-release-plan.md](docs/github-release-plan.md)**。GitHub 路线最要紧的三条：①仓库里 `package.json` 必须有 `dsh.bundle.patch`，且 **patch 文件与 `lib/**` 都要提交进仓库**（pnpm 拉的是仓库内容，不会替你构建）；②git/tarball 是**抓取之后才判定**是不是 bundle，不是 bundle 会先装上再回滚（本地路径与 registry 是**装前**就拒）；③GitHub 的 spec 会先跑一次 `git ls-remote` 预检（5s，`git` 要在 PATH 上）。
 
 ⚠️ **装 bundle 之前先摘掉 profile 里旧的路径行与手写 group 行**：否则会出现同 id 的重复行（两份 `dsh-mcp-manager`、两份 `mcp-manager`），最坏是两个 fiber 各自注册一次 `/api/mcp-manager`。保留 `- id: mcp-manager` 的**覆写行**（服务器列表就在里面）。升级插件后**宿主半边仍需重启 DSH**（§6.2）。
 

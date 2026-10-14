@@ -230,7 +230,8 @@ dsh-mcp-manager/
   README.md         精简版：是什么、怎么装、怎么改、约束速查
   docs/design-notes.md      本文件：设计抉择、取证、尺寸基准、实测状态（默认不必读）
   docs/agent-rules-notes.md  AGENTS.md 的附注：取证、断言台账、官方证据索引（默认不必读）
-  docs/publish-plan.md       发布为 bundle（P6–P8）的执行手册
+  docs/publish-plan.md       发布为 bundle（P6–P8）的执行手册 + 四种 spec 形式（§9）
+  docs/github-release-plan.md  只用 GitHub 发布：G0–G5 完整 runbook
   package.json      exports{"./client"} + dsh.client{platform:"web"} + name（= 客户端 bundle 的模块 id）
   src/client/**     客户端半边源码（TSX）——不要手改产物 lib/client.js
   src/host/**       宿主半边源码（TS）——不要手改产物 lib/index.js

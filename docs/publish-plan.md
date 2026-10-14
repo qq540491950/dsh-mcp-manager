@@ -277,10 +277,15 @@ plugin_manager(action: 'install_bundle', target: 'D:\\project\\dsh-plugins\\dsh-
 5. `git push`（用户确认后）+ GitHub Release + 在 README 写兼容矩阵（DSH 版本 × 插件版本）
 
 > 第 3 步不一定要发 npm —— 见 §9 的四条 spec 形式（git / tarball / 路径都不经过 registry）。
+> **只走 GitHub 的完整可执行 runbook**（G0 前置检查 → G1 改造 → G2 本地验证 → G3 tag/Release → G4 用户安装 → G5 升级回滚 + 故障对照表）
+> 见 [github-release-plan.md](github-release-plan.md)；本文仍是 P6 字段与断言的唯一出处。
 
 ---
 
 ## 9. 附：不必经过 npm 的分发路线（本轮源码复核）
+
+> **要照着做一遍的话，用 [github-release-plan.md](github-release-plan.md)**（含顺序、命令、验收条件、故障对照表与回滚）；
+> 本节只回答"为什么 GitHub 就够"，即四种 spec 形式的源码依据。
 
 `install_bundle` 的 `target` **不是"包名字段"，而是一个 pnpm spec**。安装器先把它解析成四种形式之一——本机安装版
 `@deepseek-ai/dsh-plugin-manager/lib/index.js:72-117` 的 `parseInstallSpec`——再原样交给 `pnpm add`：
