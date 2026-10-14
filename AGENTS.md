@@ -1,6 +1,6 @@
 # AGENTS.md —— 本仓库的 agent 工作约束
 
-> 分级：**[硬]**（破坏数据/环境）＞**[边界]**（抄近路引入已知 bug）＞**[风格]**；同级冲突以**机检**为准（`tsconfig.*` / [eslint.config.js](eslint.config.js) / [tools/verify.ts](tools/verify.ts)）。只写"做什么、怎么自查、代价"；取证与历史事故见 [docs/agent-rules-notes.md](docs/agent-rules-notes.md)，设计与证据见 [README.md](README.md)。
+> 分级：**[硬]**（破坏数据/环境）＞**[边界]**（抄近路引入已知 bug）＞**[风格]**；同级冲突以**机检**为准（`tsconfig.*` / [eslint.config.js](eslint.config.js) / [tools/verify.ts](tools/verify.ts)）。只写"做什么、怎么自查、代价"；取证与历史事故见 [docs/agent-rules-notes.md](docs/agent-rules-notes.md)，设计与证据概览见 [README.md](README.md)（详尽版：[docs/design-notes.md](docs/design-notes.md)，章节号一一对应）。
 
 ## 0. 30 秒定位
 
