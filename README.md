@@ -3,7 +3,7 @@
 在 DSH（Web / 桌面端）的**设置面板最下方**加一页 **MCP**：可视化增删改、启停 MCP 服务器，并看到它们的加载状态、失败原因与**当前注册的工具名单（个数 + 名称，过多自动折叠）**。
 
 - **是什么**：一个「客户端半边 + 宿主半边」的 DSH 插件，运行时**零依赖**（§0）。
-- **怎么装**：见 §5（现在用 profile 路径行接线；发布成 bundle 后是一条命令安装）。**怎么发布**见 §5.3。
+- **怎么装**：见 §5（bundle 形态已就绪——一条命令；**但实装验证尚未跑**，见 §5.1；也仍可用 profile 路径行接线）。**怎么发布**见 §5.3。
 - **改了代码怎么生效**：见 §6.2（客户端半边热替换、宿主半边要重启、profile 补丁秒级生效）。
 - **写代码前先读**：[AGENTS.md](AGENTS.md)（硬性纪律 / 边界 / 风格）。本文只留结论；"为什么这么设计、当时实测到什么、还有哪些没实测"在 [docs/design-notes.md](docs/design-notes.md)——**两边章节号一一对应**，默认不必读。每条结论的官方源码出处见 §9。
 
@@ -162,7 +162,12 @@ docs/design-notes.md     设计抉择、取证、尺寸基准、实测状态（�
 docs/agent-rules-notes.md  AGENTS.md 的附注：取证、断言台账、官方证据索引
 docs/publish-plan.md     发布为 bundle（P6–P8）的执行手册 + 四种 spec 形式（§9）
 docs/github-release-plan.md  只用 GitHub 发布：G0–G5 完整 runbook（顺序 / 命令 / 验收 / 回滚）
-package.json             exports{"./client"} + dsh.client.platform + name（= 客户端 bundle 的模块 id）
+package.json             name（= 客户端 bundle 的模块 id）+ exports + dsh.bundle.patch + files 白名单
+cordis.patch.yml         bundle 自带的补丁层：group 行（id 必须等于 src/shared/constants.ts 的 GROUP_ID）+ 插件行（name 必须等于包名）
+locale/en.json           插件卡片文案（meta.title / meta.description），经 exports["./locale/*.json"] 暴露
+locale/zh.json           同上（中文）
+assets/icon.svg          bundle 卡片图标（64x64，圆角底色 + 标记；三条 path 几何逐字取自 assets/mcp-mark.svg）
+LICENSE                  MIT（版权人见文件首行）
 src/client/**            客户端半边源码（TSX）  → 产物 lib/client.js
 src/host/**              宿主半边源码（TS）      → 产物 lib/index.js
 src/shared/**            两半边共享的协议值（ROUTE / GROUP_ID / MCP_PACKAGE / SECTION_ID / SECTION_LABEL）
@@ -174,17 +179,19 @@ tools/build.ts           esbuild 打包两半边 + 客户端包装 + 写构建�
 .github/workflows/ci.yml  CI：typecheck / lint / format / build / verify + lib 漂移检查
 ```
 
+**发出去的是哪些文件**：由 `package.json` 的 `files` 白名单决定（`lib`、`cordis.patch.yml`、`locale/*.json`、`assets/icon.svg`、`README.md`、`LICENSE`）——`src/`、`tools/`、`docs/`、`AGENTS.md` **都不发**。这不是风格问题：git 路线（`github:` spec）下 pnpm 拉的是仓库内容，白名单外的文件**根本不会出现在包里**（[docs/github-release-plan.md](docs/github-release-plan.md) §0）。自检 P5/P6 守这张白名单。
+
 运行时**零依赖**：宿主半边不 import 任何东西；浏览器半边只 `require("react")`（平台种子表内）——视觉全靠自带样式表 + 主题 token，不用官方组件库。
 
 ---
 
 ## 5. 安装、接线与发布
 
-### 5.1 现在能"一键安装"吗——还不能，但可以接线
+### 5.1 现在能"一键安装"吗——包改好了，但**还没实测装过**
 
 | 安装方式 | 现在 | 说明 |
 |---|---|---|
-| **`plugin_manager install_bundle`（一键）** | ❌ **不能** | 本包尚未声明 `dsh.bundle`。安装器在任何东西落地**之前**就拒绝，理由是 `not-a-bundle` / "*declares no dsh.bundle*"；判定就是 `package.json` 的 `dsh.bundle.patch` 有没有值（本机安装版 `dsh-plugin-manager/lib/index.js:1587`） |
+| **`plugin_manager install_bundle`（一键）** | ⚠️ **清单齐了，实装未验证** | 本包**已经声明 `dsh.bundle.patch`**（`cordis.patch.yml`）——安装器"不是 bundle 就拒"的门槛（`not-a-bundle` / "*declares no dsh.bundle*"，本机安装版 `dsh-plugin-manager/lib/index.js:1587`）已经满足。**但这一轮只做到"包本身排干净"**：`pnpm check` 全绿、`npm pack` 内容审查通过、新断言（P 区）守住清单一致性。**没有真的装过一次**——没有实装安装、没有运行时四查（宿主相位 / 客户端座位 / 新增服务器是否落盘 / 启停删检测回归）。所以这一格是"**待验**"，不是"能"。验证步骤见 [docs/github-release-plan.md](docs/github-release-plan.md) G2（本地路径三连：装 → 四查 → 卸）与 G4（`github:` spec）。 |
 | **profile 里的路径行（本仓库当前用法）** | ✅ **能，且零依赖** | 只需 `cordis.patch.yml` 两步（§5.2）；不需要 `pnpm`、`node_modules`，也不需要先发布 |
 
 ### 5.2 手动接线（两步，都在 profile 的 `cordis.patch.yml`）
@@ -223,16 +230,18 @@ tools/build.ts           esbuild 打包两半边 + 客户端包装 + 写构建�
 
 **DSH 没有中央插件市场**：安装入口是 `plugin_manager install_bundle`，底层用 pnpm 把你给的那个 spec 装进 profile——而 spec 有四种形式（见本节末）。所以**发布 = 让别人能装上一个声明了 `dsh.bundle.patch` 的包**，这个包**不一定要在 npm 上**（GitHub / tarball / 本地路径都行）。装一次即完成两件事：把包装进 profile 的 `node_modules`，并把包名写进 profile `package.json` 的 `dsh.profile.bundles`——它的 patch 层随后自动进 Loader，用户**不需要再手写 `cordis.patch.yml`**。
 
-四步（详细清单、要同步改的自检断言、验证阶梯见 [docs/publish-plan.md](docs/publish-plan.md)）：
+**① 包改造（P6）——本轮已完成**（字段清单的唯一出处是 [docs/publish-plan.md](docs/publish-plan.md) §3）：
 
-1. **P6 改造成 bundle**
-   - 新增 `cordis.patch.yml`：自带 group 条目（`id: mcp-manager`，`cordis:group`，`config: []`）+ 插件行（`id: dsh-mcp-manager`，`name:` 必须是**发布后的包名**）。
-   - 新增 `locale/{en,zh}.json`（`meta.title` / `meta.description`）、图标（放 `assets/` 下，P6 才创建；≤256 KiB、包内相对路径）、`LICENSE`。
-   - `package.json`：删 `private`；包名改 **`@qq540491950/dsh-mcp-manager`**（裸名 `dsh-mcp-manager` 被他人占用）；补 `dsh.bundle.patch`、`exports["."]`、`files` 白名单（**不含 `src/`、`tools/`、`docs/`、`AGENTS.md`**）、`publishConfig.access = public`。
-   - `peerDependencies` 只留 `@deepseek-ai/cordis`。**不要钉任何 `@deepseek-ai/dsh-*`**：bundle 兼容性只看这些 `dsh-*` peer，不满足就**整个 bundle 被 skip**。
-2. **本地验证**（不用先发布）：`pnpm check` 全绿 → `npm pack` 审内容（有产物 / patch / locale / 图标 / README / LICENSE，无 `src`+`tools`+`docs`，无密钥）→ `plugin_manager(action:'install_bundle', target:'<本地绝对路径>')`（读返回值的 `application: applied`，`warnings` 里不该有 bundle skipped）→ 运行时四查（宿主 `fiberPhase: active`、客户端座位 `{id:"mcp",order:900,active:true}`、**新增一台服务器真的落盘且工具注册**、启停删检测全流程回归）→ `remove_bundle` 卸载回归。
-3. **发布**：`npm publish --access public` → 用包名再装一次（`target='@qq540491950/dsh-mcp-manager'`），确认与本地路径行为一致 → `git push` + GitHub Release + 在本文补一张兼容矩阵（DSH 版本 × 插件版本）。
-4. **发布前必须停下让用户确认**：`npm publish` 与 `git push` 都不代跑。
+- 新增 `cordis.patch.yml`：自带 group 条目（`id: mcp-manager`，`cordis:group`，`config: []`）+ 插件行（`id: dsh-mcp-manager`，`name: '@qq540491950/dsh-mcp-manager'`——必须是**发布后的包名**，自检 P3/P4 守它）。
+- 新增 `locale/{en,zh}.json`（`meta.title` / `meta.description`）、`assets/icon.svg`（≤256 KiB、包内相对路径）、`LICENSE`（MIT）。
+- `package.json`：删 `private`；包名改 **`@qq540491950/dsh-mcp-manager`**（裸名 `dsh-mcp-manager` 被他人占用）；补 `dsh.bundle.patch`、`exports["."]`（条件导出 + `types`）、`files` 白名单（**不含 `src/`、`tools/`、`docs/`、`AGENTS.md`**）、`publishConfig.access = public`。
+- `peerDependencies` 只留 `@deepseek-ai/cordis`。**没有钉任何 `@deepseek-ai/dsh-*`**：bundle 兼容性只看这些 `dsh-*` peer，不满足就**整个 bundle 被 skip**。
+
+**② 本地验证——本轮只做到 V0/V1**：`pnpm check` 全绿 + `npm pack` 审内容（有产物 / patch / locale / 图标 / README / LICENSE，无 `src`+`tools`+`docs`，无密钥）。**V3–V5 未做**：把包装进 profile（读返回值的 `application: applied`，`warnings` 里不该有 bundle skipped）→ 运行时四查（宿主 `fiberPhase: active`、客户端座位 `{id:"mcp",order:900,active:true}`、**新增一台服务器真的落盘且工具注册**、启停删检测全流程回归）→ `remove_bundle` 卸载回归。这就是 [docs/github-release-plan.md](docs/github-release-plan.md) 的 G2，也是这套清单**唯一没被证实**的部分。
+
+**③ 发布（GitHub 路线）**：`git push` → tag `v0.1.0`（与 `package.json.version` 逐字一致）→ GitHub Release（附 `npm pack` 产物给没有 git 的用户）。**本轮不发 npm**：两条渠道同时维护只会让版本口径分叉。
+
+**④ 发布前必须停下让用户确认**：`npm publish` 与 `git push` 都不代跑。
 
 **npm 不是必须的**——`install_bundle` 的 `target` 认四种 spec（本机安装版 `parseInstallSpec`）：**注册表包名**、**绝对本地路径**、**git 地址**（`github:user/repo`、`git+https://…git`、`https://github.com/user/repo#ref`，也可 `gitlab:` / `bitbucket:` / `gist:`）、**tarball**（本地 `.tgz` / `.tar.gz`，或 `https://…/x.tgz`）。所以"只发在 GitHub"完全可行：
 
@@ -243,6 +252,24 @@ plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manag
 四条路线的取舍、前提与代价见 [docs/publish-plan.md](docs/publish-plan.md) §9；**从改造到 tag、Release、用户安装、升级回滚的完整步骤见 [docs/github-release-plan.md](docs/github-release-plan.md)**。GitHub 路线最要紧的三条：①仓库里 `package.json` 必须有 `dsh.bundle.patch`，且 **patch 文件与 `lib/**` 都要提交进仓库**（pnpm 拉的是仓库内容，不会替你构建）；②git/tarball 是**抓取之后才判定**是不是 bundle，不是 bundle 会先装上再回滚（本地路径与 registry 是**装前**就拒）；③GitHub 的 spec 会先跑一次 `git ls-remote` 预检（5s，`git` 要在 PATH 上）。
 
 ⚠️ **装 bundle 之前先摘掉 profile 里旧的路径行与手写 group 行**：否则会出现同 id 的重复行（两份 `dsh-mcp-manager`、两份 `mcp-manager`），最坏是两个 fiber 各自注册一次 `/api/mcp-manager`。保留 `- id: mcp-manager` 的**覆写行**（服务器列表就在里面）。升级插件后**宿主半边仍需重启 DSH**（§6.2）。
+
+### 5.4 一键安装命令（bundle 形态）
+
+```text
+# 主渠道：git + tag（用户机器上要有 git；GitHub 会先跑一次 5s 的 git ls-remote 预检）
+plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manager#v0.1.0')
+
+# 备选：Release 资产里的 .tgz（纯 HTTPS，不需要 git，也没有那个预检）
+plugin_manager(action:'install_bundle', target:'https://github.com/qq540491950/dsh-mcp-manager/releases/download/v0.1.0/qq540491950-dsh-mcp-manager-0.1.0.tgz')
+
+# 只有开发机才有的本地目录形式（改完源码立刻试，不用先发布）
+plugin_manager(action:'install_bundle', target:'D:\project\dsh-plugins\dsh-mcp-manager')
+
+# 升级 / 回滚：先卸再装（同一个 spec 重复装会报 ambiguous-install）
+plugin_manager(action:'remove_bundle', target:'@qq540491950/dsh-mcp-manager')
+```
+
+三条写法的差别（谁要 git、装前判不判定、怎么钉版本）见 [docs/github-release-plan.md](docs/github-release-plan.md) §5。**这三条命令本轮一条都没跑过**——`plugin_manager` 每个 action 都需要审批，本会话审批被禁用。
 
 ---
 
@@ -255,7 +282,7 @@ pnpm verify                 # = node tools/verify.ts
 # → PASS n/n（条数以实际输出为准；本文不写死条数）
 ```
 
-零依赖：不需要 `node_modules`，也不需要先 build（`.ts` 由 Node ≥22.18 的类型擦除直接执行）。覆盖范围就是 [tools/verify.ts](tools/verify.ts) 里的 `//#region`：A 包清单/主题/尺寸/自适应/表单结构与导航标记几何、B 宿主行为 + 行内操作回归 + 失败原因采集 + 相位映射 + 主动探测 + 配置分层 + 工具名单、C 产物协议与座位契约 + 导航标记 DOM（假 DOM 真跑）、D 真实渲染逐状态、D2 挂载行为（真跑 `useEffect` 的沙箱 + fetch 桩）、E 共享常量 ↔ 出厂产物（含构建指纹 E9/E10 与文档引用一致性 E11/E12）、F 纯函数直接单测。**断言台账只有这一处**（AGENTS 4.2）；每修一个 bug 同时加断言，新断言必须反向验证。
+零依赖：不需要 `node_modules`，也不需要先 build（`.ts` 由 Node ≥22.18 的类型擦除直接执行）。覆盖范围就是 [tools/verify.ts](tools/verify.ts) 里的 `//#region`：A 包清单/主题/尺寸/自适应/表单结构与导航标记几何、B 宿主行为 + 行内操作回归 + 失败原因采集 + 相位映射 + 主动探测 + 配置分层 + 工具名单、C 产物协议与座位契约 + 导航标记 DOM（假 DOM 真跑）、D 真实渲染逐状态、D2 挂载行为（真跑 `useEffect` 的沙箱 + fetch 桩）、E 共享常量 ↔ 出厂产物（含构建指纹 E9/E10 与文档引用一致性 E11/E12）、P 发布形态（`dsh.bundle.patch` / patch 内容 / `files` 白名单 / locale / 图标 / `private` / peer）、F 纯函数直接单测。**断言台账只有这一处**（AGENTS 4.2）；每修一个 bug 同时加断言，新断言必须反向验证。
 
 工具脚本自身另有类型检查：`pnpm typecheck:tools` 是门禁（0 错误），`typecheck:tools:wip` 是进度计（续做方法见 [docs/tools-ts.md](docs/tools-ts.md)）。
 

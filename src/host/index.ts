@@ -118,7 +118,16 @@ export const name = 'dsh-mcp-manager'
 /** 依赖在 apply 内用 ctx.inject 声明，便于缺失服务时优雅降级。 */
 export const inject: string[] = []
 
-const MISSING_GROUP = `找不到 group 条目 "${GROUP_ID}"。请先在 profile 的 cordis.patch.yml 里按插件 README 配置一个 cordis:group 条目。`
+/**
+ * 组条目缺失时的提示。
+ *
+ * 过去写的是"请先在 profile 的 cordis.patch.yml 里配置一个 cordis:group 条目"——那是**路径行接入**
+ * 时代的正确指引。bundle 形态下这个 group 由**包自带的 patch 层**提供，所以出现这句的真实原因只剩两个：
+ * ①bundle 没装好（`dsh.bundle.patch` / `files` 白名单 / patch 行没进 Loader）；
+ * ②这一层被 profile 里更高层的覆写行压掉了（顶层 `- id: X` 是整键赋值）。
+ * 文案里保留 `cordis:group` 字样：它仍然是"缺的是哪一类条目"的唯一判据（自检 D13 守这一点）。
+ */
+const MISSING_GROUP = `找不到 group 条目 "${GROUP_ID}"（cordis:group）。它应由 dsh-mcp-manager bundle 自带：若刚安装完仍看到这句，说明 bundle 未正确安装、或这一层被 profile 里更高层的覆写行压掉了；请检查 profile 的 cordis.patch.yml 与 package.json 的 dsh.profile.bundles。`
 
 /**
  * 把任意抛出物整理成一句话。

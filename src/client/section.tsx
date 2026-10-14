@@ -326,7 +326,7 @@ export function McpSection(): ReactElement {
       {header}
       {configured ? null : (
         <div className="mcpm-notice mcpm-notice--error">
-          {`未找到 group 条目「${snapshot.groupId}」。请先在 profile 的 cordis.patch.yml 里按插件 README 配置一个 cordis:group 条目，再回到这里。`}
+          {`未找到 group 条目「${snapshot.groupId}」（cordis:group）。它应由 dsh-mcp-manager bundle 自带：若刚安装完仍看到这句，说明 bundle 未正确安装、或这一层被 profile 里更高层的覆写行压掉了——请检查 profile 的 cordis.patch.yml 与 package.json 的 dsh.profile.bundles，再回到这里。`}
         </div>
       )}
       {/* 行内操作（停用/删除/检测）的报错：没有表单可挂，页面级是唯一位置。

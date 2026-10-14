@@ -9,7 +9,7 @@
  * 用法：node tools/verify.ts
  */
 import { readdir, readFile } from 'node:fs/promises'
-import { existsSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { createHash } from 'node:crypto'
@@ -224,15 +224,50 @@ const clientSource = await readFile(join(root, 'lib', 'client.js'), 'utf8')
 const probeBudgetMs = Number(/PROBE_TIMEOUT_MS = ([\d.eE+]+)/.exec(hostSource)?.[1] ?? 0)
 
 //#region A. 包清单
-check('A1 package name', manifest.name === 'dsh-mcp-manager', manifest.name)
+/**
+ * 包名的合法性判据。
+ *
+ * P6 改名（`dsh-mcp-manager` → `@qq540491950/dsh-mcp-manager`）后这里**不再硬编码名字**：
+ * 旧版写的是 `manifest.name === 'dsh-mcp-manager'`，改名时它必然失败——但它想守的其实是
+ * "这是一个合法的、能被 pnpm 解析的 npm 名"，而"产物里的模块 id 必须等于包名"由 A5 与 E8
+ * 用 `manifest.name` 拼期望值来守。所以这里换成形状校验，**没有放宽任何一处防护**。
+ */
+const NPM_NAME = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/
 check(
-  'A2 exports["./client"]',
-  manifest.exports?.['./client'] === './lib/client.js',
-  String(manifest.exports?.['./client']),
+  'A1 包名是合法的 npm 名（非空 / 小写 / 至多一段 scope / ≤214 字符）',
+  typeof manifest.name === 'string' && manifest.name.length <= 214 && NPM_NAME.test(manifest.name),
+  String(manifest.name),
+)
+/**
+ * `exports["./client"]` 的两种合法形态都是允许的：字符串，或带 `default` 的条件导出对象
+ * （官方 bundle 用的是后者）。守的意图不变——**它必须指向真实存在的客户端产物**，
+ * 所以顺带断言那个文件在盘上（只比字符串相等的话，指到一个不存在的路径也能过）。
+ */
+const clientExport = manifest.exports?.['./client']
+const clientExportTarget =
+  typeof clientExport === 'string'
+    ? clientExport
+    : typeof clientExport?.default === 'string'
+      ? clientExport.default
+      : ''
+const clientExportExists = clientExportTarget !== '' && existsSync(join(root, clientExportTarget))
+check(
+  'A2 exports["./client"] 指向真实存在的客户端产物',
+  clientExportTarget === './lib/client.js' && clientExportExists,
+  `${String(clientExport)} → 目标 ${clientExportTarget}（文件存在：${String(clientExportExists)}）`,
 )
 check('A3 dsh.client.platform === "web"', manifest.dsh?.client?.platform === 'web', JSON.stringify(manifest.dsh))
 check('A4 main points at lib/index.js', manifest.main === 'lib/index.js', String(manifest.main))
-check('A5 客户端 bundle 用包名注册模块 id', clientSource.includes(`id: "dsh-mcp-manager"`))
+/**
+ * A5 与 E8 都守"产物里的模块 id 等于包名"，但查的是**两件不同的东西**：
+ * A5 查构建器注入的那一行包装（`id: "<name>",` 的逐字形状，含逗号），E8 查产物里出现过该 id。
+ * 期望值一律用 `manifest.name` 拼出来，**不写死名字**（publish-plan §4）。
+ */
+check(
+  'A5 客户端 bundle 用包名注册模块 id（构建注入，两处都不硬编码包名）',
+  clientSource.includes(`id: ${JSON.stringify(manifest.name)},`),
+  manifest.name,
+)
 check('A6 客户端 bundle 是 classic script（无 ESM 语法）', !/^\s*(import|export)\s/m.test(clientSource))
 check(
   'A7 只 require 平台种子模块',
@@ -1839,9 +1874,13 @@ check(
   check('D12 错误态', hasClass(scene(null, 'boom'), 'mcpm-notice--error'))
 
   // D13 组条目缺失
+  // 文案在 P6 改成了 bundle 形态的指引（group 由包自带的 patch 层提供；故障只剩"没装好"
+  // 与"被更高层覆写压掉"两种），所以断言同步跟上，**两项都守**：
+  // ①点名缺的是哪一类条目（`cordis:group`，原意图，不能被删）；
+  // ②指出成因在 bundle 侧（否则用户会照着旧文案去 profile 里手写一行，而现在那是错的指引）。
   check(
-    'D13 未配置 group 时给出可读提示',
-    textsOf(scene({ ...snapshot, configured: false })).some((t) => t.includes('cordis:group')),
+    'D13 未配置 group 时给出可读提示（点名 cordis:group + 指出 bundle 侧的两个成因）',
+    textsOf(scene({ ...snapshot, configured: false })).some((t) => t.includes('cordis:group') && t.includes('bundle')),
   )
 
   // D42–D47 工具名单：显示「N 个」，超过 TOOL_PREVIEW_LIMIT 就折叠，点开才显示全部。
@@ -2597,6 +2636,220 @@ check(
     }
     check('E12 文档 / 工作流里的文件与脚本引用都存在（改名的漏改面）', problems.length === 0, problems.join('；'))
   }
+}
+//#endregion
+
+//#region P. 发布形态（bundle / npm 包）
+/**
+ * P 区守的是"这个仓库能不能被 `plugin_manager install_bundle` 一键装上"（publish-plan §4）。
+ *
+ * 为什么值得单独一区：bundle 判定的失败**不报错在源码上**，而是在别人的机器上表现为
+ * 「装不上」（`not-a-bundle`）或「装上了但设置里没有 MCP 页」（github-release-plan §7）。
+ * 这些字段一旦漂移（改名、换 patch 路径、`files` 白名单漏项），本地构建与流水线都照样全绿。
+ *
+ * 零依赖约束：自检不装 `node_modules`（publish-plan §2），所以这里**不引 YAML 解析器**，
+ * 只按本仓库 patch 文件用到的 YAML 子集做行解析（见 insertEntriesOf）。
+ */
+{
+  /** 把若干子条件聚合成一条断言；失败时 detail 直接列出不成立的子项（反向验证要能看出是哪一项）。 */
+  const checkAll = (label: string, cases: Record<string, unknown>): void => {
+    const failed = Object.entries(cases)
+      .filter(([, ok]) => !ok)
+      .map(([name]) => name)
+    check(label, failed.length === 0, failed.length === 0 ? '' : `不成立：${failed.join(', ')}`)
+  }
+
+  /**
+   * 取出 `insert:` 列表下的条目（只认本仓库 patch 用到的 `id` / `name` 两个键）。
+   *
+   * 为什么必须区分"在 insert 里"：`- id: X`（不带 `insert`）是**顶层覆写行**——目标条目不存在时
+   * `applyEntryPatches` 直接 warn 并丢弃它（README 2.3）。把插件行写成覆写行，效果就是
+   * "bundle 装上了、Loader 里却没有这一行"，也就是最难查的那种故障。
+   */
+  const insertEntriesOf = (text: string): Array<{ id: string; name?: string }> => {
+    const entries: Array<{ id: string; name?: string }> = []
+    let insertIndent: number | null = null
+    let current: { id: string; name?: string } | null = null
+    for (const raw of text.split('\n')) {
+      const line = raw.replace(/\s+#.*$/, '').trimEnd()
+      if (line.trim() === '' || line.trimStart().startsWith('#')) continue
+      const indent = line.length - line.trimStart().length
+      if (/^\s*(?:-\s*)?insert:\s*(?:\[\s*\])?\s*$/.test(line)) {
+        insertIndent = indent
+        current = null
+        continue
+      }
+      if (insertIndent === null) continue
+      if (indent <= insertIndent) {
+        insertIndent = null
+        current = null
+        continue
+      }
+      const item = /^\s*-\s*id:\s*['"]?([^'"\s]+)['"]?\s*$/.exec(line)
+      if (item !== null) {
+        current = { id: item[1] ?? '' }
+        entries.push(current)
+        continue
+      }
+      const named = /^\s+name:\s*['"]?([^'"\s]+)['"]?\s*$/.exec(line)
+      if (named !== null && current !== null && current.name === undefined) current.name = named[1] ?? ''
+    }
+    return entries
+  }
+
+  // —— P1：必须声明 dsh.bundle.patch，且文件真实存在（安装器的 bundle 判据就是它）——
+  const bundlePatch = manifest.dsh?.bundle?.patch
+  const bundlePatchPath = typeof bundlePatch === 'string' ? bundlePatch : ''
+  const bundlePatchFile = bundlePatchPath === '' ? '' : join(root, bundlePatchPath)
+  check(
+    'P1 dsh.bundle.patch 声明了 patch 文件，且该文件真实存在',
+    bundlePatchPath !== '' && existsSync(bundlePatchFile),
+    String(bundlePatch),
+  )
+
+  // —— P2–P4：patch 的内容与跨文件一致性 ——
+  const patchText = bundlePatchPath !== '' && existsSync(bundlePatchFile) ? await readFile(bundlePatchFile, 'utf8') : ''
+  const patchEntries = insertEntriesOf(patchText)
+  checkAll('P2 patch 的 insert 列表里自带两条（group + 插件），且 id 不重复', {
+    两条: patchEntries.length === 2,
+    'id 不重复': new Set(patchEntries.map((entry) => entry.id)).size === patchEntries.length,
+  })
+  const groupEntry = patchEntries.find((entry) => entry.id === shared.GROUP_ID)
+  checkAll('P3 patch 的 group 行：id == src/shared/constants.ts 的 GROUP_ID，name == cordis:group', {
+    'id 命中 GROUP_ID': groupEntry !== undefined,
+    'name 是 cordis:group': groupEntry?.name === 'cordis:group',
+  })
+  const pluginEntry = patchEntries.find((entry) => entry.id !== shared.GROUP_ID)
+  checkAll('P4 patch 的插件行：name == package.json 的 name（改名漏改立刻红）', {
+    插件行存在: pluginEntry !== undefined,
+    'name 等于包名': pluginEntry?.name === manifest.name,
+  })
+
+  // —— P5/P6：files 白名单 ——
+  // git 路线下它是**生命线**：白名单外的文件根本不会出现在包里（github-release-plan §0 硬约束 4）。
+  const filesList: string[] = Array.isArray(manifest.files)
+    ? manifest.files.filter((file: unknown): file is string => typeof file === 'string')
+    : []
+  /**
+   * npm 的 `files` 匹配语义有两条规则，缺一不可：
+   *   1. 指向**目录**的条目（本仓库的 `lib`）＝包含该目录下的全部内容；
+   *   2. 其余按 glob 比对（`locale/*.json`）。
+   * 只按字符串相等比对是**错的**：它会把 `lib` 判成"没覆盖 lib/index.js"（本区第一次写就踩了）。
+   */
+  const isDirectoryEntry = (relative: string): boolean => {
+    try {
+      return statSync(join(root, relative)).isDirectory()
+    } catch {
+      return false
+    }
+  }
+  const covered = (target: string): boolean =>
+    filesList.some((pattern) => {
+      const normalized = pattern.replace(/^\.\//, '').replace(/\/+$/, '')
+      if (normalized === target) return true
+      if (isDirectoryEntry(normalized)) return target.startsWith(`${normalized}/`)
+      const regex = normalized
+        .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+        .replace(/\*\*/g, '\u0000')
+        .replace(/\*/g, '[^/]*')
+        .replace(/\u0000/g, '.*')
+      return new RegExp(`^${regex}$`).test(target)
+    })
+  const requiredInPackage = [
+    'lib/index.js',
+    'lib/client.js',
+    'lib/types/host/index.d.ts',
+    bundlePatchPath.replace(/^\.\//, ''),
+    'locale/en.json',
+    'locale/zh.json',
+    typeof manifest.icon === 'string' ? manifest.icon.replace(/^\.\//, '') : '',
+    'README.md',
+    'LICENSE',
+  ]
+  checkAll(
+    'P5 files 白名单覆盖产物 / patch / locale / 图标 / README / LICENSE，且这些文件都在盘上',
+    Object.fromEntries(
+      requiredInPackage.map((file) => [file, file !== '' && covered(file) && existsSync(join(root, file))]),
+    ),
+  )
+  const leaked = filesList
+    .map((pattern) => pattern.replace(/^\.\//, '').replace(/\/+$/, ''))
+    .filter((pattern) => /^(?:src|tools|docs|AGENTS\.md)(?:\/|$)/.test(pattern))
+  check(
+    'P6 files 白名单不含 src / tools / docs / AGENTS.md（源码与工具不发出去）',
+    leaked.length === 0,
+    leaked.join(', '),
+  )
+
+  // —— P7：locale（app-boot 经 ESM 解析器读 `<包名>/locale/en.json`，只认 exports 暴露的路径）——
+  const localeDir = join(root, 'locale')
+  const localeFiles = existsSync(localeDir) ? (await readdir(localeDir)).filter((name) => name.endsWith('.json')) : []
+  /**
+   * 读一份语言包并校验 `meta.title` / `meta.description`。
+   * app-boot 的 `textOf()` 对空串/非字符串**直接抛**（dsh-app-boot/lib/index.js:1910），
+   * 那会让整个插件元数据变成一条 error，所以这里按"必须是非空字符串"来守。
+   */
+  const localeMetaOk = async (name: string): Promise<boolean> => {
+    try {
+      const parsed = JSON.parse(await readFile(join(localeDir, name), 'utf8'))
+      const meta = parsed?.meta
+      return (
+        typeof meta?.title === 'string' &&
+        meta.title !== '' &&
+        typeof meta?.description === 'string' &&
+        meta.description !== ''
+      )
+    } catch {
+      return false
+    }
+  }
+  const badLocales: string[] = []
+  for (const name of localeFiles) if (!(await localeMetaOk(name))) badLocales.push(name)
+  checkAll(
+    'P7 locale：en/zh 都有非空 meta.title + meta.description，且 exports 暴露 ./locale/*.json（否则 app-boot 解析不到、静默丢语言包）',
+    {
+      'en.json 存在且字段非空': localeFiles.includes('en.json') && (await localeMetaOk('en.json')),
+      'zh.json 存在且字段非空': localeFiles.includes('zh.json') && (await localeMetaOk('zh.json')),
+      其它语言包也合法: badLocales.length === 0,
+      'exports ./locale/*.json': typeof manifest.exports?.['./locale/*.json'] === 'string',
+    },
+  )
+
+  // —— P8：图标（app-boot 的 iconOf()：包内相对路径、SVG/PNG/JPEG/WebP、≤256 KiB）——
+  const iconPath = typeof manifest.icon === 'string' ? manifest.icon.replace(/^\.\//, '') : ''
+  const iconFile = join(root, iconPath)
+  const iconBytes = iconPath !== '' && existsSync(iconFile) ? await readFile(iconFile) : null
+  const pathsIn = (text: string): string[] => [...text.matchAll(/\sd="([^"]+)"/g)].map(([, d]) => d ?? '')
+  const markPaths = pathsIn(await readFile(join(root, 'assets', 'mcp-mark.svg'), 'utf8'))
+  const iconPaths = pathsIn(iconBytes?.toString('utf8') ?? '')
+  checkAll('P8 icon：包内相对路径 / 文件存在 / ≤256 KiB / 类型合法，且三条标记几何逐字取自 assets/mcp-mark.svg', {
+    包内相对路径:
+      iconPath !== '' &&
+      !iconPath.startsWith('/') &&
+      !iconPath.includes('..') &&
+      !/^[A-Za-z][A-Za-z\d+.-]*:/.test(iconPath),
+    文件存在: iconBytes !== null,
+    '≤256 KiB': iconBytes !== null && iconBytes.length <= 256 * 1024,
+    '类型是 svg/png/jpeg/webp': /\.(?:svg|png|jpe?g|webp)$/i.test(iconPath),
+    三条标记几何逐字取自资产:
+      markPaths.length === 3 && iconPaths.length === 3 && markPaths.every((path) => iconPaths.includes(path)),
+  })
+
+  // —— P9/P10：发布字段 ——
+  // `exports["./package.json"]` 不是装饰：app-boot 用 `<包名>/package.json` 读 `icon` 与兜底文案
+  // （dsh-app-boot/lib/index.js:1974），没暴露就是拿不到图标。
+  checkAll('P9 不是 private 包、publishConfig.access == public、exports 暴露 ./package.json', {
+    '无 private 字段': manifest.private === undefined,
+    'publishConfig.access == public': manifest.publishConfig?.access === 'public',
+    'exports ./package.json': typeof manifest.exports?.['./package.json'] === 'string',
+  })
+  // 兼容性只看 `@deepseek-ai/dsh-*` peer：钉死它们会让每次 DSH 升级都变成"整个 bundle 被 skip"
+  // （publish-plan §2）。`engines.node` 则是自检自己的前提（Node ≥22.18 的类型擦除）。
+  const peers = Object.keys(manifest.peerDependencies ?? {})
+  checkAll('P10 peerDependencies 只有 @deepseek-ai/cordis（不许钉 @deepseek-ai/dsh-*），engines.node 存在', {
+    '只有一个 peer 且是 cordis': peers.length === 1 && peers[0] === '@deepseek-ai/cordis',
+    'engines.node 非空': typeof manifest.engines?.node === 'string' && manifest.engines.node !== '',
+  })
 }
 //#endregion
 

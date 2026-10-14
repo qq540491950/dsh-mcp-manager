@@ -1,0 +1,18 @@
+# dsh-mcp-manager bundle 自带的补丁层（`package.json` 的 `dsh.bundle.patch` 指向本文件）。
+#
+# 两行都在**同一个 `insert:` 列表**里：
+#   · `mcp-manager`（cordis:group）是**数据容器** —— 所有 MCP 服务器都是它 config 数组里的一行。
+#     插件只读写这个数组，从不增删 Loader 条目（AGENTS 2.3 / 2.4）。
+#   · 第二行才是插件自身的 Loader 行。
+#
+# ⚠️ 两行都必须写在 `insert:` 下，**不能**写成顶层的 `- id: X`：顶层 `- id: X` 是"覆写已存在条目"，
+#    目标不存在时 `applyEntryPatches` 会直接 warn 并丢弃（README 2.3）——bundle 装上了却没有这一行，
+#    表现就是"设置里没有 MCP 页"。自检 P2 专门守住这一点。
+#
+# profile 层随后可以写 `- id: mcp-manager` 覆写行来落服务器列表（补丁层在 bundle 层之后应用）。
+- insert:
+    - id: mcp-manager # 必须等于 src/shared/constants.ts 的 GROUP_ID
+      name: 'cordis:group'
+      config: []
+    - id: dsh-mcp-manager # Loader 条目 id（profile 里的 include:dsh-mcp-manager 就是它）
+      name: '@qq540491950/dsh-mcp-manager' # 必须等于 package.json 的 name（自检 P4）

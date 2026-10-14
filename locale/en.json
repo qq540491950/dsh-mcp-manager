@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "MCP Manager",
+    "description": "Manage MCP servers from a settings page: add, edit, enable/disable, probe connectivity, list tools."
+  }
+}
