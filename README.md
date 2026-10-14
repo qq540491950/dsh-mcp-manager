@@ -286,7 +286,15 @@ plugin_manager(action:'remove_bundle', target:'@qq540491950/dsh-mcp-manager')
 
 上面这一行就是"它到底能不能用"的全部实测；未跑的部分（npm 渠道 / `.tgz` URL / 卸载回归）见 §7.2。
 
-### 5.6 让 MCP 不依赖插件（推荐）
+### 5.6 ❌ 不要用"profile 也声明一份容器"来换取卸载安全（2026-10-14 实测推翻本节原内容）
+
+> **本节原来的内容已作废，请不要照做。** 实测：bundle 与 profile 各声明一份同 id 的容器行，会让
+> `configEditor` 写盘前的自检（`dsh-config-editor:122` 的 `flatten().find()`，而 `:12` 的 `flatten`
+> **不去重**）取到 bundle 那条**空** config → **保存 / 启停 / 删除全部抛**
+> 「Configuration for mcp-manager is overridden by a home patch or command-line overlay」。
+> **读取不受影响**（运行时按 id 原地更新，取到的是后一条），所以页面看着完全正常、问题极隐蔽。
+> 硬约束：容器必须**只被一份 patch 声明**，且这一份不能由管理插件包提供（否则卸载即失去）。
+> 正确的形态见 §5.1 的安装说明。
 
 在 profile 的 `cordis.patch.yml` 里加这一行（`id` 必须等于 `src/shared/constants.ts` 的 `GROUP_ID`）：
 
