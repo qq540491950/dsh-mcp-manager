@@ -266,6 +266,8 @@ plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manag
 
 ⚠️ **装/卸 bundle 与容器行无关**，这是 v0.1.1 的设计目的：容器在 profile 里，插件包只带插件行。唯一要守的是"**容器只能声明一次**"——profile 里那一份之外，任何地方（bundle patch、home patch、`--patch` 覆盖层）再出现一份同 id 的 insert 行，都会让 `configEditor` 写盘前的自检取到先出现的空 config，于是保存/启停/删除全部报错（§5.6 有复现细节）。升级插件后**宿主半边仍需重启 DSH**（§6.2）。
 
+⚠️ **但 v0.1.0 → v0.1.1 这一步有个陷阱，走法只有一条：就地装，不要卸载。** v0.1.0 的 patch 里声明了容器行；容器现在由 profile 提供、条目始终活着，于是卸载时的"这个 bundle 的声明是否还在运行时里"检查（`dsh-plugin-manager/lib/index.js:1849-1855`，按 `id` + `name` 匹配）命中容器行 → 判 **`bundle-in-use`** 并拒绝，profile 保持原样（所以卸载失败后什么都没坏）。就地装 v0.1.1 后，该 bundle 的声明只剩插件行，卸载恢复正常。想"先卸旧版"只有一条路：临时把 profile 那行容器删掉 → 卸载 → 装新版 → **再把容器行加回来**（中间 MCP 会掉线，不推荐）。
+
 ### 5.4 一键安装命令（bundle 形态）
 
 ```text
@@ -278,9 +280,18 @@ plugin_manager(action:'install_bundle', target:'https://github.com/qq540491950/d
 # 只有开发机才有的本地目录形式（改完源码立刻试，不用先发布）
 plugin_manager(action:'install_bundle', target:'D:\project\dsh-plugins\dsh-mcp-manager')
 
-# 升级 / 回滚：先卸再装（同一个 spec 重复装会报 ambiguous-install）
-# v0.1.1 起卸载**不再影响 MCP**：容器与服务器列表都在 profile 里，卸载只是拿掉插件行
-# （页面随之消失）。反过来，升级前请确认 profile 里那份容器行还在（§5.6）。
+# 升级：**就地装新版，不要先卸**（换 tag 就是换 spec：`dsh-plugin-manager` 用
+# "依赖串变了"判定装上了哪个包，所以 v0.1.0 → v0.1.1 直接装即可；返回 restart-required
+# 是正常的 —— 宿主半边变了，装完重启一次 DSH）。
+plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manager#v0.1.1')
+
+# ⚠️ 从 v0.1.0 升上来时**别先卸载**：v0.1.0 的自带 patch 里声明了容器行，而容器现在由
+#    profile 提供、条目一直活着 —— 卸载检查（dsh-plugin-manager/lib/types/index.js:640-666，
+#    按 id+name 匹配"这个 bundle 声明过的行还在不在运行时里"，不看来源层）会判
+#    **bundle-in-use** 并拒绝（GUI 文案「其他配置仍在使用这个组合包的组件」），profile 不动。
+#    就地装到 v0.1.1 之后，该 bundle 的声明只剩插件行，卸载就恢复正常（§5.6）。
+
+# 卸载（v0.1.1 起）：只拿掉插件行，「设置 → MCP」那一页消失，**MCP 照常工作**
 plugin_manager(action:'remove_bundle', target:'@qq540491950/dsh-mcp-manager')
 ```
 
@@ -384,6 +395,7 @@ pnpm verify                 # = node tools/verify.ts
 4. **导航那一格的 MCP 标记没在真实界面里点过**：离线侧已证明几何（A32–A38）与假 DOM 三条路径（C12–C17），缺"真机打开设置面板，齿轮确实变成 MCP 标记"这一环。
 5. **「停用 → 再启用之后自动复查」没在真机浏览器里点过**：离线 D38–D41 已断言请求序列与两条边界；2026-10-14 已重启 DSH（宿主半边随 bundle 重新加载，`probe` 能力应当就位），但"点完「启用」后约 1s 内那一行变色"仍未逐一点过。
 6. **卸载回归（`remove_bundle`）没跑**：装是实测过的（§5.5），卸没有。**v0.1.1 的设计目标就是让这一步与 MCP 无关**：容器与服务器列表都在 profile 里，卸载只拿掉插件行 → **MCP 照常工作**，只是「设置 → MCP」那一页随之消失。这一结论目前是**离线**证据（逐字抄 `applyEntryPatches`/`flatten`，"卸载后"合成 = 1 行容器 + 3 台服务器，写盘前断言通过），没实跑过 `remove_bundle`。
+   已知的**卸载被拒**情形（离线复现，逐字抄 `removeBundle` 的判定式）：**v0.1.0 + profile 已有容器行 → `bundle-in-use`**（该 bundle 声明过容器行，而容器现在永远活着）；v0.1.0 + profile 无容器行 → 允许；**v0.1.1 + profile 有容器行 → 允许**。所以从 v0.1.0 升上来要**就地装**，别先卸（§5.4）。
    反例仍要记住：容器若写在 bundle 里（v0.1.0 的形态），卸载 = 容器消失 = 承载列表的覆写行被判 `not found` 整条丢弃 → 三台停止加载（配置仍在文件里、装回即恢复）。这就是 v0.1.1 改归属的原因，也是**别再把容器搬回包里**的理由。
 7. **npm 渠道没跑**：`npm publish` 与"用 registry 包名再装一次"都没做；本轮只走 GitHub（见 [docs/github-release-plan.md](docs/github-release-plan.md) §0）。
 8. **Release 资产 `.tgz` 的 URL 安装没跑**：`github:` spec 已实测；纯 HTTPS 的 `.tgz` 路线只做了 `npm pack` 内容审查与本地 git 依赖的对照。

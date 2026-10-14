@@ -200,24 +200,34 @@ plugin_manager(action:'install_bundle', target:'D:\project\dsh-plugins\dsh-mcp-m
 
 ## 6. G5 升级与回滚
 
-**用户侧升级**：
+**用户侧升级**（**v0.1.0 → v0.1.1 必须就地装，不要先卸**）：
 
 ```text
-plugin_manager(action:'remove_bundle', target:'@qq540491950/dsh-mcp-manager')
 plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manager#v0.1.1')
 ```
 
-先卸再装是**刻意的**：同一个 spec 重复安装会报 `ambiguous-install`（依赖没变化 → 安装器找不到"新装的那一个"，`:1779-1782`）。换成新 tag 通常能绕过，但显式先卸最稳。升级后**宿主半边仍需重启 DSH**。
+为什么不再"先卸再装"：①换 tag 本身就是换 spec —— 安装器用"依赖串变了"判定装上了哪个包
+（`:1778-1782`），所以**同 spec 重复装才**是 `ambiguous-install`，升级不会；②**先卸会失败**：
+下面那条 `bundle-in-use` 陷阱。就地装返回 `restart-required`（`:1801`，包本来就是依赖）是正常的
+—— 宿主半边变了，**装完重启一次 DSH**。
 
-⚠️ **v0.1.1 起"先卸再装"与 MCP 无关，可以无窗口完成**：容器 `mcp-manager` 由 **profile** 声明
-（README §5.6），插件包里只有插件行。所以：
+⚠️ **陷阱（源码判定式 + 离线复现；本机 2026-10-14 的卸载尝试即失败）**：profile 里已经有容器行时，
+卸载 **v0.1.0** 会失败并报 `bundle-in-use`（GUI 文案：「其他配置仍在使用这个组合包的组件」）。机制：
+`removeBundle` 在禁用 bundle、reload 之后检查"**这个 bundle patch 声明过的行**是否还有一个活着的条目"
+（`lib/types/index.js:640-666`，按 `row.id` + `row.name` 匹配，**不看这一行来自哪一层**）。
+v0.1.0 的 patch 声明了容器行 `mcp-manager`/`cordis:group`，而容器现在由 profile 提供、永远活着
+→ 命中 → 拒绝（profile 的 `package.json` 实测未被改动）。**就地装到 v0.1.1 后它的声明只剩插件行，
+卸载恢复正常**（离线复现三种组合：v0.1.0+容器行 → 拒绝；v0.1.0+无容器行 → 允许；v0.1.1+容器行 → 允许）。
+要"先卸旧版"只有一条路：**临时删掉 profile 那行容器 → 卸载 → 装新版 → 再把容器行加回来**
+（中间 MCP 会掉线，不推荐）。
 
-- **装了 v0.1.1 之后**：卸载只是拿掉插件行 → 容器与服务器列表留在 profile 里 → **升级/卸载全程无掉线窗口**。
-  离线复现（逐字抄 `applyEntryPatches`/`flatten`，喂真实 patch）：「卸载后」合成 = 1 行容器 + 3 台服务器。
-- **还在 v0.1.0 时**：容器由 bundle 声明 → 先卸再装之间容器会消失，`- id: mcp-manager` 覆写行被
+⚠️ **v0.1.1 起装/卸都不会让 MCP 掉线**：容器 `mcp-manager` 由 **profile** 声明（README §5.6），
+插件包里只有插件行。离线复现（逐字抄 `applyEntryPatches`/`flatten`，喂真实 patch）：
+「卸载后」合成 = 1 行容器 + 3 台服务器，写盘前断言也通过。
+
+- **还在 v0.1.0 时**（且 profile 还没有容器行）：卸载会让容器消失，`- id: mcp-manager` 覆写行被
   `applyEntryPatches` 判 `not found` 整条丢弃（`cordis-plugin-include:90-94`），三台服务器停止加载
-  （**配置不丢**，装回来即恢复）。所以**第一次升级到 v0.1.1 之前，先确认 profile 里已经有那行容器**
-  （README §5.6；本机 2026-10-14 已加好），这样连这一次升级也没有窗口。
+  （**配置不丢**，装回来即恢复）。所以第一次升级前请先确认 profile 里有那行容器（本机已加好）。
 - ⚠️ **别把容器搬回包里**：bundle 自带容器 = 卸载即掉线；而且 profile 与 bundle 各一份会让
   `configEditor` 写盘前自检取到先出现的空 config → 保存/启停/删除全部抛
   `overridden by a home patch or command-line overlay`（读取与 MCP 运行不受影响，很隐蔽）。
@@ -254,7 +264,8 @@ profile 被改坏时用 G2 第 1 步的 `.bak` 还原（`package.json` + `cordis
 | `pendingBuilds` 列出本包 | 包里被加了 `prepare` / `postinstall` | 删掉脚本，靠已提交的 `lib/**` 出货（§0 硬约束 1） |
 | 装上了但设置里没有 MCP 页 | `files` 白名单漏了 `cordis.patch.yml`；或 profile 里旧的路径行与 bundle 行**同 id 重复**（后插入者赢，bundle 行被静默盖掉）；或 **profile 里缺容器行**（v0.1.1 起容器不由包提供） | 用 `cordis_inspect_query(host, Config, listConfigs, {name:'@qq540491950/dsh-mcp-manager'})` 查；**不要**用 `--dump-config`（见下一行）；按 §3 第 3 步清重复行；缺容器就把页面给出的那一行粘进 `cordis.patch.yml` |
 | 页面提示「找不到 group 条目「mcp-manager」（cordis:group）」 | profile 里没有容器行（v0.1.1 的容器前置条件） | 把提示里给出的 `- insert: [{id: mcp-manager, name: 'cordis:group', config: []}]` 粘进 profile 的 `cordis.patch.yml`，保存即热重载，**不用重启** |
-| 保存 / 启停 / 删除报 `Configuration for "mcp-manager" is overridden by a home patch or command-line overlay`（读取与 MCP 运行却正常） | 容器行被声明了**两份**（profile 一份 + 别处一份，典型是 v0.1.0 的 bundle 自带一份）；`configEditor` 写盘前用 `flatten().find()` 取到**先出现的空 config**（`dsh-config-editor:12/122`，flatten 不去重） | 保证只有一份：v0.1.1 的包不自带容器行，profile 里留那一行。过渡期（装了 v0.1.0 + profile 也有一份）**装回 v0.1.1 即消失**，不必改 profile |
+| 卸载 v0.1.0 报 `bundle-in-use`（profile 未被动过） | profile 里已有容器行：v0.1.0 的 patch 声明过 `mcp-manager`/`cordis:group`，而容器现在由 profile 提供、条目一直活着 → 卸载检查（`:1850-1855`，按 id+name 匹配、不看来源层）判"还在用" | **不要卸载**：就地 `install_bundle` 到 v0.1.1（换 tag = 换 spec，`:1778-1782`；返回 `restart-required` 正常），装完重启一次。之后卸载恢复正常 |
+| 保存 / 启停 / 删除报 `Configuration for "mcp-manager" is overridden by a home patch or command-line overlay`（读取与 MCP 运行却正常） | 容器行被声明了**两份**（profile 一份 + 别处一份，典型是 v0.1.0 的 bundle 自带一份）；`configEditor` 写盘前用 `flatten().find()` 取到**先出现的空 config**（`dsh-config-editor:12/122`，flatten 不去重） | 保证只有一份：v0.1.1 的包不自带容器行，profile 里留那一行。过渡期（装了 v0.1.0 + profile 也有一份）**就地装回 v0.1.1 即消失**，不必改 profile |
 | 卸载插件后 `mcp__*` 工具全没了 | 机器上装的是 **v0.1.0**（容器随包走） | 升级到 v0.1.1 并在 profile 里补上容器行；此后卸载只拿掉插件行，MCP 不受影响（README §5.6） |
 | 装完"看着毫无变化"（条目总数没涨、按包名查不到） | 同 id 重复把 bundle 行盖住了；或那次 profile `package.json` 变更没被 watcher 收到 | 删掉旧接线；或改一下 `cordis.patch.yml`（会触发重读 `dsh.profile.bundles`）；还不行就重启 DSH |
 | `--dump-config` 报 `profile "desktop" is managed exclusively by the Electron application` | 应用托管的 profile 不允许 CLI 读 | 另建一次性 profile 验层序（publish-plan §5 V2），或改用运行时四查 |

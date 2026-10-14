@@ -249,7 +249,22 @@ plugin_manager(action: 'install_bundle', target: 'D:\\project\\dsh-plugins\\dsh-
 两份同 id 的 insert 行会让 `configEditor` 写盘前自检取到**先出现的空 config** → 保存/启停/删除全部抛
 `Configuration for "mcp-manager" is overridden by a home patch or command-line overlay`
 （读取不受影响，MCP 照常运行）。离线复现：2 行 → `flatten().find().config` 是 0 台、待提交 3 台。
-**重装到 v0.1.1 即刻消失**，不需要动 profile。
+**就地装到 v0.1.1 即刻消失**，不需要动 profile。
+
+⚠️ **v0.1.0 → v0.1.1 的升级不要走"先卸再装"**（源码判定式 + 离线复现；2026-10-14 本机卸载尝试即失败）：
+profile 里已有容器行时，卸载 v0.1.0 会报 **`bundle-in-use`**（GUI 文案「其他配置仍在使用这个组合包的组件」）
+—— `removeBundle` 在禁用 + reload 后检查"这个 bundle patch 声明过的行是否还有活着的条目"
+（`dsh-plugin-manager/lib/types/index.js:640-666`，按 `row.id` + `row.name` 匹配，**不看那一行来自哪一层**），
+而 v0.1.0 声明过容器行、容器现在由 profile 提供 → 永远命中 → 拒绝（profile 实测未被改动）。
+正确走法是**就地装**：
+
+```
+plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manager#v0.1.1')
+```
+
+换 tag 就是换 spec（`:1778-1782` 用"依赖串变了"判定装上了哪个包），因此不会 `ambiguous-install`；
+包本来就是依赖，返回 `restart-required`（`:1801`）是正常的 —— 宿主半边变了，装完重启一次 DSH。
+装到 v0.1.1 后其声明只剩插件行，卸载检查恢复正常。
 
 所以这一格要连"**服务器是否随之下线、装回后是否自动恢复**"一起验，不能只看行与座位。
 
