@@ -268,6 +268,9 @@ plugin_manager(action:'install_bundle', target:'https://github.com/qq540491950/d
 plugin_manager(action:'install_bundle', target:'D:\project\dsh-plugins\dsh-mcp-manager')
 
 # 升级 / 回滚：先卸再装（同一个 spec 重复装会报 ambiguous-install）
+# ⚠️ 卸载会一并拿掉 bundle 自带的 group 容器 mcp-manager —— 承载服务器列表的
+#    `- id: mcp-manager` 覆写行随即失去目标、被 applyEntryPatches 整条丢弃，
+#    三台 MCP 服务器会停止加载。**配置不丢**（见 §7.2 第 6 条）。
 plugin_manager(action:'remove_bundle', target:'@qq540491950/dsh-mcp-manager')
 ```
 
@@ -348,7 +351,7 @@ pnpm verify                 # = node tools/verify.ts
 3. **group 子条目当前没有显式 `id`**（Loader 自动生成 `ef60a0d1` 这类十六进制 id）；`serverName` 重命名按数组下标定位，会保留原 `rowId`，改的是 `insert:` 声明而非覆写行时可能新建条目。
 4. **导航那一格的 MCP 标记没在真实界面里点过**：离线侧已证明几何（A32–A38）与假 DOM 三条路径（C12–C17），缺"真机打开设置面板，齿轮确实变成 MCP 标记"这一环。
 5. **「停用 → 再启用之后自动复查」没在真机浏览器里点过**：离线 D38–D41 已断言请求序列与两条边界；2026-10-14 已重启 DSH（宿主半边随 bundle 重新加载，`probe` 能力应当就位），但"点完「启用」后约 1s 内那一行变色"仍未逐一点过。
-6. **卸载回归（`remove_bundle`）没跑**：装是实测过的（§5.5），卸没有 —— 卸完应当是 `include:dsh-mcp-manager` 行与 `settings.section` 座位同时消失、profile 回到装前状态。
+6. **卸载回归（`remove_bundle`）没跑**：装是实测过的（§5.5），卸没有。**卸载的真实后果**（源码 + 机制推导，未实跑）：bundle 一卸，它自带的 group 容器 `mcp-manager` 就没了，而 profile 里承载服务器列表的 `- id: mcp-manager` 覆写行还在 → `applyEntryPatches` 判 **not found 整条丢弃** → **三台 MCP 服务器停止加载**（模型看不到 `mcp__*` 工具）。**但配置一个字都不会丢**：服务器定义、`headers`、key 全都原样留在 `cordis.patch.yml` 里，重新装回 bundle（或把 group 的 `- insert:` 段加回去）**立即恢复，不用重输任何东西**。"先卸再装"式升级，中间那几秒同样有这一次掉线。
 7. **npm 渠道没跑**：`npm publish` 与"用 registry 包名再装一次"都没做；本轮只走 GitHub（见 [docs/github-release-plan.md](docs/github-release-plan.md) §0）。
 8. **Release 资产 `.tgz` 的 URL 安装没跑**：`github:` spec 已实测；纯 HTTPS 的 `.tgz` 路线只做了 `npm pack` 内容审查与本地 git 依赖的对照。
 9. **逐按钮的点击回归没做**：页面渲染与数据读取已确认正常（重启前后各一次），但启停 / 删除 / 检测 / 刷新这几个按钮本轮没有逐个点过。

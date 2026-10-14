@@ -215,7 +215,12 @@ plugin_manager(action: 'install_bundle', target: 'D:\\project\\dsh-plugins\\dsh-
 ### V5 卸载回归
 
 `plugin_manager(action: 'remove_bundle', target: '@qq540491950/dsh-mcp-manager')`
-→ 再查 V4 的 1/2：行与座位都消失、profile 回到初态。
+→ 再查 V4 的 1/2：行与座位都消失。
+
+⚠️ **卸载的连带后果**（2026-10-14 顺带查出的机制，未实跑）：group 容器 `mcp-manager` 由 bundle 自带，
+卸掉后 profile 里那条 `- id: mcp-manager` 覆写行就失去目标、被 `applyEntryPatches` 整条丢弃
+（`cordis-plugin-include:90-94`）→ **服务器停止加载**（配置仍在文件里，装回来即恢复）。
+所以这一格要连"**服务器是否随之下线、装回后是否自动恢复**"一起验，不能只看行与座位。
 
 ### ★ 曾经唯一未实测的假设 —— **2026-10-14 已证实**
 

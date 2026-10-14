@@ -199,6 +199,8 @@ plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manag
 
 先卸再装是**刻意的**：同一个 spec 重复安装会报 `ambiguous-install`（依赖没变化 → 安装器找不到"新装的那一个"，`:1779-1782`）。换成新 tag 通常能绕过，但显式先卸最稳。升级后**宿主半边仍需重启 DSH**。
 
+⚠️ **"先卸再装"中间有一段 MCP 服务器掉线的窗口**：group 容器 `mcp-manager` 由 bundle 自带，卸掉后 profile 里那条 `- id: mcp-manager` 覆写行失去目标、被 `applyEntryPatches` **整条丢弃**（`cordis-plugin-include:90-94`）→ 三台服务器停止加载（**配置不丢**，装回来即恢复）。想彻底避开这段窗口，就在 profile 里**保留一份手写的 group `- insert:` 行**（与 bundle 那行同 id；后插入者赢，功能上没问题，代价是组合里多一行同 id —— 见 §3 第 3 步）。
+
 **回滚**：
 
 ```text
@@ -206,7 +208,9 @@ plugin_manager(action:'remove_bundle', target:'@qq540491950/dsh-mcp-manager')
 plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manager#v0.1.0')
 ```
 
-profile 被改坏时用 G2 第 1 步的 `.bak` 还原（`package.json` + `cordis.patch.yml`），再按 §3 第 2 步清一下重复行。
+profile 被改坏时用 G2 第 1 步的 `.bak` 还原（`package.json` + `cordis.patch.yml`），再按 §3 第 3 步清一下重复行。
+**只想把 MCP 服务器拿回来**（不重装 bundle 也行）：把 group 的 `- insert:` 段加回 `cordis.patch.yml` 即可 ——
+它比 bundle 那行后插入、会赢，服务器立刻回来（那段原文见 publish-plan §3.1，或本机 profile 目录里的 `.bak-*`）。
 
 **维护者侧"撤回一个版本"**：**不要动已有 tag**。要么发 `v0.1.1` 修好，要么 `git revert` 后新开 tag；同时在 README 的兼容矩阵里标注该版本作废。
 
