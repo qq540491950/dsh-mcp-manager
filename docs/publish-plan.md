@@ -87,7 +87,7 @@
   "repository": { "type": "git", "url": "git+https://github.com/qq540491950/dsh-mcp-manager.git" },
   "publishConfig": { "access": "public" },
   "type": "module",
-  "engines": { "node": ">=22.18", "dsh": "0.2.0-rc.2" },
+  "engines": { "node": ">=22.18", "dsh": "^0.2.0-rc.2" },
   "main": "lib/index.js",
   "types": "lib/types/host/index.d.ts",
   "exports": {
@@ -167,7 +167,7 @@
 - `locale/en.json` 与 `locale/zh.json` 都存在且都有 `meta.title` / `meta.description`（P7）；
 - `icon` 指向的文件存在、是包内相对路径、≤ 256 KiB、类型合法（P8）；
 - `private` 字段**不存在**、`publishConfig.access == public`、`exports` 暴露 `./package.json`（P9）；
-- `peerDependencies` 只有 `@deepseek-ai/cordis`，且 `engines.node` 存在（P10）。
+- `peerDependencies` 只有 `@deepseek-ai/cordis`，`engines.node` 存在，且 `engines.dsh` 是**范围**而非精确 pin（P10；精确 pin 在运行时升一个 rc 后会被 `evaluatePluginCompatibility` 判 incompatible，git/tarball 装完即回滚）。
 
 每条新断言都要做**反向验证**（注入违规 → 确认精确报错 → 还原）。
 

@@ -12,6 +12,11 @@
 > ⚠️ **v0.1.1 起多了一条前置条件（G2 第 0 步）**：承载 MCP 服务器的容器条目由 **profile** 声明，
 > 不由插件包声明（理由与那 4 行 YAML 见 [README](../README.md) §5.6）。装插件之前 profile 里就该有
 > 那一行；装完没有页面入口时才需要人来补（页面会把整行给出来）。
+>
+> 📌 **版本记录**：本文写于 v0.1.1 发布时，正文里的版本号是当时的实测记录。当前最新为 **v0.1.2**，
+> 只改了一处 —— `engines.dsh` 从精确 pin `0.2.0-rc.2` 放宽为 `^0.2.0-rc.2`（否则在 DSH 0.2.1-rc.2
+> 上会被 `evaluatePluginCompatibility` 判 `incompatible-version`，git/tarball 装完即回滚）。
+> 照抄命令时把 `#v0.1.1` 换成当前 tag；README §5.4 是唯一随版本更新的命令清单。
 
 ---
 
@@ -81,7 +86,7 @@ tar -tzf qq540491950-dsh-mcp-manager-0.1.0.tgz
    - 多了第二份：`configEditor` 写盘前自检取到先出现的空 config → **保存 / 启停 / 删除全部报错**
      （`overridden by a home patch or command-line overlay`），而读取与 MCP 运行看着都正常。
 1. **备份 profile**：`profiles/<名字>/package.json` 与 `cordis.patch.yml` → 带时间戳 `.bak`。
-2. **安装**：`plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manager#v0.1.1')`（或本地绝对路径形式）。这一步只加一层插件行，任何失败都还能干净回滚。
+2. **安装**：`plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manager#v0.1.2')`（或本地绝对路径形式）。这一步只加一层插件行，任何失败都还能干净回滚。
 3. **删掉旧路径行**（确认第 4 步通过后再做）：删 `- id: dsh-mcp-manager, name: file:///…` 那条；**保留容器行与 `- id: mcp-manager` 覆写行**（服务器列表在覆写行里，容器是它的目标）。
    - **为什么必须留容器行**（源码依据 `cordis-plugin-include:90-94`）：容器一没，覆写行就失去目标、被判 **not found 并整条丢弃**；后果不是"少一页"，而是**三台 MCP 服务器一起掉线**。
    - **并且不要反过来把容器写进 bundle**（v0.1.0 的形态）：那样"卸载插件 = MCP 掉线"，正是 v0.1.1 要消除的耦合。
@@ -200,10 +205,10 @@ plugin_manager(action:'install_bundle', target:'D:\project\dsh-plugins\dsh-mcp-m
 
 ## 6. G5 升级与回滚
 
-**用户侧升级**（**v0.1.0 → v0.1.1 必须就地装，不要先卸**）：
+**用户侧升级**（**v0.1.0 → v0.1.1 必须就地装，不要先卸**；v0.1.1 → v0.1.2 同样是就地装）：
 
 ```text
-plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manager#v0.1.1')
+plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manager#v0.1.2')
 ```
 
 为什么不再"先卸再装"：①换 tag 本身就是换 spec —— 安装器用"依赖串变了"判定装上了哪个包
@@ -284,6 +289,8 @@ profile 被改坏时用 G2 第 1 步的 `.bak` 还原（`package.json` + `cordis
 - [x] G6（v0.1.1）容器归属改造：`cordis.patch.yml` 只留插件行（P2/P3 反过来守"不许出现容器 id"）、缺容器时两半边给出同一行可照抄的 YAML（P11）、`pnpm check` 全绿（**255 条**）+ 新断言注入式反向验证（3 处注入 → 精确报错 → 还原）；profile 侧容器行已加（备份 + 两个真实解析器校验 + 四种状态的离线合成复现）
 - [x] G7（v0.1.1）真机安装完成（2026-10-14，GUI「设置 → 插件 → 添加插件」填 `github:qq540491950/dsh-mcp-manager#v0.1.1`）：**未重启即生效**；`include:dsh-mcp-manager` 1 条（name = 包名）、座位 `{id:'mcp',order:900,active:true}` 只一格、3 台 `dsh-mcp-client` 仍在挂、已装包 patch 只有插件行（正文无容器 id）、合成 = 1 行容器 + 3 台（写盘前断言 3/3）
      另有一次**手工卸载实测**（管理器同一套动作：`pnpm remove` + 摘 `dsh.profile.bundles`）：插件条目归 0、`mcp` 座位消失，而 `@deepseek-ai/dsh-mcp-client` 仍 3 条 → **卸载不影响 MCP** 这一设计目的在真机上成立（GUI 的 `remove_bundle` 本身仍未点过，见 G5）
+- [x] G8（v0.1.2）`engines.dsh` 从精确 pin `0.2.0-rc.2` 放宽为 `^0.2.0-rc.2`；自检 P10 增加"`engines.dsh` 必须是范围"断言并做反向验证（注入精确 pin → 精确报错 → 还原）
+- [ ] G9（v0.1.2）真机安装验收 —— **没跑**（待用户手动 `install_bundle` 后按 §3 四查）
 - [x] README 写清：安装命令（§5.4）、兼容矩阵（§5.5）、升级后要重启宿主半边
 
 ---

@@ -2861,11 +2861,22 @@ check(
   })
   // 兼容性只看 `@deepseek-ai/dsh-*` peer：钉死它们会让每次 DSH 升级都变成"整个 bundle 被 skip"
   // （publish-plan §2）。`engines.node` 则是自检自己的前提（Node ≥22.18 的类型擦除）。
+  // `engines.dsh` 必须是**范围**，不能是精确版本：app-boot 的 `evaluatePluginCompatibility` 用
+  // `semver.satisfies(runtime, engines.dsh)` 判定，精确 pin（如 "0.2.0-rc.2"）在运行时升一个小
+  // rc（0.2.1-rc.2）后立刻判 incompatible —— git/tarball 是**装后判定**，会把刚装好的包回滚并
+  // 报 incompatible-version。真实事故：v0.1.1 就是这么被挡在 0.2.1-rc.2 门外的。
+  const enginesDsh = manifest.engines?.dsh
+  const exactDshPin =
+    typeof enginesDsh === 'string' && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(enginesDsh.trim())
   const peers = Object.keys(manifest.peerDependencies ?? {})
-  checkAll('P10 peerDependencies 只有 @deepseek-ai/cordis（不许钉 @deepseek-ai/dsh-*），engines.node 存在', {
-    '只有一个 peer 且是 cordis': peers.length === 1 && peers[0] === '@deepseek-ai/cordis',
-    'engines.node 非空': typeof manifest.engines?.node === 'string' && manifest.engines.node !== '',
-  })
+  checkAll(
+    'P10 peerDependencies 只有 @deepseek-ai/cordis（不许钉 @deepseek-ai/dsh-*），engines.node 存在，engines.dsh 是范围',
+    {
+      '只有一个 peer 且是 cordis': peers.length === 1 && peers[0] === '@deepseek-ai/cordis',
+      'engines.node 非空': typeof manifest.engines?.node === 'string' && manifest.engines.node !== '',
+      'engines.dsh 是范围而非精确 pin': typeof enginesDsh === 'string' && enginesDsh.trim() !== '' && !exactDshPin,
+    },
+  )
 
   // —— P11：插件自己补不了容器行，两个半边必须把"要粘的那一行"原样给出来 ——
   // P2/P3 定了归属（容器归 profile），而 `ctx.configEditor` 只能写覆写行、`ctx.loader.create()`

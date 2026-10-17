@@ -259,7 +259,7 @@ tools/build.ts           esbuild 打包两半边 + 客户端包装 + 写构建�
 **npm 不是必须的**——`install_bundle` 的 `target` 认四种 spec（本机安装版 `parseInstallSpec`）：**注册表包名**、**绝对本地路径**、**git 地址**（`github:user/repo`、`git+https://…git`、`https://github.com/user/repo#ref`，也可 `gitlab:` / `bitbucket:` / `gist:`）、**tarball**（本地 `.tgz` / `.tar.gz`，或 `https://…/x.tgz`）。所以"只发在 GitHub"完全可行：
 
 ```text
-plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manager#v0.1.1')
+plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manager#v0.1.2')
 ```
 
 四条路线的取舍、前提与代价见 [docs/publish-plan.md](docs/publish-plan.md) §9；**从改造到 tag、Release、用户安装、升级回滚的完整步骤见 [docs/github-release-plan.md](docs/github-release-plan.md)**。GitHub 路线最要紧的三条：①仓库里 `package.json` 必须有 `dsh.bundle.patch`，且 **patch 文件与 `lib/**` 都要提交进仓库**（pnpm 拉的是仓库内容，不会替你构建）；②git/tarball 是**抓取之后才判定**是不是 bundle，不是 bundle 会先装上再回滚（本地路径与 registry 是**装前**就拒）；③GitHub 的 spec 会先跑一次 `git ls-remote` 预检（5s，`git` 要在 PATH 上）。
@@ -272,18 +272,18 @@ plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manag
 
 ```text
 # 主渠道：git + tag（用户机器上要有 git；GitHub 会先跑一次 5s 的 git ls-remote 预检）
-plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manager#v0.1.1')
+plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manager#v0.1.2')
 
 # 备选：Release 资产里的 .tgz（纯 HTTPS，不需要 git，也没有那个预检）
-plugin_manager(action:'install_bundle', target:'https://github.com/qq540491950/dsh-mcp-manager/releases/download/v0.1.1/qq540491950-dsh-mcp-manager-0.1.1.tgz')
+plugin_manager(action:'install_bundle', target:'https://github.com/qq540491950/dsh-mcp-manager/releases/download/v0.1.2/qq540491950-dsh-mcp-manager-0.1.2.tgz')
 
 # 只有开发机才有的本地目录形式（改完源码立刻试，不用先发布）
 plugin_manager(action:'install_bundle', target:'D:\project\dsh-plugins\dsh-mcp-manager')
 
 # 升级：**就地装新版，不要先卸**（换 tag 就是换 spec：`dsh-plugin-manager` 用
-# "依赖串变了"判定装上了哪个包，所以 v0.1.0 → v0.1.1 直接装即可；返回 restart-required
+# "依赖串变了"判定装上了哪个包，所以 v0.1.1 → v0.1.2 直接装即可；返回 restart-required
 # 是正常的 —— 宿主半边变了，装完重启一次 DSH）。
-plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manager#v0.1.1')
+plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manager#v0.1.2')
 
 # ⚠️ 从 v0.1.0 升上来时**别先卸载**：v0.1.0 的自带 patch 里声明了容器行，而容器现在由
 #    profile 提供、条目一直活着 —— 卸载检查（dsh-plugin-manager/lib/types/index.js:640-666，
@@ -297,14 +297,21 @@ plugin_manager(action:'remove_bundle', target:'@qq540491950/dsh-mcp-manager')
 
 三条写法的差别（谁要 git、装前判不判定、怎么钉版本）见 [docs/github-release-plan.md](docs/github-release-plan.md) §5。
 
+> **`engines.dsh` 必须是范围，不能是精确版本**（v0.1.2 起 `^0.2.0-rc.2`）。app-boot 的
+> `evaluatePluginCompatibility` 用 `semver.satisfies(runtime, engines.dsh)` 判定：精确 pin 会让
+> DSH 每升一个 rc 就被判 `incompatible-version`，而 git/tarball 是**装后判定**——刚装好的包会被
+> 回滚（`dsh-plugin-manager/lib/types/operations.js` 的 restore 分支）。v0.1.1 正是因此被
+> 0.2.1-rc.2 拒绝；自检 P10 现在反向守"不许退化成精确 pin"。
+
 ### 5.5 兼容矩阵（实测）
 
 | 插件版本 | 安装 spec | DSH | 结果 |
 |---|---|---|---|
 | `v0.1.0`（tag `v0.1.0`，commit `a078ac8`） | `github:qq540491950/dsh-mcp-manager#v0.1.0` | 0.2.0-rc.2（desktop profile） | ✅ 装上即生效（未重启）：旧手动接线删净后三台 MCP 服务器照常挂载、`mcp__context7__*` 工具在注册表；**重启 DSH 后仍然正常**。⚠️ 但这一版的容器行在包里，卸载即带走（§5.6） |
-| `v0.1.1`（tag `v0.1.1`，commit `dc1e253`） | `github:qq540491950/dsh-mcp-manager#v0.1.1`（GUI「设置 → 插件 → 添加插件 → 包名或地址」） | 0.2.0-rc.2（desktop profile） | ✅ **装上即生效（未重启）**，2026-10-14 真机全新安装：`include:dsh-mcp-manager` 1 条（name = 包名）、座位 `{id:'mcp',order:900,active:true}` 只一格、3 台 `dsh-mcp-client` 仍在挂、合成结果 = **1 行容器 + 3 台**（写盘前断言 3/3 → 保存/启停/删除均可写）。本版改动：patch 不再声明容器行、缺容器时提示给出可照抄的整行 |
+| `v0.1.1`（tag `v0.1.1`，commit `dc1e253`） | `github:qq540491950/dsh-mcp-manager#v0.1.1`（GUI「设置 → 插件 → 添加插件 → 包名或地址」） | 0.2.0-rc.2（desktop profile） | ✅ **装上即生效（未重启）**，2026-10-14 真机全新安装：`include:dsh-mcp-manager` 1 条（name = 包名）、座位 `{id:'mcp',order:900,active:true}` 只一格、3 台 `dsh-mcp-client` 仍在挂、合成结果 = **1 行容器 + 3 台**（写盘前断言 3/3 → 保存/启停/删除均可写）。本版改动：patch 不再声明容器行、缺容器时提示给出可照抄的整行。⚠️ 该版 `engines.dsh` 是**精确 pin** `0.2.0-rc.2`，在 0.2.1-rc.2 上会被判 `incompatible-version` |
+| `v0.1.2`（tag `v0.1.2`） | `github:qq540491950/dsh-mcp-manager#v0.1.2` | 0.2.1-rc.2（desktop profile） | ⚠️ **只放宽了 `engines.dsh`：`0.2.0-rc.2` → `^0.2.0-rc.2`**（其余文件与 v0.1.1 逐字节相同）。**未实测安装**：本轮只跑了 `node tools/verify.ts`（PASS）与新增 P10 断言的反向验证；真机安装验收待执行 `install_bundle` |
 
-上面两行就是"它到底能不能用"的全部实测；未跑的部分（npm 渠道 / `.tgz` URL / 卸载回归）见 §7.2。
+上面三行里前两行是"它到底能不能用"的实测；v0.1.2 目前只有自检结论、**没有真机安装证据**。未跑的部分（npm 渠道 / `.tgz` URL / 卸载回归）见 §7.2。
 
 ### 5.6 容器行归 profile（v0.1.1 起的唯一形态）
 
