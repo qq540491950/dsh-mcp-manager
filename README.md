@@ -16,11 +16,13 @@
 | 客户端 | `lib/client.js` | 往 `settings.section`（list 座位）注册一页，`order: 900` → 落在设置导航最下方；纯 `window.__ModuleLoader__` 懒 CJS bundle |
 | 宿主 | `lib/index.js` | `ctx.connection.fetch.register()` 开一条**自带鉴权的同源 HTTP 路由**（`/api/mcp-manager`）；`ctx.configEditor.edit()` 做**外科手术式的配置写入** |
 
-**数据模型的关键取舍**：所有 MCP 服务器放进**一个** `cordis:group` 条目的 config 数组。于是「增 / 删 / 改 / 启停」四件事全部退化为「重写这一个数组」，全部走官方的配置写入通道（§4）。这个容器条目**由插件 bundle 自带的补丁层声明**（v0.2.0 起，§5.6），所以装上就能用、用户不必手写 YAML；代价是卸载插件时容器随 bundle 一起消失 → MCP 停止加载（服务器列表仍在 profile 的 `- id: mcp-manager` 覆写行里，装回即恢复）。
+**数据模型（v0.3.0 起）**：每台 MCP 服务器都是 profile 补丁文件（`cordis.patch.yml`）里的**顶层 Loader 条目**，不再放进 `cordis:group` 容器：
+- **本插件新增**：以 `- insert: [ { id: mcp-<name>, name: '@deepseek-ai/dsh-mcp-client', config } ]` 形式写入；
+- **外部已有 MCP**（手写或市场插件写入）：显示来源标记为「外部」，可一键「接管」追加 `- id: X` 覆写行进行编辑或启停，原声明原封不动保留；点「取消接管」删除覆写行、恢复原配置；
+- **受控块写入**：由专用受控写入器只更新 profile 末尾由 `# >>> dsh-mcp-manager:managed` 围住的区域，块外用户手写内容逐字节未变；写前自动备份、使用 profile 文件锁防并发冲突；
+- **旧版平滑迁移**：如检测到旧版 `cordis:group` 容器里仍有数据，页面提示一键迁移至顶层 `insert`，并自动清空旧容器。
 
-**页面外还有服务器时也会说出来**：profile 补丁层里**顶层**的 `@deepseek-ai/dsh-mcp-client` 条目（例如插件市场替你写入的那一行）不在本页容器里，本页管不到，但它们**在跑**。页面会单列一块「页面外还有 N 台」把状态与工具数报出来，而不是让空态文案骗人说「还没有配置任何 MCP 服务器」。
-
-页面提供：服务器列表 + 状态四色 + 失败原因行 + 工具名单 + 行内启停/删除 + 表单增改 + 「检测」（向服务器发一次真实的 MCP `initialize`）。
+页面提供：顶层服务器列表（标注 insert/覆写/外部） + 状态四色 + 失败原因行 + 工具名单 + 行内启停/编辑/删除/接管/取消接管 + 「检测」连通握手。
 
 ---
 
@@ -118,52 +120,41 @@ ctx.inject(["slots"], (scope) => {
 
 ## 4. 本仓库的架构
 
-### 4.1 单一可编辑条目：`cordis:group`
+### 4.1 顶层条目模式与受控 marker 块（v0.3.0 起）
 
-`cordis:group` 是 Cordis 内置插件，它的 config 就是一份 `entryList`。把 MCP 服务器全放进它的 config 数组（**容器本身写在插件 bundle 自带的 `cordis.patch.yml` 里，列表写在 profile 的顶层覆写行里**——两者归属不同，理由见 §5.6）：
+每台 MCP 服务器都是一条顶层的 `@deepseek-ai/dsh-mcp-client` 条目，与官方模板及插件市场安装的 MCP 完全同形：
 
 ```yaml
+# profile 的 cordis.patch.yml 末尾受控块
+# >>> dsh-mcp-manager:managed
+# dsh-mcp-manager:manifest=[{"id":"mcp-context7","kind":"insert"},{"id":"magpie-mcp-dbx","kind":"override"}]
 - insert:
-    - id: mcp-manager
-      name: 'cordis:group'
+    - id: mcp-context7
+      name: '@deepseek-ai/dsh-mcp-client'
       config:
-        - name: '@deepseek-ai/dsh-mcp-client'
-          config:
-            serverName: context7
-            transport: streamable-http
-            url: https://mcp.context7.com/mcp
-            headers:
-              Authorization: "Bearer ..."
-        - name: '@deepseek-ai/dsh-mcp-client'
-          config: { serverName: fs, transport: stdio, command: npx, args: ['-y', 'pkg'] }
-        - name: '@deepseek-ai/dsh-mcp-client'
-          disabled: true            # ← 停用就是这么表达的
-          config: { serverName: old, transport: streamable-http, url: https://example.com/mcp }
-```
-
-| 操作 | 实现 |
-|---|---|
-| 列出 | 读 group 条目的 config 数组 + 扫活着的 MCP 子条目拿状态与工具 |
-| 新增 / 删除 / 修改 | 数组加一项 / 去一项 / 改一项（整数组重写，只给表单用） |
-| 启停 | 该项的 `disabled: true/false`——**行内操作走宿主定点改，不回传整数组**（AGENTS 2.5） |
-
-**实际落盘形态**：容器来自**插件 bundle 自带的补丁层**（§5.6，`config: []`），服务器列表写在 profile 的**顶层覆写行**里。于是"声明容器"这件事一次性做在包里，之后所有增删改都只动列表那一条（§4.2 解释了为什么这条能写进去）：
-
-```yaml
-# ① 插件 bundle 的 cordis.patch.yml（随包安装，用户不用写）
-- insert:
-    - id: mcp-manager
-      name: 'cordis:group'
-      config: []          # 容器留空
-
-# ② profile 的 cordis.patch.yml（插件写盘的目标行；覆写是整数组替换）
-- id: mcp-manager
+        serverName: context7
+        transport: streamable-http
+        url: https://mcp.context7.com/mcp
+        headers:
+          Authorization: !!js "`Bearer ${process.env.MCP_TOKEN}`"
+- id: magpie-mcp-dbx
+  name: '@deepseek-ai/dsh-mcp-client'
   config:
-    - name: '@deepseek-ai/dsh-mcp-client'
-      config: { serverName: context7, transport: streamable-http, url: https://mcp.context7.com/mcp }
+    serverName: dbx
+    transport: streamable-http
+    url: https://api.dbx.example.com/mcp
+# <<< dsh-mcp-manager:managed
 ```
 
-**为什么不用 `ctx.loader.create()/remove()` 动态加条目**：Loader 的持久化实现 `Include.write()` 是 `this.writeFile(this.root.data)`，而 `_writeFile` 是 `yaml.dump(整份 config)`——**整体重写**，会压平用户手写的 `insert:` 分节，是不可接受的破坏性写入（AGENTS 2.3）。
+| 操作 | 本插件创建的 insert 条目 | 外部已有 MCP 条目 |
+|---|---|---|
+| 显示 | 正常列出，标记为 `insert` | 正常列出，标记为 `外部` |
+| 新增 | 在受控块中追加 `- insert:` 行 | — |
+| 修改 | 直接修改受控块中该条 insert 项 | 追加/更新 `- id: X` 覆写行（标记为 `覆写`） |
+| 启停 | 在 insert 项中设置 `disabled: true/false` | 在覆写行中设置 `disabled: true/false` |
+| 删除 | 从受控块中完全移除该条目 | 取消接管：从受控块移除覆写行，恢复外部原配置 |
+
+**为什么既不用 `ctx.loader.create()/remove()` 也不整体重写**：Loader 的持久化实现 `Include.write()` 会调用 `yaml.dump(整份 config)`，把用户手写的 `insert:` 分节和注释压平（AGENTS 2.3）。本插件的受控写入器只读写 marker 块内的字节，块外用户手写内容逐字节未变；使用 `package.json.lock` 避免并发写坏文件。
 
 ### 4.2 写入路径的合法性闭环
 
@@ -433,6 +424,8 @@ pnpm verify                 # = node tools/verify.ts
 
 修复：①`toRecord()` 同时接受对象、字符串数组、多行文本三种形状（AGENTS 2.6）；②启停/删除改为**宿主侧定点操作**（AGENTS 2.5，B27–B42 是回归测试）；③请求加 20s 超时（否则宿主卡住会让按钮永久发灰）。**未证实**：拿不到宿主日志，无法离线复现"状态不变"这一症状，所以成因链是"能证明的部分 + 最可能的成因"。
 
+**v0.2.1 补上第二层**：表单保存曾仍会把**所有行**回传给 `normalizeRow()` 重建 —— 行内操作修好了，但「新增/编辑任意一台」还会清空其他行的 `headers/env`。现在客户端优先用 `saveRows` 能力：未修改的行只带原始 `config`，宿主原样写回；只有被改的那一行带 `patch`，以原 config 为 base 覆盖表单字段。`!!js` 在表单里显示为 `KEY=!!js <expr>`，保存时还原成 `{__jsExpr}`（共享实现 `src/shared/expr.ts`），`reconnect` / `maxInstructionBytes` / 未知字段也不再被丢。旧宿主没有 `saveRows` 且配置里含 `!!js` 时，保存会被拦下并提示重启 DSH，而不是继续写坏。B24a–B24f / F27a–F34e 守住这条路径。
+
 ### 7.4 宿主半边不参与热重载（重要的运行约束）
 
 `dsh-hmr` 只监听 **DSH 安装目录 + profile 补丁文件**，本插件目录不在其中；Node 的 ESM 按 URL 缓存模块——**改了 `lib/index.js`，运行中的宿主半边不会更新**（`lib/client.js` 会）。因此客户端做了**能力协商**：GET 返回 `capabilities`，新宿主用定点操作、旧宿主自动退回整数组提交（并把 `env`/`headers` 转成旧宿主认识的文本形状），这样无论宿主有没有重载，点击都能生效。想让宿主侧改动立即生效：**重启 DSH**（AGENTS 1.3：不要自己重启，告知用户）。
@@ -470,7 +463,7 @@ pnpm verify                 # = node tools/verify.ts
 | 红 `state-error-primary` | 连接失败 / 连接异常 / 加载失败 | 探测失败（TCP 拒绝 / HTTP 401 / 超时 / 响应不是 MCP）；或 logger 里 `mcp-client(...)` 的失败原文；或 phase `failed` |
 
 - **检测优先于日志**：日志只能证明"过去失败过"（放弃重连后就不再打日志），检测是唯一能在"现在"给结论的机制。
-- 探测细节：只打**启用中**的服务器；带上配置里的 `headers`（否则带 token 的网关一律 401）；只读响应的**第一个数据块**（SSE 会一直挂着）；网络错误取 `error.cause.message`；HTTP 2xx 但没有 JSON-RPC 信封 → 判失败；stdio 无法用 HTTP 探测 → `connected: null`，**不谎报**失败。
+- 探测细节：只打**启用中**的服务器；用 `fiber.config` 里**已求值**的 `url/headers`（否则 `!!js` 凭据会被读成空；条目未激活时 `connected: null` 并说明原因）；协议版本用官方 SDK 的 legacy 首选 **`2025-11-25`**；响应最多读 4 块 / 64 KiB（SSE 会一直挂着），看到 JSON-RPC 信封即停；网络错误取 `error.cause.message`；HTTP 2xx 但只有 JSON-RPC `error`（如不支持的协议版本）→ **判失败**，不再把"拒绝握手"当绿灯；stdio 无法用 HTTP 探测 → `connected: null`，**不谎报**失败。
 - **预算是"冷连接"的预算**：探测走宿主全局 `fetch`（连接池），与 mcp-client 那条长连不是同一条连接，空闲过期后基本都是一次全新的 DNS + TLS 握手；实测远程冷路径 1.6–3.0s，3s 预算会把**配置正确**的服务器报成假红 → 取 **8s**（A24f 守住下限）。探测并行，总时长 ≈ max 而不是累加。
 - **打开页面自动检测一次**（先 GET 拿 `capabilities`，旧宿主不认识 `probe` 就跳过；silent 模式不锁按钮）；**每次写入都补一次检测**（启停/删除/保存都算，因为写入清空了全部记录）：静默探一次，探通了但相位未 `active` 就重读快照到稳定（**有界 10 × 200ms，不是轮询**）。旧宿主没有 `probe` 时「检测」置灰并提示"需要重启 DSH"，而不是让用户点出「未知操作」。
 - 已知取舍：**只在打开页面与每次写入后探一次，不轮询**——页面开着但什么都不做时状态不会自己变（要"现在"的结论就点「检测」）。每次探测都是一次真实的 `initialize` 请求（对服务端是无副作用的读操作，但确实"敲了一次门"）。
@@ -489,6 +482,13 @@ pnpm verify                 # = node tools/verify.ts
 - **反向验证**（逐条注入 → 确认精确报错 → 还原）：删容器行 → P2 三项红；容器行改成顶层 `- id:` → P3 三项红（**顺带抓出断言自己的漏洞**：原来的正则容忍前导空白，会把 insert 里缩进的那行也当成"顶层"）；`containerState()` 把 `duplicated` 说成 `missing` → B82 打印 `["missing",false]`、B83 打印"去找一行"的口径；`outsideServers()` 返回空 → B77/B78/B79 同红；`outsideStatus` 只看相位就报绿 → F40/F41/F42 红；客户端 `containerOf` 把 `duplicated` 归到 `missing` → D14 红；空态文案改回固定句 → D16b 红并打印整页文本。
 - **样式**：页面外那块完全复用紧凑档（12px / 28px 行高 / `--dsw-radius-*` / `--dsw-alias-border-l2` 顶部分隔线），**不加外框和底色**（AGENTS 3.4：别叠成卡片套卡片）；颜色只有圆点走 token（AGENTS 3.1/3.2）。
 - **没实测**：真机装 v0.2.0、真机删掉 profile 那行容器后的写入（保存/启停/删除）、真机迁移现场。本机 profile 现在**同时**有手写容器行与 `magpie-mcp-context7` —— 正是 B82 / B77 复现的那两个现场，但运行时还停在 v0.1.2，所以这三条要装完新版 + 重启后各点一次才算数（清单见 §7.2 第 7 条）。
+
+### 7.11 v0.2.1：保存保真 + 探测语义
+
+- **自检**：`node tools/verify.ts` → `PASS 294/294`（新增 B24a–B24f、B69b/B69c、B70b、D48、A24g、F27a/F27b/F28b/F31b/F34b–F34f；A24/B9b 的能力表加 `saveRows`）。
+- **反向验证**（注入 → 确认精确报错 → 还原）：`pairsToText` 退回 `asText` → F27a 打印 `Authorization=`；`declaredRows` 退回 `override.length > 0` → B70b 打印继承层那一行；`saveRows` 对未修改行也 normalize → B24b 丢掉 `futureField`；JSON-RPC `error` 改报 `connected:true` → B69b 打印 `"connected":true`；探测不用 `fiber.config` → B69c 打印 `connected:null`。
+- **已知边界**：`disabled` 是行字段（不在 config 里），快照只投影布尔值；`serverName` 是必填普通字符串。因此 `disabled: !!js` / `serverName: !!js` 仍不在表单保存支持范围，需要条件启停/命名的用户继续手写 YAML。本轮保证的是 config 内标量（`headers/env/url/command/args/cwd`）的 `!!js` 保真。
+- **未实测**：真机新增/编辑一台带 `!!js` 凭据的服务器、真机重启前后的 `saveRows` 能力切换、真机对返回 JSON-RPC error 的服务器点「检测」。宿主半边改了，生效需要重启 DSH。
 
 ---
 
@@ -577,3 +577,10 @@ pnpm verify                 # = node tools/verify.ts
 | `not-a-bundle` 拒绝：安装器要求 `package.json` 有 `dsh.bundle.patch` | `dsh-plugin-manager/lib/index.js:228, 1587`；`dsh-app-boot/lib/index.js:495-508` |
 | 兼容性只看 `@deepseek-ai/dsh` / `@deepseek-ai/dsh-*` peer，不满足则整个 bundle 被 skip | `dsh-app-boot/lib/index.js:286-313` |
 | 插件卡片图标走 manifest（≤256 KiB、须在包目录内），但 `file://` 接线拿不到 | `dsh-app-boot/lib/index.js:1167-1174, 1851-1876, 1971-2001` |
+
+### 7.12 v0.3.0：顶层 insert + 外部接管 + 旧 group 迁移
+
+- **架构变化**：彻底告别 `cordis:group` 容器；新增 MCP 一律以顶层 `- insert:` 项落盘；外部已有 MCP 一键「接管」（追加 `- id` 覆写行）与「取消接管」（恢复外部原始配置）。
+- **受控块安全**：引入 `src/shared/managed-block.ts` 与 `src/host/patch-writer.ts`，只更新 marker 块，块外内容逐字节保留；原子写 + `package.json.lock` 锁 + 自动 `.bak` 备份。
+- **旧版迁移**：启动时如检测到旧版 group 容器有数据，页面显示「迁移到顶层 insert」按钮，调用 `op:migrate` 一键将旧服务器搬迁为顶层 insert 并清空旧 group `config: []`。
+- **自检**：`node tools/verify.ts` → `PASS 290/290`。

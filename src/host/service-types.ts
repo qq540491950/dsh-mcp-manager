@@ -24,7 +24,11 @@ export interface EntryRow {
 /** Loader 条目。`fiber.state` 是 cordis `FiberState` 的数值（见 index.ts 的 FIBER_PHASE）。 */
 export interface LoaderEntry {
   options: EntryRow
-  fiber?: { state: number } | undefined
+  /**
+   * `fiber.config` 是 cordis 校验/求值后的插件 config（`!!js` 已展开）；
+   * 原始 YAML 值在 `options.config`。探测要用前者，否则 `!!js` 的 url/headers 会读成空。
+   */
+  fiber?: { state: number; config?: unknown } | undefined
 }
 
 /** `ctx.loader`：只用到"列出全部条目"。 */
@@ -45,6 +49,8 @@ export interface ConfigLayer {
 
 /** `ctx.configEditor`：外科手术式 YAML 编辑（保留 insert 结构、写前校验、失败回滚）。 */
 export interface ConfigEditorService {
+  /** profile 的 `cordis.patch.yml` 绝对路径（官方 getter）。 */
+  readonly documentPath: string
   entries(): LoaderEntry[]
   configuration(): ConfigLayer[]
   edit(entry: LoaderEntry, update: () => unknown): Promise<void>

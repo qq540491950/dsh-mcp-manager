@@ -455,6 +455,8 @@ account -10 | general 0 | models 10 | plugins 15 | agent-presets 20 | mcp 900 �
 
 > **未证实**：我无法在离线复现"状态不变"这一具体症状（拿不到宿主日志，`logs` 目录是空的），所以上面是"能证明的部分 + 最可能的成因"，不是完整因果链。
 
+**v0.2.1 的第二层修复**：行内操作修好之后，**表单保存**仍然走「整数组回传 → `normalizeRow()` 逐行重建」。于是新增/编辑任意一台服务器时，其他行的 `headers/env` 会被重建；更糟的是 Loader 的 `!!js` 标量在快照里是 `{__jsExpr}`，旧 `pairsToText()` 用 `asText()` 读它得到空串——官方 MCP 文档推荐的 `Authorization: !!js '...'` 会在一次保存后变成空值。修复是新增 `saveRows` 能力：未修改行只带原始 `config` 原样回写；被改行以原 config 为 base 做 `normalizeRow()`；`!!js` 在表单文本里写成 `KEY=!!js <expr>`，由共享的 `src/shared/expr.ts` 双向转换。旧宿主没有 `saveRows` 且配置含 `!!js` 时，客户端拒绝保存并提示重启宿主，避免继续写坏。
+
 ### 7.4 宿主半边不参与热重载（重要约束）
 
 `dsh-hmr` 只监听 **DSH 安装目录 + profile 补丁文件**；本插件目录不在其中。而且 Node 的 ESM 按 URL 缓存模块——**改了 `lib/index.js`，运行中的宿主半边不会更新**（`lib/client.js` 会，它由 `dsh-client-hmr` 按 mtime/size 发新 rev）。
@@ -563,7 +565,7 @@ account -10 | general 0 | models 10 | plugins 15 | agent-presets 20 | mcp 900 �
 
 - **检测优先于日志**：日志只能证明"过去失败过"，而且 mcp-client 放弃重连后就不再打日志——那个窗口里日志一条都收不到。检测是唯一能在"现在"给出结论的机制，也能区分「根本连不上」与「连上了但不响应」。
 - **检测通过但条目没 active 时也不报绿**：那一刻工具并没有注册，报绿等于骗人（D29 守住）。
-- 探测细节：只打**启用中**的服务器；请求带上配置里的 `headers`（否则带 token 的网关会一律 401，B59 守住）；只读响应的**第一个数据块**（streamable-http 的 SSE 会一直挂着，`response.text()` 会等到超时）；网络错误取 `error.cause.message`（Node 的 fetch 只给 "fetch failed"，真正的原因在 cause 里）；HTTP 2xx 但没有 JSON-RPC 信封 → 判失败（防止把 HTML 门户当成可用服务器）；stdio 无法用 HTTP 探测 → `connected: null`，**不谎报**失败。
+- 探测细节：只打**启用中**的服务器；用 `fiber.config` 里**已求值**的 `url/headers`（原始覆写层的 `!!js` 是 `{__jsExpr}`，直接读会得到空串；条目未激活时 `connected: null` 并说明原因，B69c 守住）；协议版本用官方 SDK 的 legacy 首选 **`2025-11-25`**；响应最多读 4 块 / 64 KiB（streamable-http 的 SSE 会一直挂着，`response.text()` 会等到超时），看到 JSON-RPC 信封即停；网络错误取 `error.cause.message`（Node 的 fetch 只给 "fetch failed"，真正的原因在 cause 里）；HTTP 2xx 但只有 JSON-RPC `error`（例如不支持的协议版本）→ **判失败**，不再把"拒绝握手"当绿灯，B69b 守住；stdio 无法用 HTTP 探测 → `connected: null`，**不谎报**失败。
 - **探测预算是"冷连接"的预算，不是"局域网"的预算**（bug 修复：`PROBE_TIMEOUT_MS` 3s → 8s）。探测走的是**宿主进程全局 `fetch`（undici 连接池）**，与 mcp-client 自己那条长连 SSE 会话不是同一条连接；池子空闲过期后，"每次打开页面探一次"基本都是一次全新的 DNS + TLS 握手。实测（本机 + 真实 profile，用与 `probeServer()` 完全相同的请求形状）：远程 `https://mcp.context7.com/mcp` 冷路径 **1.6–3.0s**、热连接（连接复用）**~360ms**、局域网 `gva` **3–10ms**。3s 正好压在冷路径的抖动边缘——连着三次都在 **3005 / 3009 / 3013ms** 被 abort，于是配置完全正确（mcp-client 连得上、工具都注册了）的服务器被反复报成假红「超时（3s）：服务器没有响应」，而它在 20s 预算下同条件全部 200 且是合法 MCP 响应。取 8s ≈ 实测上界的 2.7 倍余量；探测是并行的，**总时长 ≈ max 而不是累加**，所以这个值同时决定"真挂死的服务器最多让 UI 等多久"，不要再往上加太多。A24f 守住下限。
 - 探测结果与失败记录都会在**任一次配置写入**后清空（配置变了旧结论必然过期）；「刷新」只重读快照，「检测」才发请求——所以打开页面那一次读取永远是快的。
 - **绿灯必须有正面证据**：宿主能探测却拿不出任何记录时，报的是琥珀「**未检测**」，而不是靠 `phase: active` 报绿——那正是这一条的第一个 bug（相位只说明 apply 跑完了）。探不了的传输（stdio 的 `connected: null`）不算"没有证据"，仍按相位报绿；旧宿主（能力表里没有 `probe`）没有这条通道，只能退回相位判定，保持向后兼容（D18/D18b/D18c 守住）。
@@ -596,6 +598,18 @@ account -10 | general 0 | models 10 | plugins 15 | agent-presets 20 | mcp 900 �
 - `node tools/verify.ts` → `PASS 274/274`（+19 条：B9c/B9d、B77–B83、D13 改写、D14、D15/D15b、D16/D16b、F39–F43，P2/P3/P11 按新不变量重写、A24/B9b 的能力表加 `outside`）。
 - **反向验证（每条都做过，注入 → 确认精确报错 → 还原）**：删掉 patch 里的容器行 → P2 报「只有两行 / 含容器行 / 容器行是 cordis:group」三项；把容器行改成顶层 `- id:` → P3 三项全红（**这一步还抓出了断言自己的漏洞**：原来的正则 `^\s*(?:-\s*)?id:` 会把 insert 里缩进的那行也算进去，必须去掉前导空白的容忍才分得清"顶层"）；把 `containerState()` 的 `duplicated` 也返回成 `missing` → B82 打印 `["missing",false]`、B83 打印的还是"去找一行"的口径；让 `outsideServers()` 一条都不返回 → B77/B78/B79 同时红；把 `outsideStatus` 改成"只看相位就报绿" → F40/F41/F42 红；把客户端 `containerOf` 的 `duplicated` 归到 `missing` → D14 精确报错；把空态文案改回固定句 → D16b 报错并打印出整页文本。
 - **没实测的**：真机安装 v0.2.0、真机删掉 profile 那行容器后的写入（保存/启停/删除）、真机迁移现场（本机 profile 里现在**同时**有手写容器行与 `magpie-mcp-context7`，正好是 B82/B77 复现的那两种现场，但运行时还没换到 v0.2.0）。这三条要在装完新版 + 重启后各点一次才算数。
+
+### 7.11 v0.2.1：保存保真 + 探测语义
+
+**保存保真**：新增 `saveRows` 协议与 `src/shared/expr.ts`。`!!js` 在表单文本里是 `KEY=!!js <expr>`，写回时还原成 `{__jsExpr}`；未修改行的原始 `config` 不经 `normalizeRow()`，因此 `reconnect` / `maxInstructionBytes` / 未来 schema 字段都不丢。`normalizeRow(server, base)` 以原 config 为底，只覆盖表单字段；空覆写数组 `[]` 也按有效状态处理（B70b）。
+
+**探测语义**：协议版本 `2025-06-18` → `2025-11-25`；响应最多读 4 块 / 64 KiB；只有 JSON-RPC `result` 才算通过，`error` 报失败并带 code/message；探测前用 `fiber.config` 的求值结果（`!!js` 的 url/headers），条目未激活则 `connected:null` 并说明原因。stdio 仍按原规则 `connected:null`，本轮没有改成"必须有工具才绿"。
+
+**断言**：B24a–B24f、B69b/B69c、B70b、D48、A24g、F27a/F27b/F28b/F31b/F34b–F34f；A24/B9b 的能力表加 `saveRows`。**反向验证六条**：`pairsToText` 退回 `asText` → F27a 打印 `Authorization=`；`declaredRows` 退回 `override.length > 0` → B70b 打印继承层那一行；`saveRows` 对未修改行也 normalize → B24b 丢掉 `futureField`；JSON-RPC `error` 改报 `connected:true` → B69b 打印 `"connected":true`；探测不用 `fiber.config` → B69c 打印 `connected:null`；客户端不走 `saveRows` → D48 报出旧的 `op:save`。
+
+**已知边界**：`disabled` 是行字段而不是 config 字段，快照只投影布尔值；`serverName` 必须是普通字符串。`disabled: !!js` / `serverName: !!js` 仍只能手写 YAML，本轮没有把它们纳入表单协议。
+
+**没实测**：真机新增/编辑一台带 `!!js` 凭据的服务器、真机重启前后的 `saveRows` 能力切换、真机对返回 JSON-RPC error 的服务器点「检测」。宿主半边改了，生效需要重启 DSH。
 
 ---
 
@@ -758,3 +772,23 @@ account -10 | general 0 | models 10 | plugins 15 | agent-presets 20 | mcp 900 �
 | 官方插件盘点只报 `fiberPhase`，没有错误字段 | `dsh-host-plugin-inventory/lib/index.js:132`（类型 `typert.host.js:18-21`） |
 | 官方插件页的行来自 bundle 清单 → patch `insert` 的条目不会出现 | `dsh-client-ui-plugin-manager/lib/client.js:777-802, 1970-2089`；`plugin_manager list_bundles` 实测 11 个 bundle 无 mcp-client |
 | `ctx.logger.exporter()` 绑在**调用者 scope**（`noShadow` 服务） | `cordis/lib/types/utils.js:150-163`；`dsh-app-boot/lib/index.js:4055-4067, 4107` 的 dispose 写法同理 |
+
+### 7.12 v0.3.0：顶层 insert + 外部接管 + 旧 group 迁移
+
+用户需求明确：希望以顶层 `insert` 方式增改 MCP，而不是把服务器包在 `cordis:group` 容器数组里；并且能够显示与编辑外部已有的 MCP。
+
+**设计方案落地**：
+1. **纯粹的顶层条目模型**：新增 MCP 直接作为顶层 `insert` 行写入，与官方模板及插件市场安装的 MCP 完全对齐。
+2. **外部 MCP 接管（Adopt / Release）**：
+   - 外部未接管条目：显示为 `外部` 徽标，允许直接查看、探测与展示注册工具。
+   - 点「接管」：追加 `- id: X` 覆写行，在原声明不被破坏的前提下，允许对其 `config` 和 `disabled` 进行编辑和启停。
+   - 点「取消接管」：删除覆写行，无损恢复外部条目的原始配置。
+3. **受控 profile 写入器（Patch Writer）**：
+   - 在 profile 文件末尾建立 `# >>> dsh-mcp-manager:managed` 受控区；
+   - 纯函数 `managed-block.ts` 负责 flow-style YAML 渲染与 manifest 编解码；
+   - 写入器通过 `package.json.lock` 串行化，采用同目录随机临时文件 + rename 原子写，写前保留 `.bak` 备份；
+   - 块外内容（用户手写条目、注释等）逐字节保留。
+4. **旧版迁移（Migration）**：
+   - 如旧容器 `mcp-manager`（group）存在残留服务器，页面提供「迁移到顶层 insert」按钮，调用 `op:migrate` 一键生成顶层 insert 并清空旧容器。
+
+**自检**：`node tools/verify.ts` → `PASS 290/290`。

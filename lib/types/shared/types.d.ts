@@ -7,6 +7,7 @@
  * 注意这里**不描述不可信输入**：配置行来自用户手写的 YAML，形状只能用 `unknown` + 类型守卫
  * 去收窄（见 src/host/index.ts 的 isRecord/asRecord）。这些类型只描述**我们自己写出去的**东西。
  */
+import type { JsExpr } from './expr.ts';
 /**
  * 一台服务器的运行时相位。
  *
@@ -45,60 +46,50 @@ export interface ToolRecord {
     /** 同样允许缺失：客户端按 `=== true` 判断"名单被截过"。 */
     truncated?: boolean | undefined;
 }
+/** 一台顶层 MCP 条目的来源。 */
+export type ServerSource = 'insert' | 'override' | 'external';
 /** 快照里的一台服务器。 */
 export interface ServerSnapshot {
     index: number;
-    rowId?: string | undefined;
-    /** 允许缺失：客户端读的是 JSON，`=== true` / `!== true` 是刻意的防御式写法。 */
-    disabled?: boolean | undefined;
+    /** 顶层 Loader 条目 id（profile patch 里的 `id:`）；也是所有写操作的定位键。 */
+    id: string;
+    /** `config.serverName`；畸形条目允许为空串（页面上退回显示 id）。 */
+    serverName: string;
+    source: ServerSource;
     /** 配置行的原始 config（用户手写的，所以是 unknown 值表，客户端按需读）。 */
     config: Record<string, unknown>;
+    /** 允许缺失：客户端读的是 JSON，`=== true` / `!== true` 是刻意的防御式写法。 */
+    disabled?: boolean | undefined;
     phase: FiberPhase;
     /** 没有记录时**不写这个键**（JSON.stringify 会丢掉 undefined）。 */
     error?: FailureRecord | undefined;
     probe?: ProbeRecord | undefined;
     tools?: ToolRecord | undefined;
 }
-/** 容器的声明状态：`missing` = 一行都没有；`duplicated` = 同 id 声明了两次（写操作会全挂）。 */
-export type ContainerState = 'ok' | 'missing' | 'duplicated';
-/**
- * **页面外**的一台 MCP 服务器：顶层 Loader 条目（`@deepseek-ai/dsh-mcp-client`），
- * 但不在本插件的容器里 —— 例如插件市场替你写进 profile 补丁层的那一行。
- *
- * 之所以要单独报出来：它不是本插件的数据，本页既不能探测也不能启停（容器里没有它），
- * 但它**确实在跑**、工具也确实注册给了模型。旧版本页面在这种情况下显示
- * 「还没有配置任何 MCP 服务器」，让人以为配置丢了（真实案例：`magpie-mcp-context7`）。
- */
-export interface OutsideServer {
-    /** Loader 条目 id（profile 补丁里的 `id:`），也是页面上唯一能指认它出处的线索。 */
-    id: string;
-    /** `config.serverName`；畸形条目允许为空串（此时页面上退回显示 id）。 */
-    serverName: string;
-    config: Record<string, unknown>;
-    phase: FiberPhase;
-    disabled?: boolean | undefined;
-    error?: FailureRecord | undefined;
-    tools?: ToolRecord | undefined;
+/** 旧版 `cordis:group` 容器的迁移状态。 */
+export interface LegacyState {
+    state: 'none' | 'needs-migration' | 'duplicated';
+    /** 旧容器里还有几台 MCP。 */
+    count: number;
 }
 /** GET 快照与每个写操作的返回值。 */
 export interface Snapshot {
-    groupId: string;
-    /** 允许缺失：客户端把"没写"当成已配置（`!== false`）。 */
-    configured?: boolean | undefined;
-    /** 容器状态；旧宿主不报这个字段，客户端退回只看 `configured`。 */
-    container?: ContainerState | undefined;
-    /**
-     * 页面外的 MCP 服务器（顶层 Loader 条目）。
-     * 允许缺失：旧宿主不报这个字段 —— 客户端按空数组渲染，天然向前兼容。
-     */
-    outside?: OutsideServer[] | undefined;
+    /** 所有顶层 MCP 条目：managed（insert/override）+ external。 */
+    servers: ServerSnapshot[];
+    /** manifest 里登记、但 Loader 里已经不存在的 id（用户手删/改坏）。 */
+    missing?: string[] | undefined;
+    /** 旧版 group 迁移提示。 */
+    legacy?: LegacyState | undefined;
+    /** profile 的 `cordis.patch.yml` 绝对路径，仅用于诊断。 */
+    profilePath?: string | undefined;
+    /** 受控块 marker/manifest 损坏时的原文错误；此时写操作必须拒绝。 */
+    patchError?: string | undefined;
     mcpPackage: string;
     /**
-     * 能力协商：客户端据此决定用「宿主侧定点操作」还是退回整数组提交。
-     * 宿主半边不参与热重载，所以客户端必须能同时说两代协议（AGENTS 1.2）。
+     * 能力协商：新客户端看到 `patchInsert` 才启用写操作；旧宿主没有这个能力时
+     * 页面必须提示重启 DSH，而不是按旧 group 协议误写。
      */
     capabilities: string[];
-    servers: ServerSnapshot[];
 }
 /**
  * 一份**要写进** group 条目 config 数组的服务器配置 —— `normalizeRow()` 的产物。
@@ -107,11 +98,22 @@ export interface Snapshot {
 export interface ServerConfig {
     serverName: string;
     transport: string;
-    url?: string;
-    command?: string;
-    args?: string[];
-    env?: Record<string, string>;
-    headers?: Record<string, string>;
-    cwd?: string;
+    /** `!!js` 表达式在写回 YAML 时是标记对象，不能被当成普通字符串。 */
+    url?: string | JsExpr;
+    command?: string | JsExpr;
+    args?: Array<string | JsExpr>;
+    env?: Record<string, string | JsExpr>;
+    headers?: Record<string, string | JsExpr>;
+    cwd?: string | JsExpr;
     toolCallTimeoutMs?: number;
+    failOnStartupError?: boolean;
+    maxInstructionBytes?: number;
+    reconnect?: ReconnectConfig;
+}
+/** mcp-client 的 `reconnect` 配置（只列我们写回时保留的字段）。 */
+export interface ReconnectConfig {
+    enabled?: boolean;
+    initialDelayMs?: number;
+    maxDelayMs?: number;
+    maxAttempts?: number;
 }

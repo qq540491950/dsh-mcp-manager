@@ -7,10 +7,10 @@
 DSH 插件：在设置界面最下方加一页「MCP」，可视化管理 `@deepseek-ai/dsh-mcp-client` 的 Loader 条目。**源码在 `src/**`；`lib/**` 是构建产物，不要直接编辑。**
 
 - 客户端 `src/client/**` → `lib/client.js`：注册 `settings.section`（list 座位，`order: 900`）；把导航里**自己那一格**的兜底齿轮换成 MCP 标记（3.8）。
-- 宿主 `src/host/**` → `lib/index.js`：零 import；`ctx.connection.fetch.register()` 开 `/api/mcp-manager`；`ctx.configEditor.edit()` 写配置。
-- 数据模型：所有 MCP 服务器放在**一个** `cordis:group` 条目（id `mcp-manager`）的 config 数组里。
-- 容器归属：`cordis:group` 容器行由**插件 bundle 自带的 [cordis.patch.yml](cordis.patch.yml)** 声明（容器行 + 插件行，两行都在 `insert:` 里）。**别再把它推给 profile** —— 插件没有创建 Loader 条目的能力，推给 profile = 每个用户装完还得手改一次 YAML（v0.1.1 的教训，README 5.6）。代价是卸载插件时容器随之消失、MCP 中止加载（列表原文仍在 profile 的覆写行里，装回即恢复）。
-- 页面外的服务器：profile 里**顶层**的 `dsh-mcp-client` 条目（插件市场会写，如 `magpie-mcp-context7`）不在容器里，快照用 `outside[]` 只读报出来；识别谓词是 `configEditor.entries()`（顶层、id 唯一、可寻址），**不要**自己摸 `entry.parent` 这类未声明的内部结构。
+- 宿主 `src/host/**` → `lib/index.js`：零 import；`ctx.connection.fetch.register()` 开 `/api/mcp-manager`；受控 profile patch 写入器负责受控块更新。
+- 数据模型（v0.3.0 起）：每台 MCP 都是 profile 补丁文件里的**顶层 Loader 条目**。本插件新增条目写成 `- insert: [ { id, name, config } ]`；外部已有 MCP 可“接管”追加 `- id: X` 覆写行，原声明保留。
+- 写入通道：由受控写入器 `src/host/patch-writer.ts` 结合 `src/shared/managed-block.ts` 只替换 profile 文件末尾的受控 marker 块（`# >>> dsh-mcp-manager:managed`），块外用户手写内容逐字节未变；使用 `package.json.lock` 文件锁保证原子写入与安全回滚。
+- 旧版兼容与迁移：启动时如检测到旧版 `cordis:group` 容器里仍有 MCP，页面提供一键迁移到顶层 `insert`，并在同一事务中清空旧容器 `config: []`。
 - 唯一必跑：`node tools/verify.ts`，期望 `PASS`（条数看输出、别抄死；命令名以 [package.json](package.json) scripts 为准）。
 
 ## 1. 硬性纪律
@@ -33,7 +33,7 @@ DSH 插件：在设置界面最下方加一页「MCP」，可视化管理 `@deep
 
 **2.3 [硬] 禁止 `ctx.loader.create()/remove()`。** `Include.write()` → `writeFile(this.root.data)`，而 `_writeFile` 是 `yaml.dump(整份 config)`：**整体重写**，会压平用户手写的 `insert:` 分节。
 
-**2.4 [硬] 数据面唯一写入点 `ctx.configEditor.edit()`。** 外科手术式 YAML 编辑：保留 `insert:`、写盘前 `composeEntries` 深比较断言、失败回滚（**断言在写盘前，失败是安全的**）。行语义（`applyEntryPatches`）：`insert:`（无 id）追加到顶层；`id: X` + `insert:` 追加进 group 条目 X 的 config；`id: X`（无 insert）**覆写** X——**整键赋值**，X 不存在则 warn 并丢弃。**覆写 `config` 是整数组替换，不是继承层**（官方 dialect：*"config is replaced wholesale, never deep-merged"*）：`insert:` 行里同 id 的 config 被整体丢弃，写在那里的 `headers`/`env` 运行时根本不存在，文件却看着"已经配好了"（源码 `cordis-plugin-include/lib/index.js:99-102`）。`edit()` 对 insert 条目会**追加顶层覆写行**；改完用 `dsh --profile "$DSH_PROFILE" --dump-config` 看真实合成。
+**2.4 [硬] 数据面写入仅限于受控 marker 块。** 严禁调用 `ctx.loader.create()/remove()` 或 `yaml.dump(整份文件)` 重写整个 profile；必须通过受控写入器只替换 `# >>> dsh-mcp-manager:managed` 与 `# <<< dsh-mcp-manager:managed` 之间的内容，块外内容逐字节保留。写入必须使用 profile 文件锁（`<profile>/package.json.lock`）、临时文件原子替换与自动 `.bak` 备份；任何 marker/manifest 异常时**拒绝写入**。
 
 **2.5 [边界] 行内操作走宿主定点操作，禁止回传整数组。** `setEnabled`/`remove` 只带 `{ serverName, ... }`，宿主按名字定位原地改、其余行原样回写；`save`（整数组）只给表单。回传整数组 + 逐行重建会**静默清空 `headers`/`env`**（历史事故）。
 

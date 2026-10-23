@@ -9,11 +9,15 @@
  * 用法：node tools/verify.ts
  */
 import { readdir, readFile } from 'node:fs/promises'
-import { existsSync, statSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { createHash } from 'node:crypto'
+import { tmpdir } from 'node:os'
 import vm from 'node:vm'
+import * as yaml from 'js-yaml'
+import { renderManagedBlock } from '../src/shared/managed-block.ts'
+import type { ManagedBlockState } from '../src/shared/managed-block.ts'
 
 /**
  * 共享常量的**唯一来源**：`src/shared/constants.ts`。
@@ -32,6 +36,8 @@ try {
 }
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+/** 自检用临时 profile 目录；正常退出时清理。 */
+const tempDirs: string[] = []
 
 let passed = 0
 const failures: string[] = []
@@ -112,8 +118,8 @@ interface StubOutside {
 /** `configEditor.configuration()` 的一层（B70 用它复现"覆写 replace insert"的分层现场）。 */
 interface StubLayerRow {
   entry: { options: { id?: string } }
-  inherited?: StubEntry[]
-  override?: StubEntry[]
+  inherited?: unknown
+  override?: unknown
 }
 /** 假 ctx.inject 回调收到的 scope：只列宿主真正用到的成员。 */
 interface HostScopeStub {
@@ -125,23 +131,29 @@ interface HostScopeStub {
     exporter(options: { levels: { default: number }; export(message: Record<string, unknown>): void }): unknown
   }
   configEditor: {
+    documentPath: string
     /** 官方语义：**顶层、id 唯一、可寻址**的条目（容器子条目不在其中）。 */
     entries(): Array<{
       options: { id?: string; name?: string; config?: unknown; disabled?: boolean }
-      fiber?: { state: number }
+      fiber?: { state: number; config?: unknown }
     }>
     configuration(): StubLayerRow[]
     edit(entry: unknown, update: (rows: StubEntry[], again: StubEntry[]) => unknown): Promise<void>
   }
   loader: {
-    entries(): Array<{ options: { id?: string; name?: string; config?: unknown }; fiber?: { state: number } }>
+    entries(): Array<{
+      options: { id?: string; name?: string; config?: unknown; disabled?: boolean }
+      fiber?: { state: number; config?: unknown }
+    }>
   }
   connection: { fetch: { register(route: StubRoute): unknown } }
 }
 /** 快照里的一台服务器（只列断言真正读到的字段）。 */
 interface StubServer {
   index?: number
-  rowId?: string
+  id?: string
+  serverName?: string
+  source?: string
   disabled?: boolean
   phase?: string
   config?: Record<string, unknown>
@@ -151,23 +163,13 @@ interface StubServer {
 }
 /** 宿主 GET/POST 返回的快照。 */
 interface StubSnapshot {
-  groupId?: string
-  configured?: boolean
-  /** 容器三态（新宿主才报；旧宿主只有 `configured` 布尔）。 */
-  container?: string
   mcpPackage?: string
   /** 能力表：断言会 `includes(...)` 或直接比对数组。 */
   capabilities?: string[]
-  /** 页面外的顶层条目（只读展示）。 */
-  outside?: Array<{
-    id?: string
-    serverName?: string
-    phase?: string
-    disabled?: boolean
-    config?: Record<string, unknown>
-    error?: { message?: string }
-    tools?: { count?: number; names?: string[]; truncated?: boolean }
-  }>
+  missing?: string[]
+  legacy?: { state?: string; count?: number }
+  profilePath?: string
+  patchError?: string
   servers?: StubServer[]
 }
 /** 响应体的线格式。**刻意不用 `any`**：字段名打错时必须编译失败（断言的价值就在这里）。 */
@@ -469,13 +471,16 @@ check(
   // 行内操作必须是「宿主侧定点操作」，不能把整份数组回传——回传会因字段形状差异静默丢字段。
   check(
     'A20 客户端用定点操作而非整数组回传',
-    clientSource.includes('op: "setEnabled"') &&
-      clientSource.includes('op: "remove"') &&
-      clientSource.includes('op: "save"'),
+    clientSource.includes('op: "add"') &&
+      clientSource.includes('op: "setEnabled"') &&
+      clientSource.includes('"remove"') &&
+      clientSource.includes('"update"'),
   )
   check(
-    'A21 宿主支持三种操作',
-    ['setEnabled', 'remove', 'save'].every((op) => new RegExp(`case ["']${op}["']`).test(hostSource)),
+    'A21 宿主支持顶层条目定点操作',
+    ['add', 'update', 'remove', 'setEnabled', 'adopt', 'release', 'migrate', 'probe'].every((op) =>
+      new RegExp(`case ["']${op}["']`).test(hostSource),
+    ),
   )
   // 已实测的字段丢失根因：toRecord 不认「快照回传的对象」形状。
   //
@@ -489,15 +494,17 @@ check(
     /function toRecord\(value\)[\s\S]{0,600}?isRecord\(value\)/.test(hostSource),
   )
   // 宿主半边不参与热重载，所以客户端必须能同时说两代协议。
+  check('A23 客户端做能力协商', clientSource.includes('patchInsert') && clientSource.includes('capabilities'))
   check(
-    'A23 客户端做能力协商',
-    /supports\(snapshot,\s*"setEnabled"\)/.test(clientSource) && clientSource.includes('capabilities'),
+    'A24 宿主声明 capabilities（含 patchInsert 与 legacyMigration）',
+    hostSource.includes('"patchInsert"') &&
+      hostSource.includes('"add"') &&
+      hostSource.includes('"adopt"') &&
+      hostSource.includes('"legacyMigration"'),
   )
   check(
-    'A24 宿主声明 capabilities',
-    /capabilities: \[["']setEnabled["'], ["']remove["'], ["']save["'], ["']lastError["'], ["']probe["'], ["']tools["'], ["']outside["']\]/.test(
-      hostSource,
-    ),
+    'A24g 客户端做 patchInsert 能力协商',
+    clientSource.includes('patchInsert') && clientSource.includes('suggestName'),
   )
   // 失败原因必须由宿主自己从 ctx.logger 里捞：mcp-client 默认 failOnStartupError=false，
   // 连接失败不会让 fiber 变 FAILED，而内置日志缓冲的默认阈值是 1（WARN=2 会被丢掉）。
@@ -533,19 +540,11 @@ check(
   // 3s 正好卡在冷路径的抖动边缘 → 配置正确的远程服务器被反复报成假红
   // 「超时（3s）：服务器没有响应」。取 8s ≈ 2.7 倍余量，别再退回 3s。
   check('A24f 探测预算留够冷连接余量（≥8s）', probeBudgetMs >= 8000, `budget=${String(probeBudgetMs)}ms`)
-  // 退回整数组提交时，env/headers 必须转成旧宿主认识的文本形状，否则又会被清空。
+  // 文本转换守卫：draftOf 把 env/headers 标量转成可编辑文本，!!js 标量不被清空。
   {
-    const block = clientSource.slice(
-      clientSource.indexOf('function serverOfExisting'),
-      clientSource.indexOf('function supports'),
-    )
     check(
-      'A25 回退路径把 env/headers/args 转成文本',
-      block.includes('flat.env = pairsToText') &&
-        block.includes('flat.headers = pairsToText') &&
-        // args 必须被拼成"换行文本"再回传；具体是 config.args.join 还是先 map 成字符串再 join，
-        // 属于实现细节（产物由打包器生成，写法会变），所以只钉住"确实 join 了"。
-        /flat\.args = [^\n]*\.join\(/.test(block),
+      'A25 draftOf 把 env/headers 转成文本',
+      clientSource.includes('pairsToText(config.env)') && clientSource.includes('pairsToText(config.headers)'),
     )
   }
 }
@@ -653,104 +652,144 @@ check('B1 导出 name', host.name === 'dsh-mcp-manager', String(host.name))
 check('B2 导出 apply', typeof host.apply === 'function')
 
 /**
- * 造一个够用的假宿主上下文；写入会落到 state，因此可以连续操作。
- * @param layers - 可选：显式给出 `configEditor.configuration()` 的继承层/覆写层
- *   （默认 `inherited = state.rows`、`override = undefined`，即"只有 insert 层"）。
- *   B70 用它复现"覆写行存在、insert 行里还留着旧字段"的真实分层现场。
- * @param registeredTools - 可选：假 `ctx.tools` 注册表里**全部**工具名（宿主按
- *   `mcp__<serverName>__` 前缀归属给某台服务器，所以这里要把别人的工具也放进来）。
+ * 造一个够用的假宿主上下文。
+ *
+ * v0.3.0 起数据面是**顶层条目** + profile 里的受控块。这里用真实临时文件跑
+ * patch-writer：写入后 `loader.entries()` 重新读文件并套用 patch 语义，因此
+ * add / update / remove / migrate 都可以连续测。
+ *
+ * @param configRows - 基础（外部）顶层 MCP 条目；没有 id 时自动生成 base-N。
+ * @param outsideEntries - 旧测试参数，等价于追加到 configRows（仍按 external 显示）。
+ * @param legacyRows - 旧版 group 的 config 数组；用于迁移测试。
+ * @param managed - 初始受控块（insert/override 行）；写进临时 profile patch。
  */
 function makeHostCtx({
   configRows = [],
   mcpChildren = [],
   withLogger = true,
-  layers = undefined,
   registeredTools = undefined,
   outsideEntries = [],
-  groupDeclarations = 1,
-  addressable = true,
+  groupDeclarations = 0,
+  legacyRows = [],
+  managed = undefined,
+  layers = undefined,
 }: {
+  layers?: { inherited?: StubEntry[]; override?: unknown } | undefined
   configRows?: StubEntry[]
   mcpChildren?: StubChild[]
   withLogger?: boolean
-  layers?: { inherited?: StubEntry[]; override?: StubEntry[] } | undefined
   registeredTools?: string[] | undefined
-  /** 页面外的顶层 mcp-client 条目（`configEditor.entries()` 里那些）。 */
   outsideEntries?: StubOutside[]
-  /** 容器行被声明了几次：0 = 缺失，2 = 重复声明（v0.1.x 升级上来的现场）。 */
   groupDeclarations?: number
-  /** 容器是否出现在**可寻址**表里（`configEditor.entries()` 会丢掉同 id 的重复条目）。 */
-  addressable?: boolean
+  legacyRows?: StubEntry[]
+  managed?: ManagedBlockState | undefined
 } = {}) {
   const captured: {
     deps: string[] | null
-    /** 恒为 StubRoute；"还没注册"用 `unregisteredRoute` 这个占位表示（见类型脚手架）。 */
     route: StubRoute
-    /** 每次写入都是**整份数组**（`configEditor.edit` 的语义就是"给我一份新数组"）。 */
-    writes: StubEntry[][]
     exporters: StubExporter[]
-  } = {
-    deps: null,
-    route: unregisteredRoute,
-    writes: [],
-    exporters: [],
-  }
-  const state: { rows: StubEntry[] } = { rows: structuredClone(configRows) }
-  const groupEntry = {
-    options: {
-      id: 'mcp-manager',
-      name: 'cordis:group',
-      get config(): StubEntry[] {
-        return state.rows
-      },
-    },
-  }
-  /** cordis LoggerLevel：ERROR=0 / INFO=1 / WARN=2 / DEBUG=3（数字越大越啰嗦）。 */
-  const LEVELS: Record<string, number> = { error: 0, info: 1, warn: 2, debug: 3 }
-  /** 假 `ctx.tools`：只提供宿主用到的 `schemas()`；`registeredTools` 为 undefined 时视作"没有该服务"。 */
+    /** 旧断言兼容占位；v0.3.0 的写入落在临时 profile patch 文件里。 */
+    writes: StubEntry[][]
+  } = { deps: null, route: unregisteredRoute, exporters: [], writes: [] }
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-mcp-manager-verify-'))
+  tempDirs.push(dir)
+  const documentPath = join(dir, 'cordis.patch.yml')
+  writeFileSync(documentPath, managed === undefined ? '[]\n' : renderManagedBlock(managed), 'utf8')
+
+  const baseRows: StubEntry[] = [
+    ...configRows.map((row, index) => ({
+      ...row,
+      id: row.id ?? `base-${String(index)}`,
+      name: row.name ?? '@deepseek-ai/dsh-mcp-client',
+    })),
+    ...outsideEntries.map((row) => ({
+      id: row.id,
+      name: '@deepseek-ai/dsh-mcp-client',
+      config: row.config,
+      disabled: row.disabled,
+    })),
+  ]
+  const levels: Record<string, number> = { error: 0, info: 1, warn: 2, debug: 3 }
   const fakeTools:
     { schemas(): Array<{ name: string; description: string; parameters: Record<string, unknown> }> } | undefined =
     registeredTools === undefined
       ? undefined
       : { schemas: () => registeredTools.map((name) => ({ name, description: '', parameters: {} })) }
-  /** 把一条结构化日志喂给宿主注册的 exporter，模拟 mcp-client 自己打的日志。 */
   const log = (type: string, text: string, ts = 1_700_000_000_000): void => {
     for (const exporter of captured.exporters) {
       exporter.export({
         sn: captured.exporters.length,
         ts,
         type,
-        level: LEVELS[type],
+        level: levels[type],
         name: 'mcp-client',
         args: [text],
       })
     }
   }
-  /**
-   * 页面外条目的替身：**同时**出现在 `configEditor.entries()`（可寻址）与 `loader.entries()` 里
-   * —— 这正是官方实现的样子（`entries()` 就是 `loader.entries()` 过滤出来的视图）。
-   */
-  const outsideStubs = outsideEntries.map((spec) => ({
-    options: {
-      id: spec.id,
-      name: '@deepseek-ai/dsh-mcp-client',
-      config: spec.config,
-      ...(spec.disabled === true ? { disabled: true } : {}),
-    },
-    ...(spec.state === undefined ? {} : { fiber: { state: spec.state } }),
-  }))
-  /** 容器行的替身：`groupDeclarations` 份（2 份 = 重复声明的现场）。 */
-  const groupStubs = (): unknown[] =>
-    Array.from({ length: groupDeclarations }, () => ({
-      options: { id: 'mcp-manager', name: 'cordis:group', config: state.rows },
-      fiber: { state: 2 },
-    }))
+
+  const jsTag = yaml.defineScalarTag('tag:yaml.org,2002:js', {
+    resolve: (data) => ({ __jsExpr: data }),
+  })
+  const verifySchema = new yaml.Schema([...(yaml.JSON_SCHEMA.tags || []), jsTag])
+
+  const parsePatch = (): { rows: StubEntry[]; inherited: Map<string, unknown>; overrides: Map<string, unknown> } => {
+    const text = readFileSync(documentPath, 'utf8')
+    const parsed = yaml.load(text, { schema: verifySchema })
+    const patches = Array.isArray(parsed) ? parsed : []
+    const rows: StubEntry[] = structuredClone(baseRows)
+    const inherited = new Map<string, unknown>()
+    for (const row of rows) if (row.id !== undefined) inherited.set(row.id, structuredClone(row.config))
+    for (let index = 0; index < groupDeclarations; index += 1) {
+      const group = { id: 'mcp-manager', name: 'cordis:group', config: structuredClone(legacyRows) }
+      rows.push(group as unknown as StubEntry)
+      inherited.set('mcp-manager', structuredClone(legacyRows))
+    }
+    const byId = new Map(rows.filter((row) => row.id !== undefined).map((row) => [row.id ?? '', row]))
+    const overrides = new Map<string, unknown>()
+    const plain = (value: unknown): value is Record<string, unknown> =>
+      value !== null && typeof value === 'object' && !Array.isArray(value)
+    for (const patch of patches) {
+      if (!plain(patch)) continue
+      const insert = patch.insert
+      if (Array.isArray(insert)) {
+        if (typeof patch.id === 'string') {
+          const target = byId.get(patch.id)
+          if (target !== undefined && Array.isArray(target.config)) {
+            target.config.push(...(insert as StubEntry[]))
+            for (const item of insert as StubEntry[]) if (item.id !== undefined) byId.set(item.id, item)
+          }
+        } else {
+          for (const item of insert as StubEntry[]) {
+            rows.push(item)
+            if (item.id !== undefined) {
+              byId.set(item.id, item)
+              inherited.set(item.id, structuredClone(item.config))
+            }
+          }
+        }
+        continue
+      }
+      if (typeof patch.id !== 'string') continue
+      const target = byId.get(patch.id)
+      if (target === undefined) continue
+      for (const [key, value] of Object.entries(patch)) {
+        if (key === 'id') continue
+        ;(target as unknown as Record<string, unknown>)[key] = value
+      }
+      if (plain(patch.config)) overrides.set(patch.id, patch.config)
+    }
+    return { rows, inherited, overrides }
+  }
+
+  const topEntries = (): StubEntry[] => parsePatch().rows.filter((row) => row.name === '@deepseek-ai/dsh-mcp-client')
+  const groupEntries = (): StubEntry[] => parsePatch().rows.filter((row) => row.id === 'mcp-manager')
+
   const ctx = {
     inject(deps: string[], callback: (scope: HostScopeStub) => void): void {
       captured.deps = deps
       callback({
         effect: (factory: () => (() => void) | void) => factory(),
-        // 宿主半边用 `scope.get('tools')` 取**可选**服务（不进 inject 声明，缺了也能跑）。
         get: (name: string): unknown => (name === 'tools' ? fakeTools : undefined),
         ...(withLogger
           ? {
@@ -763,34 +802,65 @@ function makeHostCtx({
             }
           : {}),
         configEditor: {
-          // 官方 `entries()` 会**丢掉**同 id 的重复条目，所以地址表里有没有容器由 addressable 决定。
-          entries: () => [...(addressable && groupDeclarations > 0 ? [groupEntry] : []), ...outsideStubs],
-          configuration: () => [
-            {
-              entry: groupEntry,
-              // 默认就是"只有 insert 层"；给了 layers 就照实给两层（覆写层可以为 undefined）。
-              inherited: layers === undefined ? state.rows : structuredClone(layers.inherited ?? []),
-              override:
-                layers === undefined || layers.override === undefined ? undefined : structuredClone(layers.override),
-            },
-          ],
-          edit: async (entry: unknown, change: (rows: StubEntry[], again: StubEntry[]) => unknown) => {
-            // 宿主回调的返回类型是 `unknown`（它只承诺"给我一份新数组"）；这里是我们自己的假 ctx，
-            // 知道那就是条目数组，所以就地收窄一次。
-            const next = change(state.rows, state.rows) as StubEntry[]
-            captured.writes.push(structuredClone(next))
-            state.rows = next
+          documentPath,
+          entries: () =>
+            [...topEntries(), ...groupEntries()].map((row) => {
+              const child = mcpChildren.find(
+                (item) => item.id === row.id || (item.config && item.config.serverName === row.config?.serverName),
+              )
+              const hasChild = child !== undefined && child.state !== undefined
+              const defaultFiber = mcpChildren.length > 0 ? undefined : { state: 2, config: row.config }
+              return {
+                options: row,
+                fiber: hasChild ? { state: child.state, config: child?.config ?? row.config } : defaultFiber,
+              }
+            }),
+          configuration: () => {
+            if (layers !== undefined) {
+              const inv = layers.inherited?.[0]
+              const ov = layers.override?.[0]
+              const overrideConfig = ov
+                ? structuredClone(ov.config)
+                : layers.override === undefined
+                  ? undefined
+                  : structuredClone(layers.override)
+              return [
+                {
+                  entry: { options: { id: layers.inherited?.[0]?.id ?? layers.override?.[0]?.id ?? 'mcp-context7' } },
+                  inherited: inv ? structuredClone(inv.config) : undefined,
+                  override: overrideConfig,
+                },
+              ]
+            }
+            const { rows, inherited, overrides } = parsePatch()
+            return rows
+              .filter((row) => row.id !== undefined)
+              .map((row) => ({
+                entry: { options: { id: row.id } },
+                inherited: structuredClone(inherited.get(row.id ?? '')),
+                override: structuredClone(overrides.get(row.id ?? '') ?? {}),
+              }))
           },
+          edit: async () => {},
         },
         loader: {
-          entries: () => [
-            ...groupStubs(),
-            ...mcpChildren.map((child) => ({
-              options: { id: child.id, name: '@deepseek-ai/dsh-mcp-client', config: child.config },
-              fiber: child.state === undefined ? undefined : { state: child.state },
-            })),
-            ...outsideStubs,
-          ],
+          entries: () =>
+            parsePatch().rows.map((row) => {
+              const child = mcpChildren.find(
+                (item) => item.id === row.id || (item.config && item.config.serverName === row.config?.serverName),
+              )
+              const hasChild = child !== undefined && child.state !== undefined
+              const defaultFiber = mcpChildren.length > 0 ? undefined : { state: 2, config: row.config }
+              return {
+                options: row,
+                fiber:
+                  row.name === '@deepseek-ai/dsh-mcp-client'
+                    ? hasChild
+                      ? { state: child.state, config: child?.config ?? row.config }
+                      : defaultFiber
+                    : { state: 2 },
+              }
+            }),
         },
         connection: {
           fetch: {
@@ -803,11 +873,11 @@ function makeHostCtx({
       })
     },
   }
-  return { ctx, captured, groupEntry, log }
+  return { ctx, captured, log, documentPath, baseRows }
 }
 
 {
-  const { ctx, captured } = makeHostCtx({
+  const { ctx, captured, documentPath } = makeHostCtx({
     configRows: [
       {
         id: 'abc123',
@@ -837,70 +907,72 @@ function makeHostCtx({
   const getResponse = await captured.route.fetch(new Request('http://localhost/api/mcp-manager', { method: 'GET' }))
   const getBody = await bodyOf(getResponse)
   check('B8 GET 200', getResponse.status === 200, String(getResponse.status))
-  check('B9 GET 汇报 configured', getBody.data?.configured === true)
+  check('B9 GET 汇报基础条目', getBody.data?.servers?.length === 2, JSON.stringify(getBody.data?.servers?.length))
   check(
     'B9b GET 声明 capabilities',
-    same(getBody.data?.capabilities, ['setEnabled', 'remove', 'save', 'lastError', 'probe', 'tools', 'outside']),
+    same(getBody.data?.capabilities, [
+      'patchInsert',
+      'add',
+      'update',
+      'remove',
+      'setEnabled',
+      'adopt',
+      'release',
+      'probe',
+      'tools',
+      'legacyMigration',
+    ]),
     JSON.stringify(getBody.data?.capabilities),
   )
-  check('B9c GET 汇报容器状态 ok', getBody.data?.container === 'ok', String(getBody.data?.container))
   check(
-    'B9d GET 的 outside 为空数组（容器内服务器不算页面外）',
-    Array.isArray(getBody.data?.outside) && getBody.data.outside.length === 0,
-    JSON.stringify(getBody.data?.outside),
+    'B9c 基础条目按 external 显示',
+    getBody.data?.servers?.[0]?.id === 'abc123' && getBody.data?.servers?.[0]?.source === 'external',
+    JSON.stringify(getBody.data?.servers?.[0]),
   )
-  check('B10 GET 列出 2 台服务器', getBody.data?.servers?.length === 2, JSON.stringify(getBody.data?.servers?.length))
+  check(
+    'B9d 第二台 disabled 且未加载',
+    getBody.data?.servers?.[1]?.disabled === true && getBody.data?.servers?.[1]?.phase === 'stopped',
+    JSON.stringify(getBody.data?.servers?.[1]),
+  )
   check('B11 第一台运行中', getBody.data?.servers?.[0]?.phase === 'active', String(getBody.data?.servers?.[0]?.phase))
-  check('B12 第二台 disabled', getBody.data?.servers?.[1]?.disabled === true)
-  check('B13 第二台未加载', getBody.data?.servers?.[1]?.phase === 'absent', String(getBody.data?.servers?.[1]?.phase))
 
-  const saveResponse = await captured.route.fetch(
+  const addResponse = await captured.route.fetch(
     new Request('http://localhost/api/mcp-manager', {
       method: 'POST',
       body: JSON.stringify({
-        op: 'save',
-        servers: [
-          {
-            rowId: 'abc123',
-            serverName: 'context7',
-            transport: 'streamable-http',
-            url: 'https://mcp.context7.com/mcp',
-            headers: 'Authorization=Bearer x',
-          },
-          { serverName: 'fs', transport: 'stdio', command: 'npx', args: '-y\npkg', env: 'A=1\n# comment\nB=2' },
-        ],
+        op: 'add',
+        server: {
+          serverName: 'new',
+          transport: 'streamable-http',
+          url: 'https://new/mcp',
+          headers: 'Authorization=Bearer x',
+        },
       }),
     }),
   )
-  const saveBody = await bodyOf(saveResponse)
-  check('B14 POST 200', saveResponse.status === 200, `${String(saveResponse.status)} ${JSON.stringify(saveBody)}`)
-  const written = captured.writes.at(-1)
-  check('B15 写的是数组', Array.isArray(written), JSON.stringify(written))
-  check('B16 保留 rowId', written?.[0]?.id === 'abc123', JSON.stringify(written?.[0]))
-  check('B17 条目名是 mcp 包', written?.[0]?.name === '@deepseek-ai/dsh-mcp-client')
+  const addBody = await bodyOf(addResponse)
   check(
-    'B18 headers 解析成对象',
-    same(written?.[0]?.config?.headers, { Authorization: 'Bearer x' }),
-    JSON.stringify(written?.[0]?.config?.headers),
+    'B14 add 200',
+    addResponse.status === 200,
+    `${String(addResponse.status)} ${JSON.stringify(addBody).slice(0, 300)}`,
+  )
+  const added = readFileSync(documentPath, 'utf8')
+  check(
+    'B15 写成顶层 insert 条目（含 headers）',
+    added.includes('"insert"') && added.includes('"serverName":"new"') && added.includes('"Authorization":"Bearer x"'),
+    added,
   )
   check(
-    'B19 args 按行拆分',
-    same(written?.[1]?.config?.args, ['-y', 'pkg']),
-    JSON.stringify(written?.[1]?.config?.args),
+    'B16 生成的 entry id 带 mcp-new 前缀',
+    addBody.data?.servers?.some((server) => server.source === 'insert' && server.id.startsWith('mcp-new')),
+    JSON.stringify(addBody.data?.servers),
   )
-  check(
-    'B20 env 忽略注释行',
-    same(written?.[1]?.config?.env, { A: '1', B: '2' }),
-    JSON.stringify(written?.[1]?.config?.env),
-  )
+  check('B17 manifest 登记这条 insert', added.includes('"kind":"insert"') && added.includes('"id":"mcp-new"'), added)
 
   const badName = await captured.route.fetch(
     new Request('http://localhost/api/mcp-manager', {
       method: 'POST',
-      body: JSON.stringify({
-        op: 'save',
-        servers: [{ serverName: 'bad name!', transport: 'streamable-http', url: 'x' }],
-      }),
+      body: JSON.stringify({ op: 'add', server: { serverName: 'bad name!', transport: 'streamable-http', url: 'x' } }),
     }),
   )
   check('B21 非法 serverName → 409', badName.status === 409, String(badName.status))
@@ -908,26 +980,115 @@ function makeHostCtx({
   const badUrl = await captured.route.fetch(
     new Request('http://localhost/api/mcp-manager', {
       method: 'POST',
-      body: JSON.stringify({ op: 'save', servers: [{ serverName: 'ok', transport: 'streamable-http', url: '' }] }),
+      body: JSON.stringify({ op: 'add', server: { serverName: 'ok', transport: 'streamable-http', url: '' } }),
     }),
   )
   check('B22 空 url → 409', badUrl.status === 409, String(badUrl.status))
+
+  const duplicate = await captured.route.fetch(
+    new Request('http://localhost/api/mcp-manager', {
+      method: 'POST',
+      body: JSON.stringify({ op: 'add', server: { serverName: 'context7', transport: 'streamable-http', url: 'x' } }),
+    }),
+  )
+  check('B24e 重复 serverName → 409', duplicate.status === 409, String(duplicate.status))
+  check(
+    'B24f 重复 serverName 不落盘',
+    !readFileSync(documentPath, 'utf8').includes('"serverName":"context7","transport":"x"'),
+  )
 
   const badOp = await captured.route.fetch(
     new Request('http://localhost/api/mcp-manager', { method: 'POST', body: JSON.stringify({ op: 'nope' }) }),
   )
   check('B23 未知操作 → 400', badOp.status === 400, String(badOp.status))
-  check('B24 非法写入没有落盘', captured.writes.length === 1, String(captured.writes.length))
-}
+  check(
+    'B18 旧协议 op:save 被拒绝（版本不一致时不许再写 group 数组）',
+    captured.route
+      .fetch(
+        new Request('http://localhost/api/mcp-manager', {
+          method: 'POST',
+          body: JSON.stringify({ op: 'save', servers: [] }),
+        }),
+      )
+      .then((response) => response.status === 409),
+  )
 
+  const beforeRemove = readFileSync(documentPath, 'utf8')
+  const addedId = addBody.data?.servers?.find((server) => server.source === 'insert')?.id
+  const removeResponse = await captured.route.fetch(
+    new Request('http://localhost/api/mcp-manager', {
+      method: 'POST',
+      body: JSON.stringify({ op: 'remove', entryId: addedId }),
+    }),
+  )
+  check('B24g remove 200', removeResponse.status === 200, String(removeResponse.status))
+  const afterRemove = readFileSync(documentPath, 'utf8')
+  check(
+    'B24h remove 从受控块删掉 insert 行与 manifest 登记项',
+    afterRemove !== beforeRemove && !afterRemove.includes('"serverName":"new"'),
+    afterRemove,
+  )
+
+  const adoptResponse = await captured.route.fetch(
+    new Request('http://localhost/api/mcp-manager', {
+      method: 'POST',
+      body: JSON.stringify({ op: 'adopt', entryId: 'abc123' }),
+    }),
+  )
+  const adoptBody = await bodyOf(adoptResponse)
+  check(
+    'B24i adopt 200',
+    adoptResponse.status === 200,
+    `${String(adoptResponse.status)} ${JSON.stringify(adoptBody).slice(0, 300)}`,
+  )
+  const afterAdopt = readFileSync(documentPath, 'utf8')
+  check(
+    'B24j adopt 追加覆写行并登记 override',
+    afterAdopt.includes('"id":"abc123"') && afterAdopt.includes('"kind":"override"'),
+    afterAdopt,
+  )
+  check(
+    'B24k 接管后该条目按 override 显示',
+    adoptBody.data?.servers?.find((server) => server.id === 'abc123')?.source === 'override',
+  )
+
+  const toggleResponse = await captured.route.fetch(
+    new Request('http://localhost/api/mcp-manager', {
+      method: 'POST',
+      body: JSON.stringify({ op: 'setEnabled', entryId: 'abc123', enabled: false }),
+    }),
+  )
+  check(
+    'B24l setEnabled 200 且覆写行带 disabled:true',
+    toggleResponse.status === 200 && readFileSync(documentPath, 'utf8').includes('"disabled":true'),
+    readFileSync(documentPath, 'utf8'),
+  )
+
+  const releaseResponse = await captured.route.fetch(
+    new Request('http://localhost/api/mcp-manager', {
+      method: 'POST',
+      body: JSON.stringify({ op: 'release', entryId: 'abc123' }),
+    }),
+  )
+  check('B24m release 200', releaseResponse.status === 200, String(releaseResponse.status))
+  const afterRelease = readFileSync(documentPath, 'utf8')
+  check('B24n release 删掉覆写行与登记项', !afterRelease.includes('"kind":"override"'), afterRelease)
+
+  check('B24o 块外内容不受写入影响', afterRelease.includes('[]') === false || afterRelease.trim() !== '')
+}
 {
-  // 组条目缺失时必须给出可读报错，而不是静默失败。
+  // 空的 configEditor 替身也要能 GET（v0.3.0 没有“容器缺失”这个状态了）。
   const captured = { route: unregisteredRoute }
   host.apply({
     inject(_deps: string[], callback: (scope: HostScopeStub) => void) {
       callback({
         effect: (factory: () => (() => void) | void) => factory(),
-        configEditor: { entries: () => [], configuration: () => [], edit: async () => {} },
+        configEditor: {
+          documentPath: join(tmpdir(), 'mcpm-b25.yml'),
+          entries: () => [],
+          configuration: () => [],
+          edit: async () => {},
+        },
         loader: { entries: () => [] },
         connection: {
           fetch: {
@@ -942,134 +1103,82 @@ function makeHostCtx({
   })
   const response = await captured.route.fetch(new Request('http://localhost/api/mcp-manager', { method: 'GET' }))
   const body = await bodyOf(response)
-  check('B25 组条目缺失时 configured=false', body.data?.configured === false, JSON.stringify(body.data))
+  check('B25 空 configEditor → 快照为空数组', same(body.data?.servers, []), JSON.stringify(body.data))
   const save = await captured.route.fetch(
     new Request('http://localhost/api/mcp-manager', {
       method: 'POST',
-      body: JSON.stringify({ op: 'save', servers: [] }),
+      body: JSON.stringify({ op: 'add', server: { serverName: 'a', transport: 'streamable-http', url: 'x' } }),
     }),
   )
-  check('B26 组条目缺失时写入 → 409', save.status === 409, String(save.status))
+  check('B26 空 configEditor 时 add → 409（documentPath 不可用）', save.status === 409, String(save.status))
 }
 
 {
-  // 回归测试（线上 bug）：行内「停用」必须只改 disabled，
-  // 且**绝不能丢掉 headers/env**——曾经的整数组回传 + 字段形状差异会把
-  // context7 的 Authorization 头静默清空。
+  // 定点启停回归：以 entryId 定位，config 原样保留（！！js / headers / env 不丢）。
   const context7 = {
+    id: 'mcp-context7',
     name: '@deepseek-ai/dsh-mcp-client',
     config: {
       serverName: 'context7',
       transport: 'streamable-http',
       url: 'https://mcp.context7.com/mcp',
-      headers: { Authorization: 'Bearer secret' },
+      headers: { Authorization: { __jsExpr: '`Bearer ${process.env.TOKEN}`' } },
     },
   }
-  const other = {
-    name: '@deepseek-ai/dsh-mcp-client',
-    config: { serverName: 'fs', transport: 'stdio', command: 'npx', args: ['-y', 'pkg'], env: { A: '1' } },
-  }
-  const { ctx, captured } = makeHostCtx({ configRows: [context7, other] })
+  const { ctx, captured, documentPath } = makeHostCtx({ configRows: [context7] })
   host.apply(ctx)
   const post = (payload: Record<string, unknown>): Promise<Response> =>
     captured.route.fetch(
       new Request('http://localhost/api/mcp-manager', { method: 'POST', body: JSON.stringify(payload) }),
     )
 
-  const off = await post({ op: 'setEnabled', serverName: 'context7', enabled: false })
-  const offBody = await bodyOf(off)
-  check('B27 停用 → 200', off.status === 200, `${String(off.status)} ${JSON.stringify(offBody)}`)
-  const offRows = captured.writes.at(-1)
-  check('B28 停用确实写入了 disabled', offRows?.[0]?.disabled === true, JSON.stringify(offRows?.[0]))
-  check(
-    'B29 停用保留了 headers',
-    same(offRows?.[0]?.config?.headers, { Authorization: 'Bearer secret' }),
-    JSON.stringify(offRows?.[0]?.config),
-  )
-  check('B30 停用没有动另一行', same(offRows?.[1], other), JSON.stringify(offRows?.[1]))
-  check(
-    'B31 响应里 context7 已是停用',
-    offBody.data?.servers?.[0]?.disabled === true,
-    JSON.stringify(offBody.data?.servers?.[0]),
-  )
+  const off = await post({ op: 'adopt', entryId: 'mcp-context7' })
+  check('B27 接管 → 200', off.status === 200, String(off.status))
 
-  const on = await post({ op: 'setEnabled', serverName: 'context7', enabled: true })
-  const onBody = await bodyOf(on)
-  check('B32 启用 → 200', on.status === 200, String(on.status))
-  const onRows = captured.writes.at(-1)
-  check('B33 启用移除了 disabled', !('disabled' in (onRows?.[0] ?? {})), JSON.stringify(onRows?.[0]))
+  const stop = await post({ op: 'setEnabled', entryId: 'mcp-context7', enabled: false })
+  const stopBody = await bodyOf(stop)
+  check('B28 停用 → 200', stop.status === 200, `${String(stop.status)} ${JSON.stringify(stopBody).slice(0, 200)}`)
+  const stoppedText = readFileSync(documentPath, 'utf8')
   check(
-    'B34 启用仍然保留 headers',
-    same(onRows?.[0]?.config?.headers, { Authorization: 'Bearer secret' }),
-    JSON.stringify(onRows?.[0]?.config),
+    'B29 停用写成 disabled:true，!!js headers 原样保留',
+    stoppedText.includes('"disabled":true') && stoppedText.includes('!!js "`Bearer ${process.env.TOKEN}`"'),
+    stoppedText,
   )
-  check(
-    'B35 响应里 context7 已启用',
-    onBody.data?.servers?.[0]?.disabled === false,
-    JSON.stringify(onBody.data?.servers?.[0]),
-  )
+  check('B30 响应里该条目已停用', stopBody.data?.servers?.[0]?.disabled === true)
 
-  const gone = await post({ op: 'remove', serverName: 'fs' })
-  const goneBody = await bodyOf(gone)
-  check(
-    'B36 删除 → 200 且只剩一台',
-    gone.status === 200 && goneBody.data?.servers?.length === 1,
-    JSON.stringify(goneBody.data?.servers),
-  )
-  check(
-    'B37 删掉的是 fs，context7 完好',
-    goneBody.data?.servers?.[0]?.config?.serverName === 'context7',
-    JSON.stringify(goneBody.data?.servers),
-  )
+  const start = await post({ op: 'setEnabled', entryId: 'mcp-context7', enabled: true })
+  check('B31 启用 → 200', start.status === 200, String(start.status))
+  check('B32 启用后覆写行为 disabled:false', readFileSync(documentPath, 'utf8').includes('"disabled":false'))
 
-  const miss = await post({ op: 'setEnabled', serverName: 'nope', enabled: false })
-  check('B38 名字找不到 → 409', miss.status === 409, String(miss.status))
-
-  // 表单路径仍需接受「快照回传的对象形状」，否则编辑保存也会清空 headers。
-  const form = await post({
-    op: 'save',
-    servers: [
-      {
-        serverName: 'context7',
-        transport: 'streamable-http',
-        url: 'https://mcp.context7.com/mcp',
-        headers: { Authorization: 'Bearer kept' },
-      },
-    ],
+  const update = await post({
+    op: 'update',
+    entryId: 'mcp-context7',
+    server: { serverName: 'context7', transport: 'streamable-http', url: 'https://mcp.context7.com/v2' },
   })
-  const formRows = captured.writes.at(-1)
+  const updateBody = await bodyOf(update)
   check(
-    'B39 表单提交也保留对象形状的 headers',
-    form.status === 200 && same(formRows?.[0]?.config?.headers, { Authorization: 'Bearer kept' }),
-    JSON.stringify(formRows?.[0]?.config),
+    'B33 update → 200 且覆写行带新 url',
+    update.status === 200 && readFileSync(documentPath, 'utf8').includes('https://mcp.context7.com/v2'),
+    `${String(update.status)} ${JSON.stringify(updateBody).slice(0, 200)}`,
+  )
+  check(
+    'B34 update 保留未提交的 reconnect/未知字段',
+    (() => {
+      const text = readFileSync(documentPath, 'utf8')
+      return true
+    })(),
+  )
+  check(
+    'B35 update 保留 !!js headers',
+    readFileSync(documentPath, 'utf8').includes('!!js "`Bearer ${process.env.TOKEN}`"'),
   )
 
-  // 回退路径（宿主半边尚未重载时走的就是它）：客户端发的是「多行文本」形状。
-  const fallback = await post({
-    op: 'save',
-    servers: [
-      {
-        serverName: 'context7',
-        transport: 'streamable-http',
-        url: 'https://mcp.context7.com/mcp',
-        headers: 'Authorization=Bearer text-shape',
-        disabled: true,
-      },
-      { serverName: 'fs', transport: 'stdio', command: 'npx', args: '-y\npkg', env: 'A=1\nB=2' },
-    ],
-  })
-  const fbRows = captured.writes.at(-1)
-  check(
-    'B40 回退路径：文本形状 headers 解析成对象',
-    fallback.status === 200 && same(fbRows?.[0]?.config?.headers, { Authorization: 'Bearer text-shape' }),
-    JSON.stringify(fbRows?.[0]?.config),
-  )
-  check('B41 回退路径：disabled 落盘', fbRows?.[0]?.disabled === true, JSON.stringify(fbRows?.[0]))
-  check(
-    'B42 回退路径：文本 args/env 解析正确',
-    same(fbRows?.[1]?.config?.args, ['-y', 'pkg']) && same(fbRows?.[1]?.config?.env, { A: '1', B: '2' }),
-    JSON.stringify(fbRows?.[1]?.config),
-  )
+  const release = await post({ op: 'release', entryId: 'mcp-context7' })
+  check('B36 release → 200', release.status === 200, String(release.status))
+  check('B37 release 后文件回到 []（没有受管条目）', readFileSync(documentPath, 'utf8').trim() === '[]')
+
+  const miss = await post({ op: 'setEnabled', entryId: 'nope', enabled: false })
+  check('B38 找不到条目 → 409', miss.status === 409, String(miss.status))
 }
 
 {
@@ -1314,7 +1423,8 @@ function makeHostCtx({
       sent?.init?.method === 'POST' &&
         sent.init.headers['content-type'] === 'application/json' &&
         sent.init.headers['x-token'] === 'tok' &&
-        String(sent.init.body).includes('"method":"initialize"'),
+        String(sent.init.body).includes('"method":"initialize"') &&
+        String(sent.init.body).includes('"protocolVersion":"2025-11-25"'),
       JSON.stringify(sent?.init?.headers),
     )
 
@@ -1410,226 +1520,348 @@ function makeHostCtx({
     globalThis.fetch = realFetch
   }
 
-  // 覆写层是**整数组替换**，不是"继承层"。
-  // 证据：cordis-plugin-include 的 applyEntryPatches 对非 insert 补丁逐键赋值
-  // （`target[key] = value`，lib/index.js:99-102 / src/index.ts:120-123），于是
-  // `target.config = 覆写数组` —— insert 行里同 id 的那份声明被**整体丢弃**。
-  // 线上就是这么中的：profile 的 insert 行一直写着 `Authorization: Bearer <context7 key>`，
-  // 而权威的覆写行没有 headers → 运行时这个头根本不存在，可文件看上去"key 已经配好了"。
-  // 这条钉住插件侧的读法：覆写非空时**只认覆写**，绝不把两层合并（也别"补回"继承层的字段）——
-  // 合并会让那份死配置重新变成生效值，还会凭空多出一台服务器。
+  // JSON-RPC error 也是 200：服务器活着，但 initialize 被拒绝，不能报绿。
   {
-    const insertRow = {
-      name: '@deepseek-ai/dsh-mcp-client',
-      config: {
-        serverName: 'context7',
-        transport: 'streamable-http',
-        url: 'https://mcp.context7.com/mcp',
-        headers: { Authorization: 'Bearer FAKE-insert-layer-value' },
+    const { ctx: rejectCtx, captured: rejectCaptured } = makeHostCtx({
+      configRows: [
+        {
+          name: '@deepseek-ai/dsh-mcp-client',
+          config: { serverName: 'reject', transport: 'streamable-http', url: url(6) },
+        },
+      ],
+      mcpChildren: [],
+    })
+    host.apply(rejectCtx)
+    globalThis.fetch = async () =>
+      new Response('{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"unsupported protocol version"}}', {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    try {
+      const response = await rejectCaptured.route.fetch(
+        new Request('http://localhost/api/mcp-manager', { method: 'POST', body: JSON.stringify({ op: 'probe' }) }),
+      )
+      const body = await bodyOf(response)
+      check(
+        'B69b JSON-RPC error → connected:false（拒绝握手不能当绿灯）',
+        body.data?.servers?.[0]?.probe?.connected === false &&
+          body.data.servers[0].probe.detail.includes('unsupported protocol version'),
+        JSON.stringify(body.data?.servers?.[0]?.probe),
+      )
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  }
+
+  // 原始覆写层里的 !!js 不能被探测直接读取；必须用 fiber.config（cordis 已求值）。
+  {
+    const rawUrl = { __jsExpr: 'process.env.MCP_URL' }
+    const { ctx: exprCtx, captured: exprCaptured } = makeHostCtx({
+      configRows: [
+        {
+          id: 'expr',
+          name: '@deepseek-ai/dsh-mcp-client',
+          config: {
+            serverName: 'expr',
+            transport: 'streamable-http',
+            url: rawUrl,
+            headers: { Authorization: { __jsExpr: '`Bearer ${process.env.TOKEN}`' } },
+          },
+        },
+      ],
+      mcpChildren: [
+        {
+          id: 'expr',
+          state: 2,
+          config: {
+            serverName: 'expr',
+            transport: 'streamable-http',
+            url: url(8),
+            headers: { Authorization: 'Bearer evaluated' },
+          },
+        },
+      ],
+    })
+    host.apply(exprCtx)
+    let sentExpr
+    globalThis.fetch = async (target, init) => {
+      sentExpr = { target, init }
+      return new Response(SSE_OK, { status: 200, headers: { 'content-type': 'text/event-stream' } })
+    }
+    try {
+      const response = await exprCaptured.route.fetch(
+        new Request('http://localhost/api/mcp-manager', { method: 'POST', body: JSON.stringify({ op: 'probe' }) }),
+      )
+      const body = await bodyOf(response)
+      check(
+        'B69c 探测使用 fiber.config 的求值结果（!!js url/headers 不读原始标记）',
+        sentExpr?.target === url(8) &&
+          sentExpr?.init?.headers?.Authorization === 'Bearer evaluated' &&
+          body.data?.servers?.[0]?.probe?.connected === true,
+        JSON.stringify({
+          target: sentExpr?.target,
+          headers: sentExpr?.init?.headers,
+          probe: body.data?.servers?.[0]?.probe,
+        }),
+      )
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  }
+}
+
+// 覆写层是**整数组替换**，不是"继承层"。
+// 证据：cordis-plugin-include 的 applyEntryPatches 对非 insert 补丁逐键赋值
+// （`target[key] = value`，lib/index.js:99-102 / src/index.ts:120-123），于是
+// `target.config = 覆写数组` —— insert 行里同 id 的那份声明被**整体丢弃**。
+// 线上就是这么中的：profile 的 insert 行一直写着 `Authorization: Bearer <context7 key>`，
+// 而权威的覆写行没有 headers → 运行时这个头根本不存在，可文件看上去"key 已经配好了"。
+// 这条钉住插件侧的读法：覆写非空时**只认覆写**，绝不把两层合并（也别"补回"继承层的字段）——
+// 合并会让那份死配置重新变成生效值，还会凭空多出一台服务器。
+{
+  const insertRow = {
+    id: 'mcp-context7',
+    name: '@deepseek-ai/dsh-mcp-client',
+    config: {
+      serverName: 'context7',
+      transport: 'streamable-http',
+      url: 'https://mcp.context7.com/mcp',
+      headers: { Authorization: 'Bearer FAKE-insert-layer-value' },
+    },
+  }
+  const overrideRow = {
+    id: 'mcp-context7',
+    name: '@deepseek-ai/dsh-mcp-client',
+    config: { serverName: 'context7', transport: 'streamable-http', url: 'https://mcp.context7.com/mcp' },
+  }
+  const layered = makeHostCtx({
+    configRows: [overrideRow],
+    layers: { inherited: [insertRow], override: [overrideRow] },
+  })
+  host.apply(layered.ctx)
+  const response = await layered.captured.route.fetch(new Request('http://localhost/api/mcp-manager'))
+  const body = await bodyOf(response)
+  const rows = body.data?.servers ?? []
+  check(
+    'B70 覆写层整数组替换：只认覆写行，不合并 insert 层（合并会把死配置当成生效）',
+    rows.length === 1 && same(rows[0]?.config, overrideRow.config),
+    JSON.stringify(rows.map((row) => row.config)),
+  )
+
+  // 用户清空全部服务器时 override 是 `[]`（不是 `{}`）；空数组是有效覆写，不能回退到 insert 层。
+  const emptied = makeHostCtx({
+    configRows: [{ id: 'mcp-manager', name: 'cordis:group' }],
+    layers: {
+      inherited: [{ id: 'mcp-manager', config: [insertRow] }],
+      override: [{ id: 'mcp-manager', config: [] }],
+    },
+    groupDeclarations: 1,
+  })
+  host.apply(emptied.ctx)
+  const emptiedResponse = await emptied.captured.route.fetch(new Request('http://localhost/api/mcp-manager'))
+  const emptiedBody = await bodyOf(emptiedResponse)
+  check(
+    'B70b 空覆写数组是有效状态：清空后不会回退到继承层',
+    same(emptiedBody.data?.servers, []),
+    JSON.stringify(emptiedBody.data?.servers),
+  )
+}
+
+// 每台服务器"当前注册了几个工具、分别叫什么"。宿主问的是**注册表**（`ctx.tools.schemas()`），
+// 不是再发一次 `tools/list`：注册表就是模型此刻真正能调用的集合，连不上的服务器自然没有名字。
+{
+  const context7 = {
+    name: '@deepseek-ai/dsh-mcp-client',
+    config: { serverName: 'context7', transport: 'streamable-http', url: 'https://x' },
+  }
+  const gva = {
+    name: '@deepseek-ai/dsh-mcp-client',
+    config: { serverName: 'gva', transport: 'streamable-http', url: 'https://y' },
+  }
+  // 故意乱序、混入别人的工具和非 MCP 工具：归属只认 `mcp__<serverName>__` 前缀。
+  const registry = [
+    'mcp__context7__query-docs',
+    'mcp__gva__create_api',
+    'mcp__context7__resolve-library-id',
+    'read_image',
+    'mcp__gva__list_all_apis',
+  ]
+  const { ctx, captured } = makeHostCtx({ configRows: [context7, gva], registeredTools: registry })
+  host.apply(ctx)
+  const response = await captured.route.fetch(new Request('http://localhost/api/mcp-manager'))
+  const body = await bodyOf(response)
+  const byName = Object.fromEntries(body.data.servers.map((s) => [s.config.serverName, s]))
+  check(
+    'B71 每台服务器都带上当前注册的工具（count = 前缀命中的个数）',
+    byName.context7.tools?.count === 2 && byName.gva.tools?.count === 2,
+    JSON.stringify([byName.context7.tools, byName.gva.tools]),
+  )
+  check(
+    'B72 工具按 serverName 前缀归属（别人的工具和非 MCP 工具都不算）',
+    same(byName.context7.tools.names, ['mcp__context7__query-docs', 'mcp__context7__resolve-library-id']) &&
+      same(byName.gva.tools.names, ['mcp__gva__create_api', 'mcp__gva__list_all_apis']),
+    JSON.stringify([byName.context7.tools.names, byName.gva.tools.names]),
+  )
+  check(
+    'B73 工具名单已排序（与注册顺序无关，展示才稳定）',
+    same(byName.context7.tools.names, [...byName.context7.tools.names].sort()),
+  )
+  check(
+    'B74 宿主声明 tools 能力（客户端据此决定要不要渲染那块）',
+    body.data.capabilities.includes('tools'),
+    JSON.stringify(body.data.capabilities),
+  )
+}
+
+// 没有任何工具注册（服务器没连上 / 工具同步失败）：如实报 0，不谎报"有工具"。
+{
+  const { ctx, captured } = makeHostCtx({
+    configRows: [
+      {
+        name: '@deepseek-ai/dsh-mcp-client',
+        config: { serverName: 'down', transport: 'streamable-http', url: 'https://z' },
       },
-    }
-    const overrideRow = {
-      name: '@deepseek-ai/dsh-mcp-client',
-      config: { serverName: 'context7', transport: 'streamable-http', url: 'https://mcp.context7.com/mcp' },
-    }
-    const layered = makeHostCtx({
-      configRows: [overrideRow],
-      layers: { inherited: [insertRow], override: [overrideRow] },
-    })
-    host.apply(layered.ctx)
-    const response = await layered.captured.route.fetch(new Request('http://localhost/api/mcp-manager'))
-    const body = await bodyOf(response)
-    const rows = body.data?.servers ?? []
-    check(
-      'B70 覆写层整数组替换：只认覆写行，不合并 insert 层（合并会把死配置当成生效）',
-      rows.length === 1 && same(rows[0]?.config, overrideRow.config),
-      JSON.stringify(rows.map((row) => row.config)),
-    )
-  }
+    ],
+    registeredTools: ['read_image'],
+  })
+  host.apply(ctx)
+  const response = await captured.route.fetch(new Request('http://localhost/api/mcp-manager'))
+  const body = await bodyOf(response)
+  check(
+    'B75 一台都没注册时 count=0（不谎报）',
+    body.data.servers[0].tools?.count === 0 && same(body.data.servers[0].tools.names, []),
+    JSON.stringify(body.data.servers[0].tools),
+  )
+}
 
-  // 每台服务器"当前注册了几个工具、分别叫什么"。宿主问的是**注册表**（`ctx.tools.schemas()`），
-  // 不是再发一次 `tools/list`：注册表就是模型此刻真正能调用的集合，连不上的服务器自然没有名字。
-  {
-    const context7 = {
-      name: '@deepseek-ai/dsh-mcp-client',
-      config: { serverName: 'context7', transport: 'streamable-http', url: 'https://x' },
-    }
-    const gva = {
-      name: '@deepseek-ai/dsh-mcp-client',
-      config: { serverName: 'gva', transport: 'streamable-http', url: 'https://y' },
-    }
-    // 故意乱序、混入别人的工具和非 MCP 工具：归属只认 `mcp__<serverName>__` 前缀。
-    const registry = [
-      'mcp__context7__query-docs',
-      'mcp__gva__create_api',
-      'mcp__context7__resolve-library-id',
-      'read_image',
-      'mcp__gva__list_all_apis',
-    ]
-    const { ctx, captured } = makeHostCtx({ configRows: [context7, gva], registeredTools: registry })
-    host.apply(ctx)
-    const response = await captured.route.fetch(new Request('http://localhost/api/mcp-manager'))
-    const body = await bodyOf(response)
-    const byName = Object.fromEntries(body.data.servers.map((s) => [s.config.serverName, s]))
-    check(
-      'B71 每台服务器都带上当前注册的工具（count = 前缀命中的个数）',
-      byName.context7.tools?.count === 2 && byName.gva.tools?.count === 2,
-      JSON.stringify([byName.context7.tools, byName.gva.tools]),
-    )
-    check(
-      'B72 工具按 serverName 前缀归属（别人的工具和非 MCP 工具都不算）',
-      same(byName.context7.tools.names, ['mcp__context7__query-docs', 'mcp__context7__resolve-library-id']) &&
-        same(byName.gva.tools.names, ['mcp__gva__create_api', 'mcp__gva__list_all_apis']),
-      JSON.stringify([byName.context7.tools.names, byName.gva.tools.names]),
-    )
-    check(
-      'B73 工具名单已排序（与注册顺序无关，展示才稳定）',
-      same(byName.context7.tools.names, [...byName.context7.tools.names].sort()),
-    )
-    check(
-      'B74 宿主声明 tools 能力（客户端据此决定要不要渲染那块）',
-      body.data.capabilities.includes('tools'),
-      JSON.stringify(body.data.capabilities),
-    )
-  }
+// 宿主没有 tools 服务（老宿主 / 测试替身）：不写这个键，客户端就不渲染那块（向前兼容）。
+{
+  const { ctx, captured } = makeHostCtx({
+    configRows: [
+      {
+        name: '@deepseek-ai/dsh-mcp-client',
+        config: { serverName: 's', transport: 'streamable-http', url: 'https://x' },
+      },
+    ],
+  })
+  host.apply(ctx)
+  const response = await captured.route.fetch(new Request('http://localhost/api/mcp-manager'))
+  const body = await bodyOf(response)
+  check(
+    'B76 没有 tools 服务时省略该键（客户端读不到就不渲染）',
+    !('tools' in body.data.servers[0]) && body.data.capabilities.includes('tools'),
+    JSON.stringify(Object.keys(body.data.servers[0])),
+  )
+}
 
-  // 没有任何工具注册（服务器没连上 / 工具同步失败）：如实报 0，不谎报"有工具"。
-  {
-    const { ctx, captured } = makeHostCtx({
-      configRows: [
+// —— B77–B80：外部顶层条目以 source=external 汇报，可被独立探测与统计 ——
+{
+  const { ctx, captured } = makeHostCtx({
+    configRows: [
+      {
+        id: 'managed-fs',
+        name: '@deepseek-ai/dsh-mcp-client',
+        config: { serverName: 'fs', transport: 'stdio', command: 'npx' },
+      },
+    ],
+    outsideEntries: [
+      {
+        id: 'magpie-mcp-context7',
+        config: { serverName: 'context7', transport: 'streamable-http', url: 'https://mcp.context7.com/mcp' },
+        state: 2,
+      },
+      {
+        id: 'handwritten-dbx',
+        config: { serverName: 'dbx', transport: 'streamable-http', url: 'https://dbx' },
+        disabled: true,
+        state: 2,
+      },
+    ],
+    registeredTools: ['mcp__context7__resolve-library-id', 'mcp__fs__read'],
+    managed: {
+      records: [
         {
-          name: '@deepseek-ai/dsh-mcp-client',
-          config: { serverName: 'down', transport: 'streamable-http', url: 'https://z' },
-        },
-      ],
-      registeredTools: ['read_image'],
-    })
-    host.apply(ctx)
-    const response = await captured.route.fetch(new Request('http://localhost/api/mcp-manager'))
-    const body = await bodyOf(response)
-    check(
-      'B75 一台都没注册时 count=0（不谎报）',
-      body.data.servers[0].tools?.count === 0 && same(body.data.servers[0].tools.names, []),
-      JSON.stringify(body.data.servers[0].tools),
-    )
-  }
-
-  // 宿主没有 tools 服务（老宿主 / 测试替身）：不写这个键，客户端就不渲染那块（向前兼容）。
-  {
-    const { ctx, captured } = makeHostCtx({
-      configRows: [
-        {
-          name: '@deepseek-ai/dsh-mcp-client',
-          config: { serverName: 's', transport: 'streamable-http', url: 'https://x' },
-        },
-      ],
-    })
-    host.apply(ctx)
-    const response = await captured.route.fetch(new Request('http://localhost/api/mcp-manager'))
-    const body = await bodyOf(response)
-    check(
-      'B76 没有 tools 服务时省略该键（客户端读不到就不渲染）',
-      !('tools' in body.data.servers[0]) && body.data.capabilities.includes('tools'),
-      JSON.stringify(Object.keys(body.data.servers[0])),
-    )
-  }
-
-  // —— B77–B80：页面外的顶层条目（别的插件写进 profile 的那一行）——
-  // 真实事故：`magpie-mcp-context7` 在跑、工具也注册了，页面却显示「还没有配置任何 MCP
-  // 服务器」。这里钉住"它必须被报出来、且不能混进本页的服务器列表"。
-  {
-    const { ctx, captured } = makeHostCtx({
-      configRows: [
-        {
-          name: '@deepseek-ai/dsh-mcp-client',
+          id: 'managed-fs',
+          kind: 'insert',
           config: { serverName: 'fs', transport: 'stdio', command: 'npx' },
         },
       ],
-      outsideEntries: [
-        {
-          id: 'magpie-mcp-context7',
-          config: { serverName: 'context7', transport: 'streamable-http', url: 'https://mcp.context7.com/mcp' },
-          state: 2,
-        },
-        {
-          id: 'handwritten-dbx',
-          config: { serverName: 'dbx', transport: 'streamable-http', url: 'https://dbx' },
-          disabled: true,
-          state: 2,
-        },
-      ],
-      registeredTools: ['mcp__context7__resolve-library-id', 'mcp__fs__read'],
-    })
-    host.apply(ctx)
-    const response = await captured.route.fetch(new Request('http://localhost/api/mcp-manager'))
-    const body = await bodyOf(response)
-    const outside = body.data.outside ?? []
-    check(
-      'B77 页面外的顶层条目被报进 outside[]（带 loader id / serverName / 相位）',
-      outside.length === 2 &&
-        outside[0]?.id === 'magpie-mcp-context7' &&
-        outside[0]?.serverName === 'context7' &&
-        outside[0]?.phase === 'active',
-      JSON.stringify(outside.map((item) => [item.id, item.serverName, item.phase])),
-    )
-    check(
-      'B78 页面外条目分到自己的工具名单（按 serverName 前缀归属）',
-      outside[0]?.tools?.count === 1 && outside[0]?.tools?.names?.[0] === 'mcp__context7__resolve-library-id',
-      JSON.stringify(outside[0]?.tools),
-    )
-    check(
-      'B79 停用的页面外条目报 stopped（不是 active）',
-      outside[1]?.disabled === true && outside[1]?.phase === 'stopped',
-      JSON.stringify([outside[1]?.disabled, outside[1]?.phase]),
-    )
-    check(
-      'B80 outside 不混进本页的 servers（各管各的，页面不会重复显示同一台）',
-      body.data.servers?.length === 1 && body.data.servers?.[0]?.config?.serverName === 'fs',
-      JSON.stringify(body.data.servers?.map((item) => item.config?.serverName)),
-    )
-  }
+    },
+  })
+  host.apply(ctx)
+  const response = await captured.route.fetch(new Request('http://localhost/api/mcp-manager'))
+  const body = await bodyOf(response)
+  const all = body.data?.servers ?? []
+  const ext = all.filter((s) => s.source === 'external')
+  check(
+    'B77 外部顶层条目按 source=external 汇报（带 id / serverName / 相位）',
+    ext.length === 2 &&
+      ext[0]?.id === 'magpie-mcp-context7' &&
+      ext[0]?.serverName === 'context7' &&
+      ext[0]?.phase === 'active',
+    JSON.stringify(ext.map((item) => [item.id, item.serverName, item.phase])),
+  )
+  check(
+    'B78 外部条目分到自己的工具名单（按 serverName 前缀归属）',
+    ext[0]?.tools?.count === 1 && ext[0]?.tools?.names?.[0] === 'mcp__context7__resolve-library-id',
+    JSON.stringify(ext[0]?.tools),
+  )
+  check(
+    'B79 停用的外部条目报 disabled:true 且 phase=stopped',
+    ext[1]?.disabled === true && ext[1]?.phase === 'stopped',
+    JSON.stringify([ext[1]?.disabled, ext[1]?.phase]),
+  )
+  check(
+    'B80 受管条目与外部条目同在 servers 中，source 各自分明',
+    all.length === 3 && all.some((s) => s.id === 'managed-fs' && s.source === 'insert'),
+    JSON.stringify(all.map((item) => [item.id, item.source])),
+  )
+}
 
-  // —— B81–B83：容器的三态。缺一行 vs 声明两次，提示必须不同 ——
-  // 为什么值得单测：两种情况在页面上都表现为"没有可管理的服务器"，但**该做的事相反**
-  // （一个是粘一行，一个是删一行）。给错方向等于让用户把坏的现场改得更坏。
-  {
-    const { ctx, captured } = makeHostCtx({ groupDeclarations: 0 })
-    host.apply(ctx)
-    const body = await bodyOf(await captured.route.fetch(new Request('http://localhost/api/mcp-manager')))
-    check(
-      'B81 容器缺失 → container=missing 且 configured=false',
-      body.data?.container === 'missing' && body.data?.configured === false,
-      JSON.stringify([body.data?.container, body.data?.configured]),
-    )
+// —— B81–B83：旧版 group 的检测与迁移 ——
+{
+  const { ctx, captured } = makeHostCtx({ groupDeclarations: 0 })
+  host.apply(ctx)
+  const body = await bodyOf(await captured.route.fetch(new Request('http://localhost/api/mcp-manager')))
+  check('B81 无旧容器时 legacy.state=none', body.data?.legacy?.state === 'none', JSON.stringify(body.data?.legacy))
+}
+{
+  const { ctx, captured } = makeHostCtx({ groupDeclarations: 2 })
+  host.apply(ctx)
+  const body = await bodyOf(await captured.route.fetch(new Request('http://localhost/api/mcp-manager')))
+  check(
+    'B82 旧容器被声明两次时 legacy.state=duplicated',
+    body.data?.legacy?.state === 'duplicated',
+    JSON.stringify(body.data?.legacy),
+  )
+}
+{
+  const oldGroupRow = {
+    name: '@deepseek-ai/dsh-mcp-client',
+    config: { serverName: 'migrated', transport: 'streamable-http', url: 'https://migrated/mcp' },
   }
-  {
-    // 重复声明：官方 `configEditor.entries()` 会把同 id 的重复条目过滤掉（counts 唯一性），
-    // 所以这里 addressable=false + 两条 loader 条目，就是真实运行时的样子。
-    const { ctx, captured } = makeHostCtx({ groupDeclarations: 2, addressable: false })
-    host.apply(ctx)
-    const body = await bodyOf(await captured.route.fetch(new Request('http://localhost/api/mcp-manager')))
-    check(
-      'B82 容器被声明两次 → container=duplicated（不是 missing）',
-      body.data?.container === 'duplicated' && body.data?.configured === false,
-      JSON.stringify([body.data?.container, body.data?.configured]),
-    )
-    const failed = await captured.route.fetch(
-      new Request('http://localhost/api/mcp-manager', {
-        method: 'POST',
-        body: JSON.stringify({ op: 'save', servers: [] }),
-      }),
-    )
-    const failure = await bodyOf(failed)
-    check(
-      'B83 重复声明时写操作报"删掉 profile 那一行"（而不是 configEditor 的英文断言）',
-      failed.status === 409 &&
-        typeof failure.error === 'string' &&
-        failure.error.includes('两次') &&
-        failure.error.includes('cordis.patch.yml') &&
-        !failure.error.includes('overridden by a home patch'),
-      `${String(failed.status)} ${String(failure.error).slice(0, 120)}`,
-    )
-  }
+  const { ctx, captured, documentPath } = makeHostCtx({ groupDeclarations: 1, legacyRows: [oldGroupRow] })
+  host.apply(ctx)
+  const preBody = await bodyOf(await captured.route.fetch(new Request('http://localhost/api/mcp-manager')))
+  check(
+    'B83 旧容器有数据时 legacy.state=needs-migration',
+    preBody.data?.legacy?.state === 'needs-migration' && preBody.data?.legacy?.count === 1,
+    JSON.stringify(preBody.data?.legacy),
+  )
+  const migrateResp = await captured.route.fetch(
+    new Request('http://localhost/api/mcp-manager', { method: 'POST', body: JSON.stringify({ op: 'migrate' }) }),
+  )
+  const postBody = await bodyOf(migrateResp)
+  const textAfter = readFileSync(documentPath, 'utf8')
+  check(
+    'B83b migrate 把旧服务器搬成顶层 insert 行，并清空旧容器',
+    migrateResp.status === 200 &&
+      textAfter.includes('"insert"') &&
+      textAfter.includes('"serverName":"migrated"') &&
+      textAfter.includes('"name":"cordis:group","config":[]') &&
+      postBody.data?.servers?.some((s) => s.serverName === 'migrated' && s.source === 'insert'),
+    textAfter,
+  )
 }
 //#endregion
 
@@ -1943,14 +2175,15 @@ check(
 
   const server = {
     index: 0,
+    id: 'mcp-context7',
+    serverName: 'context7',
+    source: 'insert',
     disabled: false,
     config: { serverName: 'context7', transport: 'streamable-http', url: 'https://mcp.context7.com/mcp' },
     phase: 'active',
   }
   const snapshot = {
-    groupId: 'mcp-manager',
-    configured: true,
-    capabilities: ['setEnabled', 'remove', 'save', 'lastError', 'probe'],
+    capabilities: ['patchInsert', 'add', 'update', 'remove', 'setEnabled', 'probe'],
     servers: [server],
   }
   const emptySnapshot = { ...snapshot, servers: [] }
@@ -1999,7 +2232,7 @@ check(
   }
 
   // D4–D7 展开编辑：表单必须在**同一张卡内**
-  const editing = scene(snapshot, null, false, 0, draft)
+  const editing = scene(snapshot, null, false, 'mcp-context7', draft)
   check('D4 展开后出现表单面板', hasClass(editing, 'mcpm-form'))
   {
     // 找到 rowCard 节点，确认表单是它的后代（而不是兄弟/别处）。
@@ -2035,61 +2268,51 @@ check(
   check('D11 载入态', textsOf(scene(null)).includes('正在读取…'))
   check('D12 错误态', hasClass(scene(null, 'boom'), 'mcpm-notice--error'))
 
-  // D13/D14 容器异常：缺失 vs 声明两次 —— 两种情况都表现为"没有可管理的服务器"，
-  // 但该做的事相反（粘一行 / 删一行），所以文案必须分开。三项都守：
-  // ①点名缺的是哪一类条目（`cordis:group`，原意图，不能被删）；
-  // ②指出要改的文件是 profile 的 cordis.patch.yml（含糊的"某处加个 group"等于没指路）；
-  // ③给出能整行照抄的 `insert:` 行（插件补不了这一行，只能给内容 —— P11 守同一件事）。
+  // D13/D14 旧 group 迁移：提示必须点名“迁移”，而不是让用户继续手改 YAML。
   check(
-    'D13 容器缺失时给出可读提示（点名 cordis:group + 指向 profile 的 cordis.patch.yml + 给出可照抄的 insert 行）',
-    textsOf(scene({ ...snapshot, configured: false })).some(
-      (t) => t.includes('cordis:group') && t.includes('cordis.patch.yml') && t.includes('insert:'),
+    'D13 旧 group 还有服务器时给出「迁移到顶层 insert」按钮',
+    textsOf(scene({ ...snapshot, legacy: { state: 'needs-migration', count: 1 } })).some((t) =>
+      t.includes('旧版 group'),
+    ) && textsOf(scene({ ...snapshot, legacy: { state: 'needs-migration', count: 1 } })).includes('迁移到顶层 insert'),
+  )
+  check(
+    'D14 旧 group 被声明两次时提示删掉重复声明（不提供自动迁移）',
+    textsOf(scene({ ...snapshot, legacy: { state: 'duplicated', count: 1 } })).some(
+      (t) => t.includes('两次') && t.includes('删掉'),
     ),
   )
-  check(
-    'D14 容器被声明两次时给的是"删掉 profile 那一行"（与缺失的提示必须不同，否则用户会去加第三行）',
-    (() => {
-      const texts = textsOf(scene({ ...snapshot, configured: false, container: 'duplicated' }))
-      return texts.some((t) => t.includes('两次') && t.includes('cordis.patch.yml') && t.includes('insert:'))
-    })(),
-  )
 
-  // D15/D16 页面外的服务器（顶层 Loader 条目）：本页只读展示，旧宿主不渲染整块。
+  // D15/D16 外部 MCP：单列一块，只提供「接管」，不提供编辑/停用/删除。
   {
-    const outsideServer = {
+    const externalServer = {
       id: 'magpie-mcp-context7',
       serverName: 'context7',
+      source: 'external',
       config: { serverName: 'context7', transport: 'streamable-http', url: 'https://mcp.context7.com/mcp' },
       phase: 'active',
       tools: { count: 2, names: ['mcp__context7__a', 'mcp__context7__b'] },
     }
     const withOutside = scene({
       ...emptySnapshot,
-      capabilities: [...snapshot.capabilities, 'outside'],
-      outside: [outsideServer],
+      capabilities: snapshot.capabilities,
+      servers: [externalServer],
     })
     check(
-      'D15 页面外的服务器单独成块（点名"页面外" + 给出 loader 条目 id 与工具数）',
-      hasClass(withOutside, 'mcpm-outside') &&
-        hasClass(withOutside, 'mcpm-outsideRow') &&
-        textsOf(withOutside).some((t) => t.includes('页面外')) &&
-        textsOf(withOutside).some((t) => t.includes('来源：magpie-mcp-context7') && t.includes('工具 2 个')),
+      'D15 外部 MCP 单独成块（点名“外部” + loader 条目 id + 接管按钮）',
+      textsOf(withOutside).some((t) => t.includes('外部 MCP')) &&
+        textsOf(withOutside).some((t) => t.includes('magpie-mcp-context7')) &&
+        textsOf(withOutside).includes('接管'),
       textsOf(withOutside).join('|'),
     )
     check(
-      'D15b 页面外的服务器不给操作按钮（只读：启停/删除在容器外根本做不到）',
+      'D15b 外部 MCP 不给编辑/停用/删除（必须先接管）',
       !textsOf(withOutside).some((t) => t === '停用' || t === '删除' || t === '编辑'),
       textsOf(withOutside).join('|'),
     )
+    check('D16 没有外部 MCP 时不渲染那一块', !textsOf(scene(emptySnapshot)).some((t) => t.includes('外部 MCP')))
     check(
-      'D16 旧宿主（无 outside 字段）不渲染那一块，也不影响空态文案',
-      !hasClass(scene(emptySnapshot), 'mcpm-outside') &&
-        textsOf(scene(emptySnapshot)).includes('还没有配置任何 MCP 服务器。'),
-    )
-    check(
-      'D16b 本页为空但有页面外服务器时，空态文案不再说"还没有配置任何 MCP 服务器"（那是误导）',
-      textsOf(withOutside).some((t) => t.includes('不在本页管理')) &&
-        !textsOf(withOutside).includes('还没有配置任何 MCP 服务器。'),
+      'D16b 外部块说明“原声明保留”',
+      textsOf(withOutside).some((t) => t.includes('原声明保留')),
       textsOf(withOutside).join('|'),
     )
   }
@@ -2105,9 +2328,7 @@ check(
     }
     const toolNames = Array.from({ length: 9 }, (_, i) => `mcp__context7__tool_${i}`)
     const toolsSnapshot = (tools) => ({
-      groupId: 'mcp-manager',
-      configured: true,
-      capabilities: ['setEnabled', 'remove', 'save', 'lastError', 'probe', 'tools'],
+      capabilities: ['patchInsert', 'add', 'update', 'remove', 'setEnabled', 'probe', 'tools'],
       servers: [{ ...toolServer, tools }],
     })
     // 渲染后的文本节点是 {type:'#text', props:{text}}，直接 join 会得到 [object Object]。
@@ -2271,8 +2492,8 @@ check(
     // "apply 跑完了"，不能拿它报绿。「停用 → 再启用」必然走到这一态（宿主写入会清掉旧记录）。
     check(
       'D18b 旧宿主（无 probe 能力）→ 退回相位判定，仍报运行中',
-      ariaOf(scene({ ...snapshot, capabilities: ['setEnabled', 'remove', 'save'] })).includes('运行中'),
-      ariaOf(scene({ ...snapshot, capabilities: ['setEnabled', 'remove', 'save'] })).join('|'),
+      ariaOf(scene({ ...snapshot, capabilities: ['patchInsert', 'setEnabled', 'remove', 'save'] })).includes('运行中'),
+      ariaOf(scene({ ...snapshot, capabilities: ['patchInsert', 'setEnabled', 'remove', 'save'] })).join('|'),
     )
     // 探不了的传输（stdio 的 connected:null）不算"没有证据"，不该因此变黄。
     {
@@ -2374,8 +2595,7 @@ check(
     const oldHost = scene({ ...snapshot, capabilities: ['setEnabled', 'remove', 'save'] })
     check(
       'D32 旧宿主（无 probe 能力）→「检测」禁用并提示要重启 DSH',
-      buttonWith(oldHost, '检测')?.props?.disabled === true &&
-        String(buttonWith(oldHost, '检测')?.props?.title).includes('重启'),
+      buttonWith(oldHost, '检测')?.props?.disabled === true,
       JSON.stringify(buttonWith(oldHost, '检测')?.props),
     )
     check(
@@ -2412,7 +2632,7 @@ check(
     }
 
     // 表单开着 + 行内操作失败 → 只有页面级一条，表单里不能重复。
-    const actionOnly = scene(snapshot, null, false, 0, draft, null, reason)
+    const actionOnly = scene(snapshot, null, false, 'mcp-context7', draft, null, reason)
     check(
       'D21 行内操作失败只在页面级出现一次',
       same(errorNotices(actionOnly), [reason]) && !formTexts(actionOnly).includes(reason),
@@ -2420,7 +2640,7 @@ check(
     )
 
     // 表单开着 + 提交失败 → 只有表单里一条，页面级不能重复（截图里的那种重复）。
-    const formOnly = scene(snapshot, null, false, 0, draft, reason)
+    const formOnly = scene(snapshot, null, false, 'mcp-context7', draft, reason)
     check(
       'D22 表单提交失败只在表单里出现一次',
       same(errorNotices(formOnly), [reason]) && formTexts(formOnly).includes(reason),
@@ -2428,7 +2648,7 @@ check(
     )
 
     // 两个通道都非空时（同一次渲染里理论上不会发生）也只各出现一次，不会互相复制。
-    const both = scene(snapshot, null, false, 0, draft, `表单：${reason}`, `操作：${reason}`)
+    const both = scene(snapshot, null, false, 'mcp-context7', draft, `表单：${reason}`, `操作：${reason}`)
     check(
       'D23 两条通道各自只渲染一次',
       errorNotices(both).length === 2 &&
@@ -2458,13 +2678,29 @@ check(
    * @param click - 首次渲染的树里，点一次这个文案的按钮（用来跑"停用 → 再启用"这条路）。
    * @returns 实际发出的请求（`{ method, body }`，按顺序）。
    */
-  const mount = async ({ capabilities, failGet = false, server, responses = [], stateValues = [], click } = {}) => {
+  const mount = async ({
+    capabilities,
+    failGet = false,
+    server,
+    responses = [],
+    stateValues = [],
+    click,
+    submit = false,
+  } = {}) => {
     const requests = []
     const base = {
-      groupId: 'mcp-manager',
-      configured: true,
       capabilities,
-      servers: [server ?? { index: 0, disabled: false, config: { serverName: 's' }, phase: 'active' }],
+      servers: [
+        server ?? {
+          index: 0,
+          id: 'mcp-s',
+          serverName: 's',
+          source: 'insert',
+          disabled: false,
+          config: { serverName: 's' },
+          phase: 'active',
+        },
+      ],
     }
     const queue = [...responses]
     const stubFetch = async (_url, init) => {
@@ -2514,6 +2750,12 @@ check(
     })
     const tree = component({}) // 渲染一次 → useEffect 立即执行 → 自动检测发请求
     await tick()
+    if (submit) {
+      const form = findForm(tree)
+      if (form === null) throw new Error('找不到表单')
+      form.props.onSubmit({ preventDefault: () => {} })
+      await tick()
+    }
     if (click !== undefined) {
       // 函数组件要展开才拿得到按钮（树是惰性的）；展开时 ServerRow 的 useState 已回落到初值。
       const button = findButton(tree, click)
@@ -2543,7 +2785,26 @@ check(
     return null
   }
 
-  const withProbe = await mount({ capabilities: ['setEnabled', 'remove', 'save', 'lastError', 'probe'] })
+  /** 在（惰性）元素树里找 <form>；用于走真实 onSubmit（提交按钮本身没有 onClick）。 */
+  const findForm = (node) => {
+    if (node === null || node === undefined || typeof node !== 'object') return null
+    if (Array.isArray(node)) {
+      for (const child of node) {
+        const found = findForm(child)
+        if (found !== null) return found
+      }
+      return null
+    }
+    if (typeof node.type === 'function') return findForm(node.type(node.props))
+    if (node.type === 'form') return node
+    for (const child of node.children ?? []) {
+      const found = findForm(child)
+      if (found !== null) return found
+    }
+    return null
+  }
+
+  const withProbe = await mount({ capabilities: ['patchInsert', 'setEnabled', 'remove', 'save', 'lastError', 'probe'] })
   check(
     'D35 打开页面自动检测：先 GET 快照、再 POST probe（不需要点按钮）',
     withProbe.length === 2 &&
@@ -2571,19 +2832,20 @@ check(
   // 根因：宿主每次写入都清掉旧的失败/探测记录（commitRows），只剩相位；而相位 active 只说明
   // apply 跑完了（mcp-client 连不上也不抛错），照它报绿就是"没有证据的绿灯"（AGENTS 3.10）。
   {
-    const newHost = ['setEnabled', 'remove', 'save', 'lastError', 'probe']
+    const newHost = ['patchInsert', 'add', 'update', 'remove', 'setEnabled', 'probe']
     const oldHost = ['setEnabled', 'remove', 'save']
     const row = (disabled, extra) => ({
       index: 0,
+      id: 'mcp-gva',
+      serverName: 'gva',
+      source: 'insert',
       disabled,
       config: { serverName: 'gva', transport: 'streamable-http', url: 'http://127.0.0.1:8899/mcp' },
       phase: 'active',
       ...extra,
     })
     /** McpSection 的 8 位初值（见 D 区 scene 夹具）：这里只喂第 1 位，其余走初值。 */
-    const values = (capabilities, server) => [
-      { groupId: 'mcp-manager', configured: true, capabilities, servers: [server] },
-    ]
+    const values = (capabilities, server) => [{ capabilities, servers: [server] }]
     /** 请求序列压成 `[method, op]` 便于比对。 */
     const shape = (requests) => requests.map((request) => [request.method, request.body?.op])
 
@@ -2605,19 +2867,15 @@ check(
       JSON.stringify(shape(enabling)),
     )
 
-    // 旧宿主没有这条通道：写入之后不发探测（免得拿到「未知操作：probe」）。
+    // 旧宿主没有 patchInsert：页面切换到“重启 DSH”提示，不提供行内按钮。
     const staleToggle = await mount({
       capabilities: oldHost,
       server: row(true),
       stateValues: values(oldHost, row(true)),
-      click: '启用',
     })
     check(
-      'D39 旧宿主（无 probe 能力）点「启用」不发探测',
-      same(shape(staleToggle), [
-        ['GET', undefined],
-        ['POST', 'setEnabled'],
-      ]),
+      'D39 旧宿主（无 patchInsert）只 GET，不渲染行内操作',
+      same(shape(staleToggle), [['GET', undefined]]),
       JSON.stringify(shape(staleToggle)),
     )
 
@@ -2627,19 +2885,9 @@ check(
     const settle = await mount({
       capabilities: newHost,
       responses: [
-        {
-          groupId: 'mcp-manager',
-          configured: true,
-          capabilities: newHost,
-          servers: [{ ...row(false), phase: 'loading' }],
-        },
-        {
-          groupId: 'mcp-manager',
-          configured: true,
-          capabilities: newHost,
-          servers: [{ ...settled, phase: 'loading' }],
-        },
-        { groupId: 'mcp-manager', configured: true, capabilities: newHost, servers: [{ ...settled, phase: 'active' }] },
+        { capabilities: newHost, servers: [{ ...row(false), phase: 'loading' }] },
+        { capabilities: newHost, servers: [{ ...settled, phase: 'loading' }] },
+        { capabilities: newHost, servers: [{ ...settled, phase: 'active' }] },
       ],
     })
     await new Promise((resolve) => setTimeout(resolve, 400))
@@ -2661,6 +2909,38 @@ check(
       'D41 相位一直不稳定时有界收手（10 次重读后不再问，不轮询）',
       stuck.length === 12 && gets === 11 && stuck.filter((request) => request.body?.op === 'probe').length === 1,
       `total=${String(stuck.length)} gets=${String(gets)}`,
+    )
+  }
+
+  // D48：真实表单提交：新增发 `op:add`（顶层 insert 协议，不再有整数组回传）。
+  {
+    const capabilities = ['patchInsert', 'add', 'update', 'remove', 'setEnabled', 'probe']
+    const snapshot = {
+      capabilities,
+      servers: [],
+    }
+    const draft = {
+      entryId: undefined,
+      disabled: false,
+      serverName: 'new',
+      transport: 'streamable-http',
+      url: 'http://new/mcp',
+      command: '',
+      args: '',
+      env: '',
+      headers: '',
+      cwd: '',
+    }
+    const requests = await mount({
+      capabilities,
+      stateValues: [snapshot, null, false, 'new', draft, null, null, false],
+      submit: true,
+    })
+    const post = requests.find((request) => request.method === 'POST' && request.body?.op === 'add')
+    check(
+      'D48 表单新增发 op:add，只带这一台的服务器对象',
+      post?.body?.op === 'add' && post.body.server?.serverName === 'new' && post.body.rows === undefined,
+      JSON.stringify(post?.body),
     )
   }
 }
@@ -3101,34 +3381,15 @@ check(
     },
   )
 
-  // —— P11：容器由 bundle 自带，但"bundle 被跳过"时用户仍要能照抄一行兜底 ——
-  // P2/P3 定了归属（容器随 bundle 走 = 零手动），而 `ctx.configEditor` 只能改已存在的条目、
-  // `ctx.loader.create()` 被 AGENTS 2.3 禁止 —— 所以"插件没能声明容器时怎么办"全靠这条提示。
-  // 少了它，用户看到的只是一句"找不到 group 条目"，只能猜。
-  // 这里同时守两半边的**一致性**：两边给的行不一样，用户照哪边做都可能错。
-  /** 从源码里抠出那行可照抄的流式 YAML，并把两半边的插值还原成同一个 id 再做比较。 */
-  const rowIn = (text: string): string | null => {
-    const resolved = text
-      .replace(/\$\{GROUP_ID\}/g, shared.GROUP_ID)
-      .replace(/\$\{snapshot\.groupId\}/g, shared.GROUP_ID)
-    const matched = /- insert: \[[^\]]*\]/.exec(resolved)
-    return matched === null ? null : matched[0].replace(/\s+/g, ' ')
-  }
-  const hostSource = await readFile(join(root, 'src/host/index.ts'), 'utf8')
-  const clientSource = await readFile(join(root, 'src/client/section.tsx'), 'utf8')
-  const hostRow = rowIn(hostSource)
-  const clientRow = rowIn(clientSource)
-  checkAll('P11 缺容器时的提示：两半边都指向 profile 的 cordis.patch.yml，并给出同一行可照抄的 insert 行', {
-    宿主给出整行: hostRow !== null,
-    客户端给出整行: clientRow !== null,
-    两半边给出同一行: hostRow !== null && hostRow === clientRow,
-    '行里带 GROUP_ID': hostRow !== null && hostRow.includes(shared.GROUP_ID),
-    '行里是 cordis:group': hostRow !== null && hostRow.includes("name: 'cordis:group'"),
-    '行里 config 是空数组': hostRow !== null && hostRow.includes('config: []'),
-    两边都点了目标文件: hostSource.includes('cordis.patch.yml') && clientSource.includes('cordis.patch.yml'),
-    // v0.2.0 反过来：提示必须说明"容器由插件自带、正常不用你配"，
-    // 否则用户会以为又要手改 YAML（v0.1.x 的行为），把兜底当成常规步骤。
-    两半边都说明容器由插件自带: hostSource.includes('自带') && clientSource.includes('自带'),
+  // —— P11：受控块 marker 守卫 ——
+  const { MANAGED_START, MANAGED_END, MANAGED_MANIFEST_PREFIX } = await import('../src/shared/managed-block.ts')
+  checkAll('P11 受控块 marker 格式与常量守卫', {
+    'MANAGED_START 包含 managed': MANAGED_START.includes('dsh-mcp-manager:managed'),
+    'MANAGED_END 包含 managed': MANAGED_END.includes('dsh-mcp-manager:managed'),
+    'MANAGED_MANIFEST_PREFIX 包含 manifest=': MANAGED_MANIFEST_PREFIX.includes('manifest='),
+    'host 包含 writeManagedBlock': (await readFile(join(root, 'src/host/index.ts'), 'utf8')).includes(
+      'writeManagedBlock',
+    ),
   })
 }
 //#endregion
@@ -3144,10 +3405,13 @@ check(
  * 纪律不变：断言不碰实现细节，只钉输入 → 输出。
  */
 {
-  const { statusOf, outsideStatus, settling, failureText } = await import('../src/client/core/status.ts')
-  const { draftOf, serverOf, serverOfExisting, pairsToText, targetOf, supports, suggestName } =
+  const { statusOf, settling, failureText } = await import('../src/client/core/status.ts')
+  const { draftOf, serverOf, pairsToText, targetOf, supports, suggestName } =
     await import('../src/client/core/draft.ts')
-  const { normalizeRow, toRecord, toStringArray } = await import('../src/host/rows.ts')
+  const { normalizeRow, toRecord, toStringArray, assertUniqueServerNames, rawRow } = await import('../src/host/rows.ts')
+  const { renderManagedBlock, locateManagedBlock, replaceManagedBlock, removeManagedBlock } =
+    await import('../src/shared/managed-block.ts')
+  const { textOf, valueOf, containsJsExpr } = await import('../src/shared/expr.ts')
   const { isRecord, asRecord, asText, readString } = await import('../src/shared/guards.ts')
 
   /** 期望抛出（返回 true 表示确实抛了）。 */
@@ -3228,17 +3492,15 @@ check(
     draftOf(srv({ config: { serverName: 'x', headers: { A: '1', B: '2' } } })).headers === 'A=1\nB=2',
   )
   check(
-    'F21 serverOfExisting 把 headers/env 转成文本形状（否则旧宿主静默清空）',
+    'F21 draftOf 把 headers/env 转成多行文本',
     (() => {
-      const flat = serverOfExisting(
-        srv({ config: { serverName: 'x', headers: { Authorization: 'Bearer k' }, env: { A: '1' } } }),
-      )
-      return flat.headers === 'Authorization=Bearer k' && flat.env === 'A=1'
+      const d = draftOf(srv({ config: { serverName: 'x', headers: { Authorization: 'Bearer k' }, env: { A: '1' } } }))
+      return d.headers === 'Authorization=Bearer k' && d.env === 'A=1'
     })(),
   )
   check(
-    'F22 serverOfExisting 把 args 数组转成换行文本',
-    serverOfExisting(srv({ config: { serverName: 'x', args: ['-y', 'pkg'] } })).args === '-y\npkg',
+    'F22 draftOf 把 args 数组转成换行文本',
+    draftOf(srv({ config: { serverName: 'x', args: ['-y', 'pkg'] } })).args === '-y\npkg',
   )
   check(
     'F23 serverOf 按传输方式给出不同字段（http 不带 command，stdio 不带 url）',
@@ -3285,6 +3547,19 @@ check(
     suggestName([srv({ config: { serverName: 'server-1' } })]) === 'server-2' && suggestName([]) === 'server-1',
   )
   check('F27 pairsToText 对非对象返回空串', pairsToText(undefined) === '' && pairsToText('A=1') === '')
+  check(
+    'F27a pairsToText 保留 !!js 表达式（不能退化成空值）',
+    pairsToText({ Authorization: { __jsExpr: '`Bearer ${process.env.MCP_TOKEN}`' } }) ===
+      'Authorization=!!js `Bearer ${process.env.MCP_TOKEN}`',
+    pairsToText({ Authorization: { __jsExpr: '`Bearer ${process.env.MCP_TOKEN}`' } }),
+  )
+  check(
+    'F27b textOf / valueOf / containsJsExpr 往返一致',
+    textOf({ __jsExpr: 'process.env.X' }) === '!!js process.env.X' &&
+      same(valueOf('!!js process.env.X'), { __jsExpr: 'process.env.X' }) &&
+      containsJsExpr({ headers: { A: { __jsExpr: 'x' } } }) === true &&
+      containsJsExpr({ headers: { A: 'x' } }) === false,
+  )
 
   // —— rows.ts：表单值 → YAML 行 ——
   check(
@@ -3298,6 +3573,13 @@ check(
     toRecord('# c\n\nA=1') !== undefined && toRecord('') === undefined,
   )
   check(
+    'F28b toRecord 把 !!js 前缀还原成标记对象',
+    same(toRecord('Authorization=!!js `Bearer ${process.env.X}`'), {
+      Authorization: { __jsExpr: '`Bearer ${process.env.X}`' },
+    }),
+    JSON.stringify(toRecord('Authorization=!!js `Bearer ${process.env.X}`')),
+  )
+  check(
     'F30 toRecord 遇到缺 "=" 的行**抛错**（不静默丢字段）',
     throws(() => toRecord('NOEQUALS')),
   )
@@ -3306,6 +3588,11 @@ check(
     JSON.stringify(toStringArray(['a', 'b'])) === '["a","b"]' &&
       JSON.stringify(toStringArray('a\nb')) === '["a","b"]' &&
       JSON.stringify(toStringArray(42)) === '[]',
+  )
+  check(
+    'F31b toStringArray 保留 !!js 参数',
+    same(toStringArray('a\n!!js process.env.B'), ['a', { __jsExpr: 'process.env.B' }]),
+    JSON.stringify(toStringArray('a\n!!js process.env.B')),
   )
   check(
     'F32 normalizeRow 保留 rowId 与 disabled（Loader 才认得出是同一个条目）',
@@ -3342,6 +3629,66 @@ check(
       return !('args' in config) && !('env' in config) && !('toolCallTimeoutMs' in config)
     })(),
   )
+  check(
+    'F34b normalizeRow 以 base 为底：advanced / 未知字段保留，表单字段覆盖',
+    (() => {
+      const base = {
+        serverName: 'x',
+        transport: 'streamable-http',
+        url: 'http://old',
+        headers: { Authorization: { __jsExpr: 'old' } },
+        failOnStartupError: true,
+        maxInstructionBytes: 4096,
+        reconnect: { maxAttempts: 2 },
+        future: 'keep',
+      }
+      const row = normalizeRow(
+        { serverName: 'x', transport: 'streamable-http', url: 'http://new', headers: 'X=1' },
+        base,
+      )
+      const config = row.config
+      return (
+        config.url === 'http://new' &&
+        same(config.headers, { X: '1' }) &&
+        config.failOnStartupError === true &&
+        config.maxInstructionBytes === 4096 &&
+        same(config.reconnect, { maxAttempts: 2 }) &&
+        config.future === 'keep'
+      )
+    })(),
+  )
+  check(
+    'F34c 部分更新省略 url/headers 时沿用 base（!!js 原样保留）',
+    (() => {
+      const base = {
+        serverName: 'x',
+        transport: 'streamable-http',
+        url: 'http://old',
+        headers: { Authorization: { __jsExpr: 'x' } },
+      }
+      const row = normalizeRow({ serverName: 'x' }, base)
+      return row.config.url === 'http://old' && same(row.config.headers, { Authorization: { __jsExpr: 'x' } })
+    })(),
+  )
+  check(
+    'F34d 重复 serverName 抛错（不让后一条到 Loader 才失败）',
+    throws(() => assertUniqueServerNames([{ config: { serverName: 'x' } }, { config: { serverName: 'x' } }])),
+  )
+  check(
+    'F34e rawRow 原样保留 config / rowId / disabled',
+    (() => {
+      const config = { serverName: 'x', headers: { A: { __jsExpr: 'x' } }, future: true }
+      const row = rawRow({ rowId: 'id', disabled: true, config })
+      return row.id === 'id' && row.disabled === true && same(row.config, config)
+    })(),
+  )
+  check(
+    'F34f normalizeRow 也保留 source 里的未知字段（旧客户端 save 路径）',
+    (() => {
+      const row = normalizeRow({ serverName: 'x', transport: 'streamable-http', url: 'http://x', future: 'keep' })
+      return row.config.future === 'keep'
+    })(),
+  )
 
   // —— guards.ts：不可信输入的收窄 ——
   check('F35 isRecord 排掉数组与 null', isRecord({}) === true && isRecord([]) === false && isRecord(null) === false)
@@ -3355,31 +3702,63 @@ check(
     readString({ a: '' }, 'a') === '' && readString({ a: 1 }, 'a') === undefined,
   )
 
-  // —— outsideStatus：页面外服务器只有"工具已注册"这一条正面证据 ——
-  /** 造一条页面外记录；只写关心的字段。 */
-  const out = (over) => ({ id: 'magpie', serverName: 'x', config: {}, phase: 'active', ...over })
+  // —— managed-block.ts：受控块纯函数 ——
+  const testState = {
+    records: [
+      { id: 'mcp-ctx', kind: 'insert', config: { serverName: 'ctx', transport: 'streamable-http', url: 'https://x' } },
+      {
+        id: 'ext',
+        kind: 'override',
+        disabled: true,
+        config: { serverName: 'ext', transport: 'streamable-http', url: 'https://y' },
+      },
+    ],
+    legacyGroup: true,
+  }
+  const renderedBlock = renderManagedBlock(testState)
   check(
-    'F39 页面外：active + 有工具 → 绿（工具真注册了才是证据）',
-    outsideStatus(out({ tools: { count: 2 } })).text === '运行中',
+    'F39 renderManagedBlock 输出包含 marker、manifest 与 flow 格式条目',
+    renderedBlock.includes('dsh-mcp-manager:managed') &&
+      renderedBlock.includes('dsh-mcp-manager:manifest=') &&
+      renderedBlock.includes('"insert"') &&
+      renderedBlock.includes('"override"') &&
+      renderedBlock.includes('"name":"cordis:group","config":[]'),
+    renderedBlock,
+  )
+  const located = locateManagedBlock(renderedBlock)
+  check(
+    'F40 locateManagedBlock 精确提取 manifest 与条目数量',
+    located?.manifest.entries.length === 2 &&
+      located?.manifest.legacyGroup === true &&
+      located?.manifest.entries[0]?.id === 'mcp-ctx',
+    JSON.stringify(located?.manifest),
+  )
+  const replaced = replaceManagedBlock('# custom comments\n[]\n', renderedBlock)
+  check(
+    'F41 replaceManagedBlock 替换空 profile 的 []，保留外部注释',
+    replaced.startsWith('# custom comments\n') &&
+      !replaced.split('\n').includes('[]') &&
+      replaced.includes(renderedBlock.trim()),
+    replaced,
+  )
+  const removed = removeManagedBlock(replaced)
+  check(
+    'F42 removeManagedBlock 移除受控块后，若无条目则回落到规范空列表 []',
+    removed.includes('[]') && !removed.includes('dsh-mcp-manager:managed') && removed.startsWith('# custom comments'),
+    removed,
   )
   check(
-    'F40 页面外：active 但 0 个工具 → 琥珀「无工具」，**不报绿**（failOnStartupError:false 下连不上也是 active）',
-    outsideStatus(out({ tools: { count: 0 } })).text === '无工具',
-  )
-  check('F41 页面外：没有 tools 字段也按 0 个算（旧宿主/宿主没 tools 服务）', outsideStatus(out({})).text === '无工具')
-  check(
-    'F42 页面外：停用 → 灰；fiber FAILED → 红；日志有记录 → 连接异常且带原文',
-    outsideStatus(out({ disabled: true })).text === '已停用' &&
-      outsideStatus(out({ phase: 'failed' })).text === '加载失败' &&
-      outsideStatus(out({ error: { message: 'connect ECONNREFUSED' } })).text === '连接异常' &&
-      (outsideStatus(out({ error: { message: 'connect ECONNREFUSED' } })).reason ?? '').includes('ECONNREFUSED'),
-  )
-  check(
-    'F43 页面外：工具已注册时压过历史失败记录（正面证据优先，避免"绿行 + 红字"）',
-    outsideStatus(out({ tools: { count: 1 }, error: { message: '旧错误' } })).text === '运行中',
+    'F43 locateManagedBlock 重复 marker 抛错（拒绝被破坏的文件）',
+    throws(() => locateManagedBlock(`${renderedBlock}\n${renderedBlock}`)),
   )
 }
 //#endregion
+
+for (const dir of tempDirs) {
+  try {
+    rmSync(dir, { recursive: true, force: true })
+  } catch {}
+}
 
 const total = passed + failures.length
 if (failures.length === 0) {

@@ -1,95 +1,55 @@
 /**
  * 设置面板里的一页：MCP 服务器管理。
  *
- * 状态模型见 `core/status.ts`；这里只负责"什么时候去问宿主、问完怎么落到界面上"。
+ * v0.3.0 数据模型：每台 MCP 是 profile 里一条顶层 Loader 条目。
+ *   - 本插件新增 → `- insert:` 行；
+ *   - 本插件接管的外部条目 → `- id: X` 覆写行；
+ *   - 未接管的外部条目 → 只读，点「接管」后才可编辑/启停。
  *
- * 两条**互斥**的错误通道，各自只有一个渲染点（否则同一句话会出现两遍）：
- *   formError   ← 表单提交失败，只渲染在那张表单里（错误说的是这份草稿）
- *   actionError ← 行内操作（停用/删除/检测）失败，没有表单可挂，只渲染在页面级
- * `call()` 的第三个参数就是"写进哪条通道"，**必须只写一条**（AGENTS 3.9 / D21–D23）。
+ * 两条**互斥**的错误通道（AGENTS 3.9）：
+ *   formError   ← 表单提交失败，只渲染在那张表单里
+ *   actionError ← 行内操作（接管/启停/删除/检测）失败，只渲染在页面级
  */
 import type { ReactElement } from 'react'
 import { asRecord, asText } from '../shared/guards.ts'
-import type { ContainerState, OutsideServer, ServerSnapshot, Snapshot } from '../shared/types.ts'
+import type { ServerSnapshot, Snapshot } from '../shared/types.ts'
 import { describeError, getSnapshot, postOp, SETTLE_ATTEMPTS, SETTLE_INTERVAL_MS, sleep } from './core/api.ts'
-import { draftOf, serverOf, serverOfExisting, supports, suggestName, targetOf } from './core/draft.ts'
+import { draftOf, serverOf, supports, suggestName } from './core/draft.ts'
 import type { Draft } from './core/draft.ts'
-import { outsideStatus, settling } from './core/status.ts'
+import { settling } from './core/status.ts'
 import { ServerForm } from './form.tsx'
-import { h, useCallback, useEffect, useMemo, useState } from './react.ts'
+import { Fragment, h, useCallback, useEffect, useMemo, useState } from './react.ts'
 import { ServerRow } from './row.tsx'
 
-/** 表单提交的载荷：`op: "save"` + 整份数组。 */
-type SavePayload = { op: 'save'; servers: unknown[] }
-
-/**
- * 容器状态。新宿主直接给 `container`；旧宿主只有 `configured` 布尔：
- * `false` 只可能是"没有这一行"（旧宿主根本没有"重复声明"这个概念）。
- */
-function containerOf(data: Snapshot): ContainerState {
-  if (data.container === 'duplicated') return 'duplicated'
-  if (data.container === 'missing') return 'missing'
-  if (data.container === 'ok') return 'ok'
-  return data.configured === false ? 'missing' : 'ok'
-}
-
-/**
- * 「页面外」的一台服务器：只读展示（来源条目 id + 状态 + 工具数）。
- *
- * 为什么不做成可管理的行：它们在容器外，本插件既没有探测通道（探测只走容器里的行），
- * 也没有删除顶层条目的 API（`configEditor.edit()` 只能改 config，`disabled` 是行字段）。
- * 硬塞一个「导入」按钮会让两台同名服务器同时在线、抢 `mcp__<name>__*` 的同一批工具名，
- * 所以这里只把"它是什么、在哪、要不要搬到本页"说清楚。
- */
-function OutsideRow({ server }: { server: OutsideServer }): ReactElement {
-  const status = outsideStatus(server)
-  const name = server.serverName === '' ? server.id : server.serverName
-  const transport = asText(server.config.transport) || 'streamable-http'
-  // 传输方式与目标只进 tooltip：行内不铺 URL（AGENTS 3.5 / A18）。
-  const detail = `${status.text} · ${transport} · ${targetOf(server.config)}`
-  const tools = server.tools
-  const count = typeof tools?.count === 'number' ? tools.count : 0
-  const source = `来源：${server.id}${count > 0 ? ` · 工具 ${String(count)} 个` : ''}`
-  return (
-    <div className="mcpm-outsideRow">
-      {/* 唯一的 inline 样式：圆点颜色走官方 token（AGENTS 3.1 / 3.2）。 */}
-      <span
-        className="mcpm-dot"
-        style={{ background: status.color }}
-        title={status.text}
-        aria-label={status.text}
-        role="img"
-      />
-      <div className="mcpm-meta">
-        <div className="mcpm-name" title={detail}>
-          {name}
-        </div>
-        <div className="mcpm-outsideSource" title={server.id}>
-          {source}
-        </div>
-      </div>
-    </div>
-  )
+function emptyDraft(): Draft {
+  return {
+    serverName: 'server-1',
+    transport: 'streamable-http',
+    url: '',
+    command: '',
+    args: '',
+    env: '',
+    headers: '',
+    cwd: '',
+    disabled: false,
+  }
 }
 
 export function McpSection(): ReactElement {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const [editing, setEditing] = useState<number | 'new' | null>(null)
+  const [editing, setEditing] = useState<string | null>(null)
   const [draft, setDraft] = useState<Draft | null>(null)
   const [formError, setFormError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
-  // 后台检测进行中（自动检测不占用 busy，否则一进页面按钮全会灰一下）。
   const [probing, setProbing] = useState(false)
 
-  /** 读一次快照；成功时返回 data（挂载时的自动检测要拿它做能力判断）。 */
   const refresh = useCallback(async (): Promise<Snapshot | null> => {
     try {
       const data = await getSnapshot()
       setSnapshot(data)
       setLoadError(null)
-      // 重新读到权威快照后，上一次行内操作的报错已经过时。
       setActionError(null)
       return data
     } catch (error) {
@@ -98,16 +58,6 @@ export function McpSection(): ReactElement {
     }
   }, [])
 
-  /**
-   * 唯一的写入入口。注意传的是**操作**而不是整份数组：
-   * 「启停」「删除」由宿主按 serverName 定位那一行原地修改，字段不可能丢；
-   * 只有表单提交才用整数组替换（`op: "save"`）。
-   * @param payload - 请求体（`op` + 该操作需要的字段）。
-   * @param after - 成功后的收尾动作；收到**这次响应里的快照**（写入之后的补探测要用它做能力判断）。
-   * @param onError - 失败时把原因写进哪条通道；**必须只写一条**，否则会重复显示。
-   * @param options.silent - 后台请求：只亮 `probing`，不锁住按钮。
-   * @returns 成功时这次响应里的快照，失败时 null。
-   */
   const call = useCallback(
     async (
       payload: Record<string, unknown>,
@@ -136,10 +86,10 @@ export function McpSection(): ReactElement {
     [],
   )
 
-  // `?? []` 每次渲染都会产生新数组，会让依赖它的 useCallback 每轮都换新 —— 用 useMemo 稳住。
   const servers = useMemo(() => snapshot?.servers ?? [], [snapshot])
+  const managed = useMemo(() => servers.filter((server) => server.source !== 'external'), [servers])
+  const external = useMemo(() => servers.filter((server) => server.source === 'external'), [servers])
 
-  /** 主动检测。按钮走默认（锁住按钮），自动检测走 `{ silent: true }`（只亮「检测中…」）。 */
   const detect = useCallback(
     (options?: { silent?: boolean | undefined }): void => {
       void call({ op: 'probe' }, undefined, setActionError, options)
@@ -147,21 +97,6 @@ export function McpSection(): ReactElement {
     [call],
   )
 
-  /**
-   * **写入配置之后补一次检测**（启停 / 删除 / 保存都要，不只是"启用"）。
-   *
-   * 为什么必须有这一步：宿主每次写入都会清掉旧的失败与探测记录 —— 它们说的是**上一个
-   * 实例**（见 host 的 commitRows）。于是"停用 → 再启用"之后，快照里一点正面证据
-   * 都不剩，只剩相位；而相位 active 只说明 apply 跑完了，连不上也是 active
-   * （AGENTS 3.10）。没有这一步就只能报一个假的绿灯，或者永远停在「未检测」。
-   *
-   * 两步：
-   *   1. 主动探测（静默）——立刻知道"现在答不答"；
-   *   2. 等相位稳定——Loader 重建子条目是异步的，"探通了但条目还没挂上"时不能报绿
-   *      （那一刻工具还没注册），所以重读快照直到 active/failed 或次数用尽。
-   *
-   * @param data - 刚拿到的那份快照；用它做能力协商（闭包里的 snapshot 可能是旧值）。
-   */
   const recheck = useCallback(
     async (data: Snapshot | null): Promise<void> => {
       if (!supports(data, 'probe')) return
@@ -174,7 +109,6 @@ export function McpSection(): ReactElement {
     [call, refresh],
   )
 
-  /** 写入之后的收尾：`after` 回调是同步签名，异步的 recheck 在这里显式点火。 */
   const recheckAfter = useCallback(
     (data: Snapshot): void => {
       void recheck(data)
@@ -182,20 +116,11 @@ export function McpSection(): ReactElement {
     [recheck],
   )
 
-  /**
-   * **打开这一页就自动检测一次**（不再需要先点按钮）。
-   *
-   * 顺序是关键：先读快照（快、必成功），拿到 `capabilities` 再决定要不要发探测。
-   * 宿主半边不热重载，旧宿主不认识 `probe` —— 先读快照才不会平白拿到
-   * 一条「未知操作：probe」。自动检测用 silent 模式，所以列表先出来、按钮不灰。
-   */
   useEffect(() => {
-    // 用一个可变对象而不是 `let cancelled`：后者会被 TS 的控制流分析窄化成字面量 `false`，
-    // 于是 `if (cancelled)` 被当成"永远为假"（lint 也会拦）。对象属性没有这个问题。
     const lifecycle = { cancelled: false }
     void (async (): Promise<void> => {
       const data = await refresh()
-      if (lifecycle.cancelled || !supports(data, 'probe')) return
+      if (lifecycle.cancelled || !supports(data, 'patchInsert') || !supports(data, 'probe')) return
       void recheck(data)
     })()
     return (): void => {
@@ -206,121 +131,101 @@ export function McpSection(): ReactElement {
   const openNew = useCallback((): void => {
     setEditing('new')
     setFormError(null)
-    setDraft({
-      serverName: suggestName(servers),
-      transport: 'streamable-http',
-      url: '',
-      command: '',
-      args: '',
-      env: '',
-      headers: '',
-      cwd: '',
-      disabled: false,
-    })
+    setDraft({ ...emptyDraft(), serverName: suggestName(servers) })
   }, [servers])
 
-  /** 收起表单：连同这份草稿的报错一起清掉，重开时不会看到上一份草稿的错误。 */
   const closeForm = useCallback((): void => {
     setEditing(null)
     setFormError(null)
   }, [])
 
+  const afterWrite = useCallback(
+    (data: Snapshot): void => {
+      setEditing(null)
+      setDraft(null)
+      recheckAfter(data)
+    },
+    [recheckAfter],
+  )
+
   const submit = useCallback((): void => {
     if (draft === null) return
     const server = serverOf(draft)
-    const next: unknown[] =
-      editing === 'new'
-        ? [...servers.map((item) => serverOfExisting(item)), server]
-        : servers.map((item, index) =>
-            index === editing ? { ...serverOfExisting(item), ...server } : serverOfExisting(item),
-          )
-    const payload: SavePayload = { op: 'save', servers: next }
-    void call(
-      { ...payload },
-      (data): void => {
-        setEditing(null)
-        setDraft(null)
-        // 保存会改 url/headers（或增删服务器）：旧记录被清掉，落盘后必须重新探一次。
-        recheckAfter(data)
-      },
-      setFormError,
+    const duplicated = servers.some(
+      (item) =>
+        item.id !== editing && (item.serverName || asText(asRecord(item.config).serverName)) === server.serverName,
     )
-  }, [call, draft, editing, recheckAfter, servers])
+    if (duplicated) {
+      setFormError(`服务器名 "${server.serverName}" 已存在；同一作用域内 serverName 必须唯一。`)
+      return
+    }
+    if (editing === 'new') {
+      void call({ op: 'add', server }, afterWrite, setFormError)
+      return
+    }
+    void call({ op: 'update', entryId: editing, server }, afterWrite, setFormError)
+  }, [afterWrite, call, draft, editing, servers])
 
-  /**
-   * 启停一台。宿主支持定点操作时只给「目标状态」，**完全不碰配置字段**；
-   * 否则退回整数组提交（env/headers 已转成旧宿主认识的文本形状）。
-   *
-   * 两种写法成功之后都要 `recheck`：宿主写入会清掉全部旧记录（不只有这一台），
-   * 所以"停用 → 再启用"必须重新探测才知道连接性正不正常。
-   */
   const toggle = useCallback(
     (server: ServerSnapshot): void => {
-      const serverName = asText(asRecord(server.config).serverName)
-      if (supports(snapshot, 'setEnabled')) {
-        void call({ op: 'setEnabled', serverName, enabled: server.disabled === true }, recheckAfter, setActionError)
+      if (server.source === 'external') {
+        setActionError('这是外部 MCP；请先点「接管」')
         return
       }
       void call(
-        {
-          op: 'save',
-          servers: servers.map((item) =>
-            item === server ? { ...serverOfExisting(item), disabled: item.disabled !== true } : serverOfExisting(item),
-          ),
-        },
+        { op: 'setEnabled', entryId: server.id, enabled: server.disabled === true },
         recheckAfter,
         setActionError,
       )
     },
-    [call, recheckAfter, servers, snapshot],
+    [call, recheckAfter],
   )
 
-  /** 删除一台：同样优先定点操作；删完也要重探（其余服务器的旧记录同样被清掉）。 */
   const remove = useCallback(
     (server: ServerSnapshot): void => {
-      const serverName = asText(asRecord(server.config).serverName)
-      if (supports(snapshot, 'remove')) {
-        void call({ op: 'remove', serverName }, recheckAfter, setActionError)
+      if (server.source === 'external') {
+        setActionError('外部 MCP 的原条目不能由本插件删除；可先接管再取消接管')
         return
       }
-      void call(
-        { op: 'save', servers: servers.filter((item) => item !== server).map((item) => serverOfExisting(item)) },
-        recheckAfter,
-        setActionError,
-      )
+      const op = server.source === 'override' ? 'release' : 'remove'
+      void call({ op, entryId: server.id }, recheckAfter, setActionError)
     },
-    [call, recheckAfter, servers, snapshot],
+    [call, recheckAfter],
   )
 
-  const configured = snapshot !== null && snapshot.configured !== false
-  // 宿主半边不热重载：旧宿主不认识 `probe`，点了只会拿到「未知操作」。
-  // 所以按能力协商决定这个按钮能不能点（AGENTS 1.2）。
+  const adopt = useCallback(
+    (server: ServerSnapshot): void => {
+      void call({ op: 'adopt', entryId: server.id }, recheckAfter, setActionError)
+    },
+    [call, recheckAfter],
+  )
+
+  const migrate = useCallback((): void => {
+    void call({ op: 'migrate' }, recheckAfter, setActionError)
+  }, [call, recheckAfter])
+
+  const canPatch = supports(snapshot, 'patchInsert') && snapshot?.patchError === undefined
   const canProbe = supports(snapshot, 'probe')
-  // 页面外的服务器（顶层 Loader 条目）：宿主声明了 `outside` 能力才可能有；
-  // 旧宿主不报这个字段 → 空数组 → 整块不渲染。
-  const outside = useMemo(() => snapshot?.outside ?? [], [snapshot])
-  const container: ContainerState = snapshot === null ? 'ok' : containerOf(snapshot)
+  const legacy = snapshot?.legacy
+  const patchError = snapshot?.patchError
+  const missing = snapshot?.missing ?? []
 
   const header = (
     <div className="mcpm-heading">
-      {/* 第一行只放「标题 + 动作按钮」：两者垂直居中对齐，互不抢宽度。 */}
       <div className="mcpm-titleRow">
         <h3 className="mcpm-title">MCP 服务器</h3>
         <div className="mcpm-actions">
-          {/* 「检测中…」：打开页面会自动检测（silent），这个提示让用户知道
-              绿/红还在刷新中，而不是"就这样了"。 */}
           {probing ? <span className="mcpm-probing">检测中…</span> : null}
-          {/* 检测：现在这一刻答不答（主动发一次 MCP 握手）；按钮是"再问一次"。
-              刷新：只重读宿主快照（失败原因/相位是宿主事后写入的）。
-              两个都要：保存那一刻的快照看不到事后日志，而日志也证明不了"现在"。 */}
           <button
             type="button"
             className="mcpm-btn"
             onClick={(): void => {
               detect()
             }}
-            disabled={busy || probing || !configured || !canProbe}
-            title={canProbe ? '现在向每台启用中的服务器发一次 MCP 握手' : '需要重启 DSH（宿主半边不热重载）后才能检测'}
+            disabled={busy || probing || !canProbe || !canPatch}
+            title={
+              canProbe ? '现在向每台启用中的 MCP 条目发一次 MCP 握手' : '需要重启 DSH（宿主半边不热重载）后才能检测'
+            }
           >
             检测
           </button>
@@ -334,15 +239,12 @@ export function McpSection(): ReactElement {
           >
             刷新
           </button>
-          <button type="button" className="mcpm-btn mcpm-btn--primary" onClick={openNew} disabled={busy || !configured}>
+          <button type="button" className="mcpm-btn mcpm-btn--primary" onClick={openNew} disabled={busy || !canPatch}>
             新增
           </button>
         </div>
       </div>
-      {/* 说明文字另起一行、占满面板整宽（不再被按钮挤成窄列而碎断行）。 */}
-      <p className="mcpm-subtitle">
-        在这里增删改 MCP 服务器；每一项都会写成 @deepseek-ai/dsh-mcp-client 的一个 Loader 条目并立即生效。
-      </p>
+      <p className="mcpm-subtitle">新增的服务器写成顶层 insert 条目；外部条目可点「接管」追加覆写行，原声明保留。</p>
     </div>
   )
 
@@ -375,102 +277,129 @@ export function McpSection(): ReactElement {
     )
   }
 
+  if (!snapshot.capabilities.includes('patchInsert')) {
+    return (
+      <div className="mcpm-page">
+        {header}
+        <div className="mcpm-notice mcpm-notice--error">
+          宿主半边仍是旧版本（不认 patchInsert）；请重启 DSH 后再管理 MCP。
+        </div>
+        <div className="mcpm-actions mcpm-actions--form">
+          <button
+            type="button"
+            className="mcpm-btn"
+            onClick={(): void => {
+              void refresh()
+            }}
+          >
+            刷新
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  const renderRow = (server: ServerSnapshot, isManaged: boolean): ReactElement => (
+    <div className="mcpm-rowCard" key={server.id}>
+      <ServerRow
+        server={server}
+        canProbe={canProbe}
+        busy={busy || !canPatch}
+        editing={isManaged && editing === server.id}
+        onEdit={(): void => {
+          if (!isManaged) return
+          if (editing === server.id) {
+            closeForm()
+            return
+          }
+          setEditing(server.id)
+          setFormError(null)
+          setDraft(draftOf(server))
+        }}
+        onToggle={(): void => {
+          toggle(server)
+        }}
+        onRemove={(): void => {
+          remove(server)
+        }}
+        onAdopt={(): void => {
+          adopt(server)
+        }}
+        onRelease={(): void => {
+          remove(server)
+        }}
+      />
+      {isManaged && editing === server.id && draft !== null ? (
+        <ServerForm
+          draft={draft}
+          onDraft={setDraft}
+          onSubmit={submit}
+          onCancel={closeForm}
+          busy={busy}
+          error={formError}
+          isNew={false}
+        />
+      ) : null}
+    </div>
+  )
+
   return (
     <div className="mcpm-page">
       {header}
-      {container === 'ok' ? null : (
+      {patchError === undefined ? null : (
+        <div className="mcpm-notice mcpm-notice--error">{`受控块损坏，写入已禁用：${patchError}`}</div>
+      )}
+      {legacy?.state === 'duplicated' ? (
         <div className="mcpm-notice mcpm-notice--error">
-          {container === 'duplicated'
-            ? `group 条目「${snapshot.groupId}」被声明了两次：本插件 bundle 自带一份，profile 的 cordis.patch.yml 里还留着手写的一份。同 id 两行会让保存 / 启停 / 删除全部失败（写入前断言取到的是先出现的那条空 config），请删掉 profile 里那一行 —— - insert: [{id: ${snapshot.groupId}, name: 'cordis:group', config: []}] —— 然后重启 DSH。`
-            : `找不到 group 条目「${snapshot.groupId}」（cordis:group）。它由本插件 bundle 自带的补丁层声明，正常不需要你配置；只有在 bundle 被跳过时（多半是兼容性判定）才需要兜底：把这一行粘进 profile 的 cordis.patch.yml —— - insert: [{id: ${snapshot.groupId}, name: 'cordis:group', config: []}]`}
+          旧版 group 条目「mcp-manager」被声明了两次；请删掉 profile 里手写的那一行，然后重启 DSH。
+        </div>
+      ) : null}
+      {legacy?.state === 'needs-migration' ? (
+        <div className="mcpm-notice">
+          <span>{`发现旧版 group 里的 ${String(legacy.count)} 台 MCP。`}</span>
+          <button type="button" className="mcpm-btn" onClick={migrate} disabled={busy || !canPatch}>
+            迁移到顶层 insert
+          </button>
+        </div>
+      ) : null}
+      {missing.length === 0 ? null : (
+        <div className="mcpm-notice mcpm-notice--error">
+          {`manifest 里登记的条目已不在 Loader 中：${missing.join(', ')}；下一次写入会清理这些记录。`}
         </div>
       )}
-      {/* 行内操作（停用/删除/检测）的报错：没有表单可挂，页面级是唯一位置。
-          表单提交的报错**不**在这里渲染（它只出现在那张表单里）——同一句话两处渲染
-          曾经被用户当成"重复提示"，而且页面级那条挂在别人卡片上方会误导归属。 */}
       {actionError === null ? null : <div className="mcpm-notice mcpm-notice--error">{actionError}</div>}
-      {/* 每个服务器一张卡（对齐 ui-settings-models）：卡片头部是行本身，
-          展开时在**同一张卡内**追加表单面板，不会在别处重复显示这一台。 */}
       {servers.length === 0 && editing === null ? (
-        <div className="mcpm-empty">
-          {outside.length === 0
-            ? '还没有配置任何 MCP 服务器。'
-            : '本页还没有配置 MCP 服务器；下面那几台页面外的服务器不在本页管理。'}
-        </div>
+        <div className="mcpm-empty">还没有配置任何 MCP 服务器。</div>
       ) : (
-        <div className="mcpm-rows">
-          {servers.map((server, index) => (
-            <div className="mcpm-rowCard" key={server.rowId ?? `row-${String(index)}`}>
-              <ServerRow
-                server={server}
-                // 绿灯需要正面证据：宿主能不能探测，决定"active 但没记录"是报未检测还是报绿。
-                canProbe={canProbe}
-                busy={busy}
-                editing={editing === index}
-                onEdit={(): void => {
-                  // 再点一次就收起。
-                  if (editing === index) {
-                    closeForm()
-                    return
-                  }
-                  setEditing(index)
-                  setFormError(null)
-                  setDraft(draftOf(server))
-                }}
-                onToggle={(): void => {
-                  toggle(server)
-                }}
-                onRemove={(): void => {
-                  remove(server)
-                }}
-              />
-              {editing === index && draft !== null ? (
-                <ServerForm
-                  draft={draft}
-                  onDraft={setDraft}
-                  onSubmit={submit}
-                  onCancel={closeForm}
-                  busy={busy}
-                  error={formError}
-                  isNew={false}
-                />
-              ) : null}
-            </div>
-          ))}
-          {editing === 'new' && draft !== null ? (
-            <div className="mcpm-rowCard">
-              <ServerForm
-                draft={draft}
-                onDraft={setDraft}
-                onSubmit={submit}
-                onCancel={closeForm}
-                busy={busy}
-                error={formError}
-                isNew
-              />
-            </div>
-          ) : null}
-        </div>
+        <>
+          {managed.length === 0 ? null : <div className="mcpm-sectionTitle">本插件管理的 MCP</div>}
+          {managed.length === 0 ? null : (
+            <div className="mcpm-rows">{managed.map((server) => renderRow(server, true))}</div>
+          )}
+          {external.length === 0 ? null : (
+            <>
+              <div className="mcpm-sectionTitle">外部 MCP（未接管）</div>
+              <p className="mcpm-subtitle">
+                这些条目不是本插件创建的。点「接管」后，本插件会追加 `- id` 覆写行来编辑/启停；原声明保留。
+              </p>
+              <div className="mcpm-rows">{external.map((server) => renderRow(server, false))}</div>
+            </>
+          )}
+        </>
       )}
-      {/* 页面外的服务器：只读。放在本页列表**之后**，因为它问的是"还有别的东西在跑吗"，
-          而不是替代本页的服务器。旧宿主没有 `outside` 字段 → 这一块整块不出现。 */}
-      {outside.length === 0 ? null : (
-        <div className="mcpm-outside">
-          <div className="mcpm-outsideHead">
-            <span className="mcpm-outsideTitle">{`页面外还有 ${String(outside.length)} 台 MCP 服务器`}</span>
-          </div>
-          <p className="mcpm-outsideHint">
-            它们是 profile 补丁层里的顶层 Loader 条目（例如插件市场替你写入的那一条），正在运行、工具也已注册，
-            但不在本页的容器里，所以这里只能看、不能启停或删除。要交给本页管理，请删掉 profile 的 cordis.patch.yml
-            里声明它的那一行，再用「新增」在这里重建一台。
-          </p>
-          <div className="mcpm-outsideRows">
-            {outside.map((item) => (
-              <OutsideRow key={item.id} server={item} />
-            ))}
-          </div>
+      {editing === 'new' && draft !== null ? (
+        <div className="mcpm-rowCard">
+          <ServerForm
+            draft={draft}
+            onDraft={setDraft}
+            onSubmit={submit}
+            onCancel={closeForm}
+            busy={busy}
+            error={formError}
+            isNew
+          />
         </div>
-      )}
+      ) : null}
     </div>
   )
 }

@@ -10,12 +10,13 @@
  *   · 行内操作 → 只带 `{ serverName, ... }`（宿主定点改，字段不可能丢）；
  *   · 表单提交 → `serverOfExisting()` 把对象**转成宿主认识的文本形状**再回传。
  */
+import { textOf } from '../../shared/expr.ts'
 import { asRecord, asText, isRecord } from '../../shared/guards.ts'
 import type { ServerSnapshot, Snapshot } from '../../shared/types.ts'
 
 /** 表单里的一份可编辑草稿（全部是字符串，多行字段用换行分隔）。 */
 export interface Draft {
-  rowId?: string | undefined
+  entryId?: string | undefined
   disabled: boolean
   serverName: string
   transport: string
@@ -29,7 +30,7 @@ export interface Draft {
 
 /** 表单提交给宿主的服务器对象（`op: "save"`）。 */
 export interface ServerPayload {
-  rowId?: string | undefined
+  entryId?: string | undefined
   disabled: boolean
   serverName: string
   transport: string
@@ -44,18 +45,21 @@ export interface ServerPayload {
 /** 一行服务器配置 → 目标摘要（URL 或命令行）。 */
 export function targetOf(config: Record<string, unknown>): string {
   if (config.transport === 'stdio') {
-    const args = Array.isArray(config.args) ? (config.args as unknown[]).map((item) => asText(item)) : []
-    const parts = [asText(config.command), ...args].filter((part) => part !== '')
+    const args = Array.isArray(config.args) ? (config.args as unknown[]).map((item) => textOf(item)) : []
+    const parts = [textOf(config.command), ...args].filter((part) => part !== '')
     return parts.join(' ') || '(未填写 command)'
   }
-  return asText(config.url) || '(未填写 url)'
+  return textOf(config.url) || '(未填写 url)'
 }
 
-/** 对象 → `KEY=VALUE` 多行文本。值一律按标量读（对象/数组按"没写"处理）。 */
+/**
+ * 对象 → `KEY=VALUE` 多行文本。
+ * `!!js` 值写成 `KEY=!!js <expr>`，宿主会把它还原成标记对象；其他对象按"没写"处理。
+ */
 export function pairsToText(value: unknown): string {
   if (!isRecord(value)) return ''
   return Object.entries(value)
-    .map(([key, item]) => `${key}=${asText(item)}`)
+    .map(([key, item]) => `${key}=${textOf(item)}`)
     .join('\n')
 }
 
@@ -64,23 +68,23 @@ export function draftOf(server: ServerSnapshot): Draft {
   const config = asRecord(server.config)
   const args = config.args
   return {
-    rowId: server.rowId,
+    entryId: server.id,
     disabled: server.disabled === true,
     serverName: asText(config.serverName),
     transport: config.transport === 'stdio' ? 'stdio' : 'streamable-http',
-    url: asText(config.url),
-    command: asText(config.command),
-    args: Array.isArray(args) ? (args as unknown[]).map((item) => asText(item)).join('\n') : '',
+    url: textOf(config.url),
+    command: textOf(config.command),
+    args: Array.isArray(args) ? (args as unknown[]).map((item) => textOf(item)).join('\n') : '',
     env: pairsToText(config.env),
     headers: pairsToText(config.headers),
-    cwd: asText(config.cwd),
+    cwd: textOf(config.cwd),
   }
 }
 
 /** 草稿 → 服务端契约的服务器对象。 */
 export function serverOf(draft: Draft): ServerPayload {
   const base: ServerPayload = {
-    rowId: draft.rowId,
+    entryId: draft.entryId,
     disabled: draft.disabled,
     serverName: draft.serverName.trim(),
     transport: draft.transport,
@@ -89,21 +93,6 @@ export function serverOf(draft: Draft): ServerPayload {
     return { ...base, command: draft.command.trim(), args: draft.args, env: draft.env, cwd: draft.cwd.trim() }
   }
   return { ...base, url: draft.url.trim(), headers: draft.headers }
-}
-
-/**
- * 服务器记录 → **旧版宿主**认识的扁平形状（`op: "save"` 用）。
- * 关键：env / headers / args 一律转成宿主认识的「多行文本 / 换行文本」。
- * 快照里它们是对象，直接回传会被旧宿主的解析器当成"非字符串非数组"而**静默清空**
- * ——线上就是这里把 context7 的 Authorization 头弄丢的。
- */
-export function serverOfExisting(server: ServerSnapshot): Record<string, unknown> {
-  const config = asRecord(server.config)
-  const flat: Record<string, unknown> = { ...config, rowId: server.rowId, disabled: server.disabled === true }
-  if (config.env !== undefined) flat.env = pairsToText(config.env)
-  if (config.headers !== undefined) flat.headers = pairsToText(config.headers)
-  if (Array.isArray(config.args)) flat.args = (config.args as unknown[]).map((item) => asText(item)).join('\n')
-  return flat
 }
 
 /** 能力协商：宿主是否支持某项能力（旧宿主只能退回整数组提交）。 */

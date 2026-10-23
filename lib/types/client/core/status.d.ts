@@ -18,7 +18,7 @@
  *      （启停/删除/保存）会让宿主清掉旧记录，所以那之后必然经过这一态，
  *      由 `recheck` 补一次探测把它推回绿/红（见 section.tsx）。
  */
-import type { FailureRecord, OutsideServer, ServerSnapshot, Snapshot } from '../../shared/types.ts';
+import type { FailureRecord, ServerSnapshot, Snapshot } from '../../shared/types.ts';
 /** 一条服务器的展示状态。`reason` 只有"红"的三种状态才有。 */
 export interface StatusView {
     color: string;
@@ -35,15 +35,6 @@ export declare const STATUS_OK = "var(--dsw-alias-state-success-primary, #2ea043
  * @param canProbe - 宿主是否声明了 `probe` 能力（旧宿主没有这条通道，只能退回相位判定）。
  */
 export declare function statusOf(server: ServerSnapshot, canProbe: boolean): StatusView;
-/**
- * **页面外**服务器的状态（顶层 Loader 条目，不在本页容器里）。
- *
- * 与 `statusOf` 的区别在于**证据来源**：它们在容器外，我们既不能探测（`runProbes` 只认容器里的行）
- * 也拿不到写入通道，所以判断"能不能用"只有一条正面证据 —— **mcp-client 已经把工具注册完了**
- * （`outside.tools.count > 0`）。相位 `active` 单独出现不算数：`failOnStartupError: false`
- * 下连不上也是 active（AGENTS 3.10）。所以 active + 0 个工具报琥珀「无工具」，不给绿灯。
- */
-export declare function outsideStatus(server: OutsideServer): StatusView;
 /**
  * 还有服务器"探通了、但条目没挂上"吗？（相位稳定之前不能报绿）
  * `failed` 是终态，不必再等；其余非 active 的相位（pending/loading）都算没稳定。

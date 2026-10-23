@@ -1,6 +1,4 @@
-/**
- * 一条已有服务器的摘要行：圆点 + 名称 + 同一行内的三个控件。
- */
+/** 一条 MCP 服务器的摘要行：圆点 + 名称 + 来源标记 + 行内操作。 */
 import type { ReactElement } from 'react';
 import type { ServerSnapshot } from '../shared/types.ts';
 export interface ServerRowProps {
@@ -12,5 +10,7 @@ export interface ServerRowProps {
     onEdit: () => void;
     onToggle: () => void;
     onRemove: () => void;
+    onAdopt: () => void;
+    onRelease: () => void;
 }
-export declare function ServerRow({ server, canProbe, busy, editing, onEdit, onToggle, onRemove, }: ServerRowProps): ReactElement;
+export declare function ServerRow({ server, canProbe, busy, editing, onEdit, onToggle, onRemove, onAdopt, onRelease, }: ServerRowProps): ReactElement;

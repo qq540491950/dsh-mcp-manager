@@ -1,6 +1,4 @@
-/**
- * 一条已有服务器的摘要行：圆点 + 名称 + 同一行内的三个控件。
- */
+/** 一条 MCP 服务器的摘要行：圆点 + 名称 + 来源标记 + 行内操作。 */
 import type { ReactElement } from 'react'
 import { asRecord, asText } from '../shared/guards.ts'
 import type { ServerSnapshot, ToolRecord } from '../shared/types.ts'
@@ -18,13 +16,10 @@ export interface ServerRowProps {
   onEdit: () => void
   onToggle: () => void
   onRemove: () => void
+  onAdopt: () => void
+  onRelease: () => void
 }
 
-/**
- * 工具名单那块（卡片内的第三个子项）。
- * 抽成普通函数而不是组件：它只是把 ServerRow 的状态渲染出来，不需要自己的 hook，
- * 也不该在树上多一层。
- */
 function toolsBlock(tools: ToolRecord, names: string[], open: boolean, onToggle: () => void): ReactElement {
   const total = typeof tools.count === 'number' && Number.isFinite(tools.count) ? tools.count : names.length
   const shown = open ? names : names.slice(0, TOOL_PREVIEW_LIMIT)
@@ -71,6 +66,12 @@ function toolsBlock(tools: ToolRecord, names: string[], open: boolean, onToggle:
   )
 }
 
+function SourceBadge({ source }: { source: ServerSnapshot['source'] }): ReactElement | null {
+  if (source === 'insert') return <span className="mcpm-source mcpm-source--insert">insert</span>
+  if (source === 'override') return <span className="mcpm-source mcpm-source--override">覆写</span>
+  return <span className="mcpm-source mcpm-source--external">外部</span>
+}
+
 export function ServerRow({
   server,
   canProbe,
@@ -79,22 +80,22 @@ export function ServerRow({
   onEdit,
   onToggle,
   onRemove,
+  onAdopt,
+  onRelease,
 }: ServerRowProps): ReactElement {
   const status = statusOf(server, canProbe)
   const [confirming, setConfirming] = useState(false)
-  // 工具名单默认折叠到 TOOL_PREVIEW_LIMIT 个（状态只属于这一行，展开/收起互不影响）。
   const [toolsOpen, setToolsOpen] = useState(false)
   const config = asRecord(server.config)
-  const name = asText(config.serverName) || '(未命名)'
-  // 传输方式与 URL 不占版面，只在名称的 tooltip 里给出，悬停即可看到。
+  const name = server.serverName || asText(config.serverName) || server.id || '(未命名)'
   const detail = `${status.text} · ${asText(config.transport) || 'streamable-http'} · ${targetOf(config)}`
   const enabled = server.disabled !== true
-  // 原因行由 statusOf 给出：只有"红"的三种状态带原因（检测失败 / 日志记录 / 无）。
-  // 绿或灰时不展示历史信息，避免"绿点 + 红字"这种自相矛盾的组合。
+  const external = server.source === 'external'
+  const override = server.source === 'override'
   const reason = status.reason
+
   const row = (
     <div className={enabled ? 'mcpm-row' : 'mcpm-row mcpm-row--off'}>
-      {/* 唯一的 inline 样式：圆点颜色走官方 token（AGENTS 3.1 / 3.2）。 */}
       <span
         className="mcpm-dot"
         style={{ background: status.color }}
@@ -106,12 +107,31 @@ export function ServerRow({
         <div className="mcpm-name" title={detail}>
           {name}
         </div>
+        <div className="mcpm-sourceLine" title={`Loader 条目 id：${server.id}`}>
+          <SourceBadge source={server.source} />
+          <span className="mcpm-entryId">{server.id}</span>
+        </div>
       </div>
       <div className="mcpm-actions">
-        {confirming ? (
+        {external ? (
+          <button
+            type="button"
+            className="mcpm-btn"
+            onClick={onAdopt}
+            disabled={busy}
+            title="追加一条 - id 覆写行来编辑/启停这台外部 MCP；原声明保留"
+          >
+            接管
+          </button>
+        ) : confirming ? (
           <>
-            <button type="button" className="mcpm-btn mcpm-btn--danger" onClick={onRemove} disabled={busy}>
-              确认删除
+            <button
+              type="button"
+              className="mcpm-btn mcpm-btn--danger"
+              onClick={override ? onRelease : onRemove}
+              disabled={busy}
+            >
+              {override ? '确认取消接管' : '确认删除'}
             </button>
             <button
               type="button"
@@ -144,35 +164,25 @@ export function ServerRow({
                 setConfirming(true)
               }}
               disabled={busy}
+              title={override ? '删除本插件的覆写行，恢复外部原配置' : '删除这条 insert 条目'}
             >
-              删除
+              {override ? '取消接管' : '删除'}
             </button>
           </>
         )}
       </div>
     </div>
   )
-  // 原因行是**卡片内的第二个子项**（Fragment 不产生节点），操作区宽度不受影响；
-  // title 放完整原文，避免窄面板里读不全。
-  // 工具名单是第三个子项：只在宿主给了 `tools`（含 names 数组）时出现——旧宿主没有
-  // 这个字段，就不渲染这块，天然向后兼容。
-  const tools = server.tools
-  const names = Array.isArray(tools?.names) ? (tools.names as unknown[]).map((item) => asText(item)) : null
-  const toolsLine =
-    tools === undefined || names === null
-      ? null
-      : toolsBlock(tools, names, toolsOpen, () => {
-          setToolsOpen(!toolsOpen)
-        })
+
   return (
-    <>
+    <div className="mcpm-rowBody">
       {row}
-      {reason === null ? null : (
-        <div className="mcpm-rowError" role="status" title={reason}>
-          {reason}
-        </div>
-      )}
-      {toolsLine}
-    </>
+      {reason === null ? null : <div className="mcpm-rowError">{reason}</div>}
+      {server.tools === undefined
+        ? null
+        : toolsBlock(server.tools, server.tools.names, toolsOpen, () => {
+            setToolsOpen((open) => !open)
+          })}
+    </div>
   )
 }
