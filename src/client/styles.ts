@@ -69,6 +69,17 @@ export const CSS = `
 .mcpm-toolsToggle:hover:not(:disabled) { background:var(--dsw-alias-interactive-bg-hover); }
 .mcpm-toolsToggle:focus-visible { outline:var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-brand-primary)); outline-offset:1px; }
 .mcpm-empty { padding:8px 0; color:var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary)); font-size:12px; line-height:16px; }
+/* 「页面外」服务器（顶层 Loader 条目，本页只读）。
+   用一条顶部分隔线把它和本页管理的卡片分开：不加外框/底色 = 不会叠成"卡片套卡片"（AGENTS 3.4）。
+   行结构与本页的 .mcpm-row 一致（圆点 + meta），只是没有操作区。 */
+.mcpm-outside { box-sizing:border-box; min-width:0; display:flex; flex-direction:column; gap:8px; padding-top:4px; border-top:.5px solid var(--dsw-alias-border-l2); }
+.mcpm-outsideHead { display:flex; align-items:center; gap:8px; min-width:0; }
+.mcpm-outsideTitle { min-width:0; color:var(--dsw-alias-label-secondary); font-size:12px; line-height:16px; }
+.mcpm-outsideHint { min-width:0; margin:0; color:var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary)); font-size:12px; line-height:16px; overflow-wrap:anywhere; }
+.mcpm-outsideRows { display:flex; flex-direction:column; gap:6px; min-width:0; margin:0; padding:0; list-style:none; }
+.mcpm-outsideRow { box-sizing:border-box; display:flex; align-items:center; gap:10px; min-width:0; min-height:28px; }
+/* 来源（loader 条目 id）比名称弱一档：它是"这条从哪来"的线索，不是服务器名。 */
+.mcpm-outsideSource { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary)); font-size:12px; line-height:16px; }
 .mcpm-meta { flex:1 1 auto; min-width:0; display:flex; flex-direction:column; }
 .mcpm-name { font-size:13px; font-weight:500; line-height:18px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .mcpm-dot { flex:none; width:6px; height:6px; border-radius:50%; }

@@ -9,6 +9,8 @@ DSH 插件：在设置界面最下方加一页「MCP」，可视化管理 `@deep
 - 客户端 `src/client/**` → `lib/client.js`：注册 `settings.section`（list 座位，`order: 900`）；把导航里**自己那一格**的兜底齿轮换成 MCP 标记（3.8）。
 - 宿主 `src/host/**` → `lib/index.js`：零 import；`ctx.connection.fetch.register()` 开 `/api/mcp-manager`；`ctx.configEditor.edit()` 写配置。
 - 数据模型：所有 MCP 服务器放在**一个** `cordis:group` 条目（id `mcp-manager`）的 config 数组里。
+- 容器归属：`cordis:group` 容器行由**插件 bundle 自带的 [cordis.patch.yml](cordis.patch.yml)** 声明（容器行 + 插件行，两行都在 `insert:` 里）。**别再把它推给 profile** —— 插件没有创建 Loader 条目的能力，推给 profile = 每个用户装完还得手改一次 YAML（v0.1.1 的教训，README 5.6）。代价是卸载插件时容器随之消失、MCP 中止加载（列表原文仍在 profile 的覆写行里，装回即恢复）。
+- 页面外的服务器：profile 里**顶层**的 `dsh-mcp-client` 条目（插件市场会写，如 `magpie-mcp-context7`）不在容器里，快照用 `outside[]` 只读报出来；识别谓词是 `configEditor.entries()`（顶层、id 唯一、可寻址），**不要**自己摸 `entry.parent` 这类未声明的内部结构。
 - 唯一必跑：`node tools/verify.ts`，期望 `PASS`（条数看输出、别抄死；命令名以 [package.json](package.json) scripts 为准）。
 
 ## 1. 硬性纪律
@@ -98,6 +100,9 @@ DSH 插件：在设置界面最下方加一页「MCP」，可视化管理 `@deep
 | 宿主日志基本不可看 | 只写 `crash-*.log`；cordis logger 是 1000 条环形缓冲，超出丢最旧 → 靠自检 + 渲染测试兜住。例外：本插件自己挂的 exporter 把 `mcp-client(<name>): …` 收进快照 |
 | 导航图标不可由插件提供 | 见 3.8；上游提案落地即改用注册参数 |
 | 导航位置由 `order` 决定 | 900 只是比官方页大，别的插件更大就排后面；标记按 label 认格，不受顺序影响 |
+| 容器归 bundle，卸载即掉线 | v0.2.0 的取舍（见 §0）：容器随插件走才能"装上即用"。卸载后 MCP 中止加载但**配置原文仍在 profile 覆写行里**，装回即恢复。要常年在线就别卸插件——别再翻回"容器归 profile"，那等于逼用户手写 YAML |
+| 同 id 声明两次 = 写操作全挂、读正常 | `applyEntryPatches` 的 `insert` 是 `push`（不去重），而 `configEditor` 写盘前断言用 `flatten(...).find(id)` 取**第一条**（bundle 那个空 config）→ 永远不等于待写值。宿主用 `containerState()` 把它报成 `duplicated` 并给"删哪一行"，**不要**用"读着正常"判断没事 |
+| 页面外的顶层条目改不了 | `disabled` 是**行字段**、不在 config 里，`configEditor.edit()` 只写 config；删除顶层条目无 API。所以只做只读展示 + 指向 profile 手工处理，**别加"一键导入"**（两台同名服务器会抢 `mcp__<name>__*` 同一批工具名） |
 | 上游 `insert` 共享对象缺陷（未在本机复现） | 上游报告：补丁可能改到共享 insert 对象（插件被静默 disable）；同 id 重复 insert → `duplicate loader entry id` |
 
 ## 7. Git 与发布

@@ -312,6 +312,27 @@ plugin_manager install_bundle target='@qq540491950/dsh-mcp-manager'
 
 **本次接线的备份**：`C:\Users\admin\.dsh\profiles\desktop\cordis.patch.yml.bak-1791623293441`（接线前的原始 6221 字节版本）。注意接线期间该文件被并发编辑过（新增了 `web-search-tavily` 等行），所以直接整份回滚会丢掉那些改动——回滚请按上面说的**只删对应行**。
 
+### 5.6 容器归属的第二次翻转：v0.1.1 → v0.2.0（本轮）
+
+**为什么翻**：v0.1.1 把 `cordis:group` 容器推给 profile，理由写得很硬（"卸载插件不影响 MCP"），但漏算了一步：插件**没有**创建 Loader 条目的能力，所以那句话的实际形态是"每个用户装完插件，还得先手改一次 `cordis.patch.yml` 才能看到这一页"。可视化配置器要求用户先手写配置，这个代价比它换来的好处大得多。
+
+**翻回去靠的还是同一批源码证据**（`dsh-config-editor/lib/index.js`）：
+
+```js
+if (!this.entries().includes(entry) || entry.fiber === undefined) throw new Error('Configuration entry is no longer available')
+if (fiber.state !== 2) throw new Error('Configuration plugin is no longer active')
+```
+
+`edit()` 只接受"已存在且活着"的条目；`document.add()` 那条路径是给**已存在的条目**补顶层覆写行，不是建条目。`ctx.loader.create()` 又会整份重写 YAML（AGENTS 2.3 禁止）。所以"零手动"只有一个位置：**bundle 自带的 `cordis.patch.yml`**。
+
+**代价（明确接受）**：卸载插件 = bundle 补丁层消失 = 容器消失 = 承载服务器列表的 `- id: mcp-manager` 覆写行被判 `not found` 整条丢弃 → 服务器停止加载。**数据不丢**：列表原文仍在 profile 文件里，装回即恢复。判断依据是"装一次插件要不要手改 YAML"比"卸载后还能不能继续跑"更高频。
+
+**迁移的唯一坑：同 id 两次声明。** v0.1.x 的 profile 里有手写的容器 `insert` 行，与 bundle 新加的那行撞车。`applyEntryPatches` 对 `insert:` 是 `data.push(...insert)`（**不去重**），于是 `configEditor` 写盘前的断言 `flatten(composeEntries(...)).find(row => row.id === id)?.config` 取到**第一条**（bundle 的空 `[]`），永远不等于待写值 → 保存 / 启停 / 删除全部抛 `Configuration for "mcp-manager" is overridden by a home patch`；而**读**走 `configuration().override`（最后一条带 config 的补丁），页面看着完全正常。这也是它在 v0.1.1 的文档里被标成"问题极隐蔽"的原因。
+
+宿主的处理：`containerState()` 用 `ctx.loader` **全表**数同 id 条目（`configEditor.entries()` 会把重复项过滤掉，只看它分不清"缺失"和"重复"），三态 `ok / missing / duplicated` 进快照；`duplicated` 时写操作在进入 `edit()` 之前就抛出带"删哪一行"原文的错误（自检 B82/B83），页面也给出不同的提示（D14）。
+
+**同轮新增：页面外条目可见（`outside[]`）。** 由别的插件写进 profile 的**顶层** `dsh-mcp-client` 条目（真实案例 `magpie-mcp-context7`）在跑、工具也注册了，但不在容器里 → 旧版一行都不显示，空态文案却是「还没有配置任何 MCP 服务器」。识别谓词复用官方定义：`configEditor.entries()` = "顶层、id 唯一、可寻址"的条目（内部用 `parent.tree.ctx.fiber.entry?.id === 'include'` 过滤，容器的子条目天然不在其中），所以不需要我们摸 `entry.parent` 这种未声明的内部结构。只做**只读**展示：`disabled` 是行字段、`edit()` 写不到；删除顶层条目没有 API；加"一键导入"会让两台同名服务器抢同一批 `mcp__<name>__*` 工具名。状态判据只有一条正面证据 —— 工具已注册（`outsideStatus`，F39–F43）。
+
 ---
 
 ## 6. 自检与更新
@@ -567,6 +588,14 @@ account -10 | general 0 | models 10 | plugins 15 | agent-presets 20 | mcp 900 �
 **断言**：A24d（探测必须有自己的超时）、A24f（预算必须留够冷连接余量，≥8s）、A24e（相位映射必须含 LOADING）、B56（七种 fiber state 的完整映射）、B57–B69（探测的十条行为：只打启用的、带 headers、initialize 载荷、通过/401/拒连/非 MCP/stdio/单探一台/不存在 409/写入清空/挂死 8s 超时；B69 的自限兜底从源码取预算 + 3s，不写死数字）、**B70（配置分层语义：覆写层是整数组替换，只认覆写行、不合并 `insert:` 层——合并会让"写在 insert 层的 context7 Authorization"这种死配置重新变成生效值，并凭空多出一台服务器）**、**B71–B76（工具名单：按 `mcp__<serverName>__` 前缀归属、排序、count、一台都没注册时 0、宿主没有 tools 服务时省略 `tools` 键）**、**D42–D47（工具名单渲染：总数、6 个折叠阈值、「显示全部 / 收起」、名单截断提示、≤6 个时无折叠按钮）**、D18/D18b/D18c（绿灯必须有证据：有 `probe` 能力却没有记录 → 「未检测」；旧宿主退回相位；stdio 的 `connected:null` 不因此变黄）、D24–D34（四色渲染 + 检测盖掉旧记录 + 能力协商时按钮禁用 +「检测中…」）、**D35–D37（挂载行为：另起一套"会真跑 `useEffect`"的沙箱 + fetch 桩，断言打开页面就是 GET→POST probe、旧宿主不发探测、读快照失败也不发）**、**D38–D41（写入之后必须补检测：同一套沙箱里真点一次「启用」，断言请求序列里有 `POST setEnabled → POST probe`；旧宿主不补；探通了但相位还是 `loading` 时继续重读快照直到 `active`；相位一直不稳定时有界收手）**。
 
 **反向验证九次**：把 `active → 绿` 提前回判定最前面（旧 bug），D14/D15/D16/D17/D30 五条同时报错并打印出 `运行中`；去掉探测的 abort，A24d 与 B69 精确报错（B69 的夹具自限 = 源码预算 + 3s，所以漏掉 abort 只会失败、不会把自检挂死）；把预算退回 3s，A24f 精确报错并打印 `budget=3000ms`；把 `declaredRows` 的覆写分支改成合并两层（`[...inherited, ...override]`），B70 精确报错并打印出那两行——第一行还带着本该被丢弃的 `Authorization`；去掉 headers，B59 报出实际发送的头；去掉能力判断，D36/D37 报出旧宿主也挨了 POST；去掉自动检测，D35 报出只发了一次 GET；去掉「绿灯要有证据」那条分支，D18 报出 `运行中`；去掉写入后的补检测，D38 报出 `[["GET",null],["POST","probe"],["POST","setEnabled"]]`（少了最后一次 probe）；把补检测的能力门去掉，D39 报出旧宿主也挨了 probe；去掉相位稳定那一步，D40/D41 同时报错；把稳定重读的上界放宽 5 次，D41 报出 `total=14 gets=13`（而不是 12/11）。
+
+### 7.10 v0.2.0（容器归属翻转 + 页面外可见）：只有离线证据
+
+**做了什么**见 §5.6。**证据只有离线那几条**：
+
+- `node tools/verify.ts` → `PASS 274/274`（+19 条：B9c/B9d、B77–B83、D13 改写、D14、D15/D15b、D16/D16b、F39–F43，P2/P3/P11 按新不变量重写、A24/B9b 的能力表加 `outside`）。
+- **反向验证（每条都做过，注入 → 确认精确报错 → 还原）**：删掉 patch 里的容器行 → P2 报「只有两行 / 含容器行 / 容器行是 cordis:group」三项；把容器行改成顶层 `- id:` → P3 三项全红（**这一步还抓出了断言自己的漏洞**：原来的正则 `^\s*(?:-\s*)?id:` 会把 insert 里缩进的那行也算进去，必须去掉前导空白的容忍才分得清"顶层"）；把 `containerState()` 的 `duplicated` 也返回成 `missing` → B82 打印 `["missing",false]`、B83 打印的还是"去找一行"的口径；让 `outsideServers()` 一条都不返回 → B77/B78/B79 同时红；把 `outsideStatus` 改成"只看相位就报绿" → F40/F41/F42 红；把客户端 `containerOf` 的 `duplicated` 归到 `missing` → D14 精确报错；把空态文案改回固定句 → D16b 报错并打印出整页文本。
+- **没实测的**：真机安装 v0.2.0、真机删掉 profile 那行容器后的写入（保存/启停/删除）、真机迁移现场（本机 profile 里现在**同时**有手写容器行与 `magpie-mcp-context7`，正好是 B82/B77 复现的那两种现场，但运行时还没换到 v0.2.0）。这三条要在装完新版 + 重启后各点一次才算数。
 
 ---
 

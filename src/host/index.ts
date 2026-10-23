@@ -14,9 +14,11 @@
  *    会让每次 DSH 升级都整个 bundle 被 skip。
  *
  * 2. **单一可编辑条目**。所有 MCP 服务器都放在一个 `cordis:group` 条目的 config
- *    数组里（下称「组条目」，id 见 `GROUP_ID`）。持久化交给 DSH 官方的
- *    `ctx.configEditor.edit()`——它做外科手术式的 YAML 编辑：保留用户手写的
- *    `insert:` 结构，写入前校验、失败回滚。
+ *    数组里（下称「组条目」，id 见 `GROUP_ID`）。这个容器由**插件 bundle 自带的补丁层**
+ *    声明（`cordis.patch.yml`），所以装好即用、用户不需要在 profile 里手写任何东西；
+ *    归属理由与"为什么不能由插件在运行时创建"见该文件的头注释与 `MISSING_GROUP`。
+ *    持久化交给 DSH 官方的 `ctx.configEditor.edit()`——它做外科手术式的 YAML 编辑：
+ *    保留用户手写的 `insert:` 结构，写入前校验、失败回滚。
  *
  *    反面教材：直接用 `ctx.loader.create()/remove()` 动态加条目。Loader 的
  *    `EntryTree.write()`（`dsh-app-boot` 的 `Include` 类）会整体重写 `root.data`，
@@ -57,14 +59,32 @@
  *    「TCP 拒绝 / HTTP 401 / 超时 / 响应不是 MCP」都能说清楚，结果进 `servers[].probe`。
  *    相位映射也补全了 `FIBER_PHASE`（LOADING 就是真正的"启动中"）。
  *
+ * 8. **页面外的服务器也要报出来**（`outside`）。除容器之外，profile 补丁层里还可能出现
+ *    **顶层**的 `@deepseek-ai/dsh-mcp-client` 条目（插件市场就会这么写，例如
+ *    `magpie-mcp-context7`）。它们在跑、工具也注册给了模型，但容器里没有它们，所以本页
+ *    既不能探测也不能启停 —— 旧版本干脆一行都不显示，空态文案却是「还没有配置任何 MCP
+ *    服务器」，用户会以为配置丢了。现在按**官方谓词**识别：`configEditor.entries()` 的定义
+ *    就是"顶层、id 唯一、可寻址的条目"（`dsh-config-editor` 里用 `parent.tree.ctx.fiber.entry.id
+ *    === 'include'` 过滤），容器的子条目天然不在其中，所以"包名是 mcp-client 且可寻址"
+ *    恰好等于"页面外的顶层条目"。
+ *
  * **输入一律不可信**：配置行来自用户手写的 YAML，HTTP 体来自浏览器。所以这里不假设形状，
  * 用 `isRecord` / `asRecord` 收窄后再读；`as` 只在"已经用运行时检查证明过"的地方出现。
  */
 import { GROUP_ID, MCP_PACKAGE, ROUTE } from '../shared/constants.ts'
 import { asRecord, asText, isRecord, readString } from '../shared/guards.ts'
 import { normalizeRow } from './rows.ts'
-import type { FailureRecord, FiberPhase, ProbeRecord, ServerSnapshot, Snapshot, ToolRecord } from '../shared/types.ts'
-import type { EntryRow, HostContext, LogMessage, ToolsService } from './service-types.ts'
+import type {
+  ContainerState,
+  FailureRecord,
+  FiberPhase,
+  OutsideServer,
+  ProbeRecord,
+  ServerSnapshot,
+  Snapshot,
+  ToolRecord,
+} from '../shared/types.ts'
+import type { EntryRow, HostContext, LoaderEntry, LogMessage, ToolsService } from './service-types.ts'
 
 /** 单条失败原文的最大长度：足以看清 fetch/401/ENOENT，又不会把整段栈塞进快照。 */
 const FAILURE_MESSAGE_LIMIT = 500
@@ -127,16 +147,28 @@ export const inject: string[] = []
 const GROUP_ROW = `- insert: [{id: ${GROUP_ID}, name: 'cordis:group', config: []}]`
 
 /**
- * 组条目缺失时的提示。
+ * 容器**没出现**时的提示（v0.2.0 起容器由插件 bundle 自带，正常用户永远不会看到这句）。
  *
- * 这个容器**归 profile 的补丁层**，不由插件自带（v0.1.1 起，README 5.1）。归属划分的理由是硬的：
- * bundle 是插件的一部分，卸载插件 = 这一层消失 = 容器消失 = 里面所有 MCP 服务器一起停止加载；
- * 容器放在 profile 里，卸载 / 升级 / 从未安装都不影响已经配置好的 MCP —— 插件只是那套数据的可视化编辑器。
- * （`ctx.configEditor` 只能写覆写行、`ctx.loader.create()` 被 AGENTS 2.3 禁止，所以插件**无法**自己补这一行，
- * 只能把要粘的内容原样给出来。）
+ * 归属为什么是 bundle：插件根本没有创建 Loader 条目的能力 —— `ctx.configEditor.edit()` 只接受
+ * "已存在且 fiber 活着"的条目（`entries().includes(entry)` + `fiber.state !== 2` 两道检查），
+ * `ctx.loader.create()` 又会整份重写 YAML（AGENTS 2.3 禁止）。所以"零手动"只有 bundle 层这一个
+ * 位置；v0.1.1 把容器推给 profile 的代价是**每个用户都要先手改一次 YAML 才能用**。
+ * 这条提示只在 bundle 层被整体跳过时有用（例如 `evaluatePluginCompatibility` 判 incompatible
+ * 时 bundle 的 patch 不参与合成），所以给的是"兜底粘贴"的口径。
  * 文案里保留 `cordis:group` 字样：它仍然是"缺的是哪一类条目"的唯一判据（自检 D13 / P11 守这一点）。
  */
-const MISSING_GROUP = `找不到 group 条目「${GROUP_ID}」（cordis:group）。它由 profile 自己的补丁层声明，不由插件自带（这样卸载插件不会影响已配置的 MCP）：请把这一行粘进 profile 的 cordis.patch.yml —— ${GROUP_ROW}`
+const MISSING_GROUP = `找不到 group 条目「${GROUP_ID}」（cordis:group）。它由本插件 bundle 自带的补丁层声明，正常不需要你配置；只有在 bundle 被跳过时（多半是兼容性判定）才需要兜底：把这一行粘进 profile 的 cordis.patch.yml —— ${GROUP_ROW}`
+
+/**
+ * 容器被**声明了两次**时的提示（v0.1.x 升级上来的用户会遇到：bundle 一份 + profile 里手写的那份）。
+ *
+ * 为什么要单独说清楚：同 id 两行不会报错，读起来一切正常，但**每一次写入都会失败**
+ * ——`edit()` 写盘前用 `flatten(composeEntries(...)).find(row => row.id === id)` 取第一条
+ * （即 bundle 那个空 config）与待写值比较，永远不相等，于是保存/启停/删除全报
+ * `Configuration for "mcp-manager" is overridden by a home patch`（自检 B82/B83 复现这一现场）。
+ * 用户唯一要做的事就是删掉 profile 里那一行，所以提示必须指名那个文件和那一行。
+ */
+const DUPLICATE_GROUP = `group 条目「${GROUP_ID}」被声明了两次：本插件 bundle 自带一份，profile 的 cordis.patch.yml 里还留着手写的一份。同 id 两行会让保存 / 启停 / 删除全部失败（configEditor 写入前断言取到的是先出现的那条空 config），请删掉 profile 里那一行 —— ${GROUP_ROW} —— 然后重启 DSH。`
 
 /**
  * 把任意抛出物整理成一句话。
@@ -159,6 +191,36 @@ export function apply(ctx: HostContext): void {
   ctx.inject(['connection', 'configEditor', 'loader'], (scope) => {
     /** 取组条目的 Loader entry；条目不存在时返回 undefined。 */
     const groupEntry = () => scope.configEditor.entries().find((entry) => entry.options.id === GROUP_ID)
+
+    /**
+     * 容器被声明了几次（按 `ctx.loader` 全表数，**不是**按 `configEditor.entries()`）。
+     *
+     * 为什么必须分开数：`configEditor.entries()` 会把同 id 的重复条目**过滤掉**
+     * （`counts.get(id) === 1` 才留），所以"可寻址表里没有"有两种完全不同的原因：
+     *   ① 真的一行都没有 → 提示用户兜底粘一行；
+     *   ② 声明了两次（bundle 一份 + profile 一份）→ 提示用户删掉 profile 那份。
+     * 这两种情况给同一句话，用户就会照错的建议做（去加第三行）。自检 B81–B83 钉住这个区分。
+     */
+    const containerState = (): ContainerState => {
+      let declared = 0
+      for (const entry of scope.loader.entries()) if (entry.options.id === GROUP_ID) declared += 1
+      if (declared === 0) return 'missing'
+      return declared > 1 ? 'duplicated' : 'ok'
+    }
+
+    /**
+     * 取容器条目；缺失/重复时抛出**能照着做**的错误，而不是一句"找不到"。
+     * 写操作一律先过这里：重复声明时 `configEditor.edit()` 的写盘前断言必然失败，
+     * 提前给出"删哪一行"的原文比把那句 `overridden by a home patch` 抛给用户有用得多。
+     */
+    const requireGroup = (): LoaderEntry => {
+      const state = containerState()
+      if (state === 'duplicated') throw new Error(DUPLICATE_GROUP)
+      if (state === 'missing') throw new Error(MISSING_GROUP)
+      const entry = groupEntry()
+      if (entry === undefined) throw new Error(MISSING_GROUP)
+      return entry
+    }
 
     /**
      * 每台服务器最近一次失败的原文 —— 这是"启动失败原因"唯一的可取之处。
@@ -336,7 +398,7 @@ export function apply(ctx: HostContext): void {
             params: {
               protocolVersion: '2025-06-18',
               capabilities: {},
-              clientInfo: { name: 'dsh-mcp-manager', version: '0.1.0' },
+              clientInfo: { name: 'dsh-mcp-manager', version: '0.2.0' },
             },
           }),
           signal: controller.signal,
@@ -384,14 +446,21 @@ export function apply(ctx: HostContext): void {
       return Array.isArray(raw) ? (raw as EntryRow[]) : []
     }
 
+    /** 同上，但容器缺失/重复时抛错（写路径用；读路径要能容忍缺失）。 */
+    const requireRows = (): EntryRow[] => {
+      requireGroup()
+      const rows = declaredRows()
+      if (rows === undefined) throw new Error(MISSING_GROUP)
+      return rows
+    }
+
     /**
      * 主动探测：默认探所有**启用中**的服务器，也可以只探一台。
      * 结果写进 `probes`，并立刻返回一份带 `probe` 的快照（客户端一次往返就能刷新）。
      * @param only - 只探这一台（serverName）；省略则探全部。
      */
     const runProbes = async (only?: string): Promise<Snapshot> => {
-      const rows = declaredRows()
-      if (rows === undefined) throw new Error(MISSING_GROUP)
+      const rows = requireRows()
       const targets = rows
         .map((row) => ({ name: asText(asRecord(row.config).serverName), row }))
         .filter((item) => item.name !== '' && item.row.disabled !== true && (only === undefined || item.name === only))
@@ -404,6 +473,14 @@ export function apply(ctx: HostContext): void {
       return snapshot()
     }
 
+    /** 条目的相位投影：`disabled` → stopped，没有 fiber → pending，其余查表。 */
+    const phaseOf = (entry: LoaderEntry): FiberPhase =>
+      entry.options.disabled === true
+        ? 'stopped'
+        : entry.fiber === undefined
+          ? 'pending'
+          : (FIBER_PHASE[entry.fiber.state] ?? 'pending')
+
     /** 组条目下**活着的** MCP 子条目，用于汇报运行时状态。 */
     const liveChildren = (): Map<string, { id?: string | undefined; phase: FiberPhase }> => {
       const found = new Map<string, { id?: string | undefined; phase: FiberPhase }>()
@@ -415,13 +492,48 @@ export function apply(ctx: HostContext): void {
         if (key === undefined) continue
         found.set(key, {
           id: entry.options.id,
-          phase:
-            entry.options.disabled === true
-              ? 'stopped'
-              : entry.fiber === undefined
-                ? 'pending'
-                : (FIBER_PHASE[entry.fiber.state] ?? 'pending'),
+          phase: phaseOf(entry),
         })
+      }
+      return found
+    }
+
+    /**
+     * **页面外**的 MCP 服务器：顶层、可寻址、包名是 mcp-client，但不是我们容器里的那一行。
+     *
+     * 识别谓词直接复用官方定义：`configEditor.entries()` 返回的就是"顶层、id 唯一、可寻址"
+     * 的条目（`dsh-config-editor` 用 `parent.tree.ctx.fiber.entry?.id === 'include'` 过滤），
+     * 容器的子条目天然不在其中 —— 所以不需要我们自己摸 `entry.parent`（那是未声明的内部结构）。
+     *
+     * 它们只在两种情况下出现：① 别的插件往 profile 补丁层写了顶层 mcp-client 条目
+     * （插件市场的 `magpie-mcp-context7` 就是这样）；② 用户自己手写了一条。
+     * 本插件对它们**只读**：`disabled` 是行字段、不在 config 里，`configEditor.edit()` 写不到；
+     * 删除顶层条目更没有 API。所以页面上只报状态与工具数，改法交给用户（见 README 5.1）。
+     */
+    const outsideServers = (): OutsideServer[] => {
+      const found: OutsideServer[] = []
+      for (const entry of scope.configEditor.entries()) {
+        if (entry.options.name !== MCP_PACKAGE) continue
+        const id = entry.options.id
+        // 没有 id 就没法指认出处；容器自己（cordis:group）不以 mcp-client 为包名，这里只是兜底。
+        if (typeof id !== 'string' || id === '' || id === GROUP_ID) continue
+        const config = asRecord(entry.options.config)
+        const serverName = typeof config.serverName === 'string' ? config.serverName : ''
+        const item: OutsideServer = {
+          id,
+          serverName,
+          config,
+          phase: phaseOf(entry),
+          disabled: entry.options.disabled === true,
+        }
+        // 失败原文与工具名单按 serverName 归属（与容器内的行共用同一套通道）。
+        if (serverName !== '') {
+          const failure = failures.get(serverName)
+          if (failure !== undefined) item.error = { ...failure }
+          const tools = toolsOf(serverName)
+          if (tools !== undefined) item.tools = tools
+        }
+        found.push(item)
       }
       return found
     }
@@ -433,6 +545,10 @@ export function apply(ctx: HostContext): void {
       return {
         groupId: GROUP_ID,
         configured: rows !== undefined,
+        // 容器三态：旧客户端只认 `configured` 布尔，所以两个字段都要给（AGENTS 1.2 的谈判原则）。
+        container: containerState(),
+        // 页面外（顶层）的 mcp-client 条目：它们在跑，但不在本页的管理范围，见 outsideServers。
+        outside: outsideServers(),
         mcpPackage: MCP_PACKAGE,
         // 能力协商：客户端据此决定用「宿主侧定点操作」还是退回整数组提交。
         // 宿主半边不参与热重载（Node 的 ESM 缓存按 URL 生效，且本目录不在
@@ -441,8 +557,9 @@ export function apply(ctx: HostContext): void {
         // 新客户端也只是读不到字段而已，所以不需要按能力分支。
         // `probe` = `op:"probe"` 主动探测 + 快照里的 `servers[].probe`（现在这一刻答不答）。
         // `tools` = 快照里的 `servers[].tools`（这台服务器**当前注册**的工具名单）。
-        // 旧宿主不认识 `tools`：客户端拿不到这个字段就不渲染那块，天然向前兼容。
-        capabilities: ['setEnabled', 'remove', 'save', 'lastError', 'probe', 'tools'],
+        // `outside` = 快照里的 `outside[]`（页面外的顶层条目，只读展示）。
+        // 旧宿主不认识 `outside`：客户端拿不到这个字段就不渲染那块，天然向前兼容。
+        capabilities: ['setEnabled', 'remove', 'save', 'lastError', 'probe', 'tools', 'outside'],
         servers: (rows ?? []).map((row, index) => {
           const config = asRecord(row.config)
           const serverName = typeof config.serverName === 'string' ? config.serverName : ''
@@ -470,8 +587,7 @@ export function apply(ctx: HostContext): void {
 
     /** 唯一的写入路径：整份数组交给 configEditor 做外科手术式 YAML 编辑。 */
     const commitRows = async (rows: unknown): Promise<Snapshot> => {
-      const entry = groupEntry()
-      if (entry === undefined) throw new Error(MISSING_GROUP)
+      const entry = requireGroup()
       if (!Array.isArray(rows)) throw new Error('rows 必须是数组')
       const list: unknown[] = rows
       await scope.configEditor.edit(entry, () => list)
@@ -485,8 +601,7 @@ export function apply(ctx: HostContext): void {
 
     /** 按 serverName 定位声明行；找不到就抛出可读错误。 */
     const locate = (serverName: unknown): { rows: EntryRow[]; index: number } => {
-      const rows = declaredRows()
-      if (rows === undefined) throw new Error(MISSING_GROUP)
+      const rows = requireRows()
       const target = asText(serverName)
       const index = rows.findIndex((row) => (asRecord(row.config).serverName ?? '') === target)
       if (index < 0) {

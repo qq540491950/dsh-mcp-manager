@@ -59,11 +59,39 @@ export interface ServerSnapshot {
     probe?: ProbeRecord | undefined;
     tools?: ToolRecord | undefined;
 }
+/** 容器的声明状态：`missing` = 一行都没有；`duplicated` = 同 id 声明了两次（写操作会全挂）。 */
+export type ContainerState = 'ok' | 'missing' | 'duplicated';
+/**
+ * **页面外**的一台 MCP 服务器：顶层 Loader 条目（`@deepseek-ai/dsh-mcp-client`），
+ * 但不在本插件的容器里 —— 例如插件市场替你写进 profile 补丁层的那一行。
+ *
+ * 之所以要单独报出来：它不是本插件的数据，本页既不能探测也不能启停（容器里没有它），
+ * 但它**确实在跑**、工具也确实注册给了模型。旧版本页面在这种情况下显示
+ * 「还没有配置任何 MCP 服务器」，让人以为配置丢了（真实案例：`magpie-mcp-context7`）。
+ */
+export interface OutsideServer {
+    /** Loader 条目 id（profile 补丁里的 `id:`），也是页面上唯一能指认它出处的线索。 */
+    id: string;
+    /** `config.serverName`；畸形条目允许为空串（此时页面上退回显示 id）。 */
+    serverName: string;
+    config: Record<string, unknown>;
+    phase: FiberPhase;
+    disabled?: boolean | undefined;
+    error?: FailureRecord | undefined;
+    tools?: ToolRecord | undefined;
+}
 /** GET 快照与每个写操作的返回值。 */
 export interface Snapshot {
     groupId: string;
     /** 允许缺失：客户端把"没写"当成已配置（`!== false`）。 */
     configured?: boolean | undefined;
+    /** 容器状态；旧宿主不报这个字段，客户端退回只看 `configured`。 */
+    container?: ContainerState | undefined;
+    /**
+     * 页面外的 MCP 服务器（顶层 Loader 条目）。
+     * 允许缺失：旧宿主不报这个字段 —— 客户端按空数组渲染，天然向前兼容。
+     */
+    outside?: OutsideServer[] | undefined;
     mcpPackage: string;
     /**
      * 能力协商：客户端据此决定用「宿主侧定点操作」还是退回整数组提交。

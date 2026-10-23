@@ -98,6 +98,17 @@ interface StubChild {
   /** cordis FiberState 数值。 */
   state?: number
 }
+/**
+ * **页面外**的一条 MCP 服务器（顶层 Loader 条目：`@deepseek-ai/dsh-mcp-client`，但不在容器里）。
+ * 真实来源是 profile 补丁层里别的插件写入的行，例如 `magpie-mcp-context7`。
+ */
+interface StubOutside {
+  id: string
+  config?: Record<string, unknown>
+  disabled?: boolean
+  /** cordis FiberState 数值。 */
+  state?: number
+}
 /** `configEditor.configuration()` 的一层（B70 用它复现"覆写 replace insert"的分层现场）。 */
 interface StubLayerRow {
   entry: { options: { id?: string } }
@@ -114,7 +125,11 @@ interface HostScopeStub {
     exporter(options: { levels: { default: number }; export(message: Record<string, unknown>): void }): unknown
   }
   configEditor: {
-    entries(): Array<{ options: { id?: string; name?: string; config?: StubEntry[] } }>
+    /** 官方语义：**顶层、id 唯一、可寻址**的条目（容器子条目不在其中）。 */
+    entries(): Array<{
+      options: { id?: string; name?: string; config?: unknown; disabled?: boolean }
+      fiber?: { state: number }
+    }>
     configuration(): StubLayerRow[]
     edit(entry: unknown, update: (rows: StubEntry[], again: StubEntry[]) => unknown): Promise<void>
   }
@@ -138,9 +153,21 @@ interface StubServer {
 interface StubSnapshot {
   groupId?: string
   configured?: boolean
+  /** 容器三态（新宿主才报；旧宿主只有 `configured` 布尔）。 */
+  container?: string
   mcpPackage?: string
   /** 能力表：断言会 `includes(...)` 或直接比对数组。 */
   capabilities?: string[]
+  /** 页面外的顶层条目（只读展示）。 */
+  outside?: Array<{
+    id?: string
+    serverName?: string
+    phase?: string
+    disabled?: boolean
+    config?: Record<string, unknown>
+    error?: { message?: string }
+    tools?: { count?: number; names?: string[]; truncated?: boolean }
+  }>
   servers?: StubServer[]
 }
 /** 响应体的线格式。**刻意不用 `any`**：字段名打错时必须编译失败（断言的价值就在这里）。 */
@@ -468,7 +495,7 @@ check(
   )
   check(
     'A24 宿主声明 capabilities',
-    /capabilities: \[["']setEnabled["'], ["']remove["'], ["']save["'], ["']lastError["'], ["']probe["'], ["']tools["']\]/.test(
+    /capabilities: \[["']setEnabled["'], ["']remove["'], ["']save["'], ["']lastError["'], ["']probe["'], ["']tools["'], ["']outside["']\]/.test(
       hostSource,
     ),
   )
@@ -639,12 +666,21 @@ function makeHostCtx({
   withLogger = true,
   layers = undefined,
   registeredTools = undefined,
+  outsideEntries = [],
+  groupDeclarations = 1,
+  addressable = true,
 }: {
   configRows?: StubEntry[]
   mcpChildren?: StubChild[]
   withLogger?: boolean
   layers?: { inherited?: StubEntry[]; override?: StubEntry[] } | undefined
   registeredTools?: string[] | undefined
+  /** 页面外的顶层 mcp-client 条目（`configEditor.entries()` 里那些）。 */
+  outsideEntries?: StubOutside[]
+  /** 容器行被声明了几次：0 = 缺失，2 = 重复声明（v0.1.x 升级上来的现场）。 */
+  groupDeclarations?: number
+  /** 容器是否出现在**可寻址**表里（`configEditor.entries()` 会丢掉同 id 的重复条目）。 */
+  addressable?: boolean
 } = {}) {
   const captured: {
     deps: string[] | null
@@ -690,6 +726,25 @@ function makeHostCtx({
       })
     }
   }
+  /**
+   * 页面外条目的替身：**同时**出现在 `configEditor.entries()`（可寻址）与 `loader.entries()` 里
+   * —— 这正是官方实现的样子（`entries()` 就是 `loader.entries()` 过滤出来的视图）。
+   */
+  const outsideStubs = outsideEntries.map((spec) => ({
+    options: {
+      id: spec.id,
+      name: '@deepseek-ai/dsh-mcp-client',
+      config: spec.config,
+      ...(spec.disabled === true ? { disabled: true } : {}),
+    },
+    ...(spec.state === undefined ? {} : { fiber: { state: spec.state } }),
+  }))
+  /** 容器行的替身：`groupDeclarations` 份（2 份 = 重复声明的现场）。 */
+  const groupStubs = (): unknown[] =>
+    Array.from({ length: groupDeclarations }, () => ({
+      options: { id: 'mcp-manager', name: 'cordis:group', config: state.rows },
+      fiber: { state: 2 },
+    }))
   const ctx = {
     inject(deps: string[], callback: (scope: HostScopeStub) => void): void {
       captured.deps = deps
@@ -708,7 +763,8 @@ function makeHostCtx({
             }
           : {}),
         configEditor: {
-          entries: () => [groupEntry],
+          // 官方 `entries()` 会**丢掉**同 id 的重复条目，所以地址表里有没有容器由 addressable 决定。
+          entries: () => [...(addressable && groupDeclarations > 0 ? [groupEntry] : []), ...outsideStubs],
           configuration: () => [
             {
               entry: groupEntry,
@@ -727,11 +783,14 @@ function makeHostCtx({
           },
         },
         loader: {
-          entries: () =>
-            mcpChildren.map((child) => ({
+          entries: () => [
+            ...groupStubs(),
+            ...mcpChildren.map((child) => ({
               options: { id: child.id, name: '@deepseek-ai/dsh-mcp-client', config: child.config },
               fiber: child.state === undefined ? undefined : { state: child.state },
             })),
+            ...outsideStubs,
+          ],
         },
         connection: {
           fetch: {
@@ -781,8 +840,14 @@ function makeHostCtx({
   check('B9 GET 汇报 configured', getBody.data?.configured === true)
   check(
     'B9b GET 声明 capabilities',
-    same(getBody.data?.capabilities, ['setEnabled', 'remove', 'save', 'lastError', 'probe', 'tools']),
+    same(getBody.data?.capabilities, ['setEnabled', 'remove', 'save', 'lastError', 'probe', 'tools', 'outside']),
     JSON.stringify(getBody.data?.capabilities),
+  )
+  check('B9c GET 汇报容器状态 ok', getBody.data?.container === 'ok', String(getBody.data?.container))
+  check(
+    'B9d GET 的 outside 为空数组（容器内服务器不算页面外）',
+    Array.isArray(getBody.data?.outside) && getBody.data.outside.length === 0,
+    JSON.stringify(getBody.data?.outside),
   )
   check('B10 GET 列出 2 台服务器', getBody.data?.servers?.length === 2, JSON.stringify(getBody.data?.servers?.length))
   check('B11 第一台运行中', getBody.data?.servers?.[0]?.phase === 'active', String(getBody.data?.servers?.[0]?.phase))
@@ -1468,6 +1533,103 @@ function makeHostCtx({
       JSON.stringify(Object.keys(body.data.servers[0])),
     )
   }
+
+  // —— B77–B80：页面外的顶层条目（别的插件写进 profile 的那一行）——
+  // 真实事故：`magpie-mcp-context7` 在跑、工具也注册了，页面却显示「还没有配置任何 MCP
+  // 服务器」。这里钉住"它必须被报出来、且不能混进本页的服务器列表"。
+  {
+    const { ctx, captured } = makeHostCtx({
+      configRows: [
+        {
+          name: '@deepseek-ai/dsh-mcp-client',
+          config: { serverName: 'fs', transport: 'stdio', command: 'npx' },
+        },
+      ],
+      outsideEntries: [
+        {
+          id: 'magpie-mcp-context7',
+          config: { serverName: 'context7', transport: 'streamable-http', url: 'https://mcp.context7.com/mcp' },
+          state: 2,
+        },
+        {
+          id: 'handwritten-dbx',
+          config: { serverName: 'dbx', transport: 'streamable-http', url: 'https://dbx' },
+          disabled: true,
+          state: 2,
+        },
+      ],
+      registeredTools: ['mcp__context7__resolve-library-id', 'mcp__fs__read'],
+    })
+    host.apply(ctx)
+    const response = await captured.route.fetch(new Request('http://localhost/api/mcp-manager'))
+    const body = await bodyOf(response)
+    const outside = body.data.outside ?? []
+    check(
+      'B77 页面外的顶层条目被报进 outside[]（带 loader id / serverName / 相位）',
+      outside.length === 2 &&
+        outside[0]?.id === 'magpie-mcp-context7' &&
+        outside[0]?.serverName === 'context7' &&
+        outside[0]?.phase === 'active',
+      JSON.stringify(outside.map((item) => [item.id, item.serverName, item.phase])),
+    )
+    check(
+      'B78 页面外条目分到自己的工具名单（按 serverName 前缀归属）',
+      outside[0]?.tools?.count === 1 && outside[0]?.tools?.names?.[0] === 'mcp__context7__resolve-library-id',
+      JSON.stringify(outside[0]?.tools),
+    )
+    check(
+      'B79 停用的页面外条目报 stopped（不是 active）',
+      outside[1]?.disabled === true && outside[1]?.phase === 'stopped',
+      JSON.stringify([outside[1]?.disabled, outside[1]?.phase]),
+    )
+    check(
+      'B80 outside 不混进本页的 servers（各管各的，页面不会重复显示同一台）',
+      body.data.servers?.length === 1 && body.data.servers?.[0]?.config?.serverName === 'fs',
+      JSON.stringify(body.data.servers?.map((item) => item.config?.serverName)),
+    )
+  }
+
+  // —— B81–B83：容器的三态。缺一行 vs 声明两次，提示必须不同 ——
+  // 为什么值得单测：两种情况在页面上都表现为"没有可管理的服务器"，但**该做的事相反**
+  // （一个是粘一行，一个是删一行）。给错方向等于让用户把坏的现场改得更坏。
+  {
+    const { ctx, captured } = makeHostCtx({ groupDeclarations: 0 })
+    host.apply(ctx)
+    const body = await bodyOf(await captured.route.fetch(new Request('http://localhost/api/mcp-manager')))
+    check(
+      'B81 容器缺失 → container=missing 且 configured=false',
+      body.data?.container === 'missing' && body.data?.configured === false,
+      JSON.stringify([body.data?.container, body.data?.configured]),
+    )
+  }
+  {
+    // 重复声明：官方 `configEditor.entries()` 会把同 id 的重复条目过滤掉（counts 唯一性），
+    // 所以这里 addressable=false + 两条 loader 条目，就是真实运行时的样子。
+    const { ctx, captured } = makeHostCtx({ groupDeclarations: 2, addressable: false })
+    host.apply(ctx)
+    const body = await bodyOf(await captured.route.fetch(new Request('http://localhost/api/mcp-manager')))
+    check(
+      'B82 容器被声明两次 → container=duplicated（不是 missing）',
+      body.data?.container === 'duplicated' && body.data?.configured === false,
+      JSON.stringify([body.data?.container, body.data?.configured]),
+    )
+    const failed = await captured.route.fetch(
+      new Request('http://localhost/api/mcp-manager', {
+        method: 'POST',
+        body: JSON.stringify({ op: 'save', servers: [] }),
+      }),
+    )
+    const failure = await bodyOf(failed)
+    check(
+      'B83 重复声明时写操作报"删掉 profile 那一行"（而不是 configEditor 的英文断言）',
+      failed.status === 409 &&
+        typeof failure.error === 'string' &&
+        failure.error.includes('两次') &&
+        failure.error.includes('cordis.patch.yml') &&
+        !failure.error.includes('overridden by a home patch'),
+      `${String(failed.status)} ${String(failure.error).slice(0, 120)}`,
+    )
+  }
 }
 //#endregion
 
@@ -1873,18 +2035,64 @@ check(
   check('D11 载入态', textsOf(scene(null)).includes('正在读取…'))
   check('D12 错误态', hasClass(scene(null, 'boom'), 'mcpm-notice--error'))
 
-  // D13 组条目缺失
-  // 文案在 v0.1.1 改成了「容器归 profile」的指引（容器由 profile 补丁层声明，不由 bundle 自带），
-  // 所以断言同步跟上，**三项都守**：
+  // D13/D14 容器异常：缺失 vs 声明两次 —— 两种情况都表现为"没有可管理的服务器"，
+  // 但该做的事相反（粘一行 / 删一行），所以文案必须分开。三项都守：
   // ①点名缺的是哪一类条目（`cordis:group`，原意图，不能被删）；
   // ②指出要改的文件是 profile 的 cordis.patch.yml（含糊的"某处加个 group"等于没指路）；
-  // ③给出能整行照抄的 `insert:` 行（插件自己补不了这一行，只能给内容 —— P11 守同一件事）。
+  // ③给出能整行照抄的 `insert:` 行（插件补不了这一行，只能给内容 —— P11 守同一件事）。
   check(
-    'D13 未配置 group 时给出可读提示（点名 cordis:group + 指向 profile 的 cordis.patch.yml + 给出可照抄的 insert 行）',
+    'D13 容器缺失时给出可读提示（点名 cordis:group + 指向 profile 的 cordis.patch.yml + 给出可照抄的 insert 行）',
     textsOf(scene({ ...snapshot, configured: false })).some(
       (t) => t.includes('cordis:group') && t.includes('cordis.patch.yml') && t.includes('insert:'),
     ),
   )
+  check(
+    'D14 容器被声明两次时给的是"删掉 profile 那一行"（与缺失的提示必须不同，否则用户会去加第三行）',
+    (() => {
+      const texts = textsOf(scene({ ...snapshot, configured: false, container: 'duplicated' }))
+      return texts.some((t) => t.includes('两次') && t.includes('cordis.patch.yml') && t.includes('insert:'))
+    })(),
+  )
+
+  // D15/D16 页面外的服务器（顶层 Loader 条目）：本页只读展示，旧宿主不渲染整块。
+  {
+    const outsideServer = {
+      id: 'magpie-mcp-context7',
+      serverName: 'context7',
+      config: { serverName: 'context7', transport: 'streamable-http', url: 'https://mcp.context7.com/mcp' },
+      phase: 'active',
+      tools: { count: 2, names: ['mcp__context7__a', 'mcp__context7__b'] },
+    }
+    const withOutside = scene({
+      ...emptySnapshot,
+      capabilities: [...snapshot.capabilities, 'outside'],
+      outside: [outsideServer],
+    })
+    check(
+      'D15 页面外的服务器单独成块（点名"页面外" + 给出 loader 条目 id 与工具数）',
+      hasClass(withOutside, 'mcpm-outside') &&
+        hasClass(withOutside, 'mcpm-outsideRow') &&
+        textsOf(withOutside).some((t) => t.includes('页面外')) &&
+        textsOf(withOutside).some((t) => t.includes('来源：magpie-mcp-context7') && t.includes('工具 2 个')),
+      textsOf(withOutside).join('|'),
+    )
+    check(
+      'D15b 页面外的服务器不给操作按钮（只读：启停/删除在容器外根本做不到）',
+      !textsOf(withOutside).some((t) => t === '停用' || t === '删除' || t === '编辑'),
+      textsOf(withOutside).join('|'),
+    )
+    check(
+      'D16 旧宿主（无 outside 字段）不渲染那一块，也不影响空态文案',
+      !hasClass(scene(emptySnapshot), 'mcpm-outside') &&
+        textsOf(scene(emptySnapshot)).includes('还没有配置任何 MCP 服务器。'),
+    )
+    check(
+      'D16b 本页为空但有页面外服务器时，空态文案不再说"还没有配置任何 MCP 服务器"（那是误导）',
+      textsOf(withOutside).some((t) => t.includes('不在本页管理')) &&
+        !textsOf(withOutside).includes('还没有配置任何 MCP 服务器。'),
+      textsOf(withOutside).join('|'),
+    )
+  }
 
   // D42–D47 工具名单：显示「N 个」，超过 TOOL_PREVIEW_LIMIT 就折叠，点开才显示全部。
   {
@@ -2714,25 +2922,40 @@ check(
   const patchText = bundlePatchPath !== '' && existsSync(bundlePatchFile) ? await readFile(bundlePatchFile, 'utf8') : ''
   const patchEntries = insertEntriesOf(patchText)
   const containerEntry = patchEntries.find((entry) => entry.id === shared.GROUP_ID)
-  // P2/P3 在 v0.1.1 掉了个头：过去要求「本文件必须自带容器行」，现在要求「**必须不带**」。
-  // 这不是放宽断言，是同一条不变量的另一半：容器只能由**不随插件消失**的那一层声明。
-  // bundle 是插件的一部分 —— 它声明容器 = 卸载插件时容器一起消失 = 里面所有 MCP 服务器
-  // 停止加载（离线复现：`patch: entry mcp-manager not found`，合成结果 0 行）。容器归 profile
-  // 之后，卸载 / 升级 / 从未安装插件都不影响已配置的 MCP。反向验证：往本文件加一行容器行即红。
-  checkAll('P2 patch 的 insert 列表只声明插件自己那一行（容器归 profile，不许出现在这里）', {
-    只有一行: patchEntries.length === 1,
+  // P2/P3 在 v0.2.0 又掉了个头（v0.1.0 自带 → v0.1.1 必须不带 → v0.2.0 必须自带）。
+  // 不变的判据始终是同一条：**"装上就能用"必须成立**。v0.1.1 把它交给 profile 之后，
+  // 每个用户都得先手改一次 YAML 才能看到 MCP 页；而插件根本没有创建 Loader 条目的能力
+  // （`configEditor.edit()` 只接受已存在且 fiber 活着的条目，`loader.create()` 会整份重写
+  // 并被 AGENTS 2.3 禁止），所以"零手动"只剩 bundle 层这一个位置。
+  // 代价（卸载插件时容器一起消失 → MCP 停止加载）写在 cordis.patch.yml 头注释里：
+  // 数据不丢（服务器列表在 profile 的 `- id: mcp-manager` 覆写行），重装即恢复。
+  // 反向验证：把容器行从 patch 里删掉 → P2 红；改成顶层 `- id:` 覆写行 → P3 红。
+  checkAll('P2 patch 自带两行：容器行 + 插件行（零手动安装的前提）', {
+    只有两行: patchEntries.length === 2,
     'id 不重复': new Set(patchEntries.map((entry) => entry.id)).size === patchEntries.length,
-    不含容器行: containerEntry === undefined,
+    含容器行: containerEntry !== undefined,
+    '容器行是 cordis:group': containerEntry?.name === 'cordis:group',
+    含插件行: patchEntries.some((entry) => entry.id === 'dsh-mcp-manager'),
   })
-  // 注释里出现容器 id 是**故意**的（这份 patch 的头部就写着"容器归 profile，长这样"），
-  // 所以正文检查必须先剥掉 `#` 之后的内容，否则会把示例当成声明（反向验证时也才分得清两者）。
+  // 容器行必须在 `insert:` 下、且**排在插件行之前**：
+  //   · 写成顶层 `- id: X` 时 `applyEntryPatches` 目标不存在 → warn 并丢弃（条目根本不会出现）；
+  //   · 排在后面虽然也能合成，但"先声明容器、再声明插件"与人的阅读顺序一致，
+  //     也避免了将来有人在容器行前面插一条 `- id:` 覆写行时踩到"目标还没被 insert"的坑。
+  const containerAt = patchEntries.findIndex((entry) => entry.id === shared.GROUP_ID)
+  const pluginAt = patchEntries.findIndex((entry) => entry.id === 'dsh-mcp-manager')
+  // 注释里出现容器 id 是**故意**的（头注释就在解释这一行的来历），
+  // 所以正文检查必须先剥掉 `#` 之后的内容，否则会把示例当成声明。
   const patchBody = patchText
     .split('\n')
     .map((line) => line.replace(/#.*$/, ''))
     .join('\n')
-  checkAll('P3 patch 不出现容器 id（GROUP_ID）—— 出现即等于把 MCP 的可运行性绑在插件身上', {
-    '顶层 insert 里没有': containerEntry === undefined,
-    正文里也没有: !new RegExp(`^\\s*(?:-\\s*)?id:\\s*['"]?${shared.GROUP_ID}['"]?\\s*$`, 'm').test(patchBody),
+  checkAll('P3 容器行必须写在 insert: 里，且排在插件行之前（顶层覆写行会被静默丢弃）', {
+    'insert 里能解析到容器行': containerAt >= 0,
+    排在插件行之前: containerAt >= 0 && pluginAt >= 0 && containerAt < pluginAt,
+    // 顶层（行内无缩进，带不带列表短横都算）出现 `id: <GROUP_ID>` 就是那个反模式：
+    // 行首必须**没有**前导空白 —— 否则会把 insert 里缩进的那一行也算进来（反向验证时踩过：
+    // 写成 `^\s*(?:-\s*)?id:` 时，用顶层 `- id:` 注入违规，这条子断言反而不报）。
+    正文里没有顶层容器行: !new RegExp(`^(?:-\\s+)?id:\\s*['"]?${shared.GROUP_ID}['"]?\\s*$`, 'm').test(patchBody),
   })
   const pluginEntry = patchEntries.find((entry) => entry.id !== shared.GROUP_ID)
   checkAll('P4 patch 的插件行：id == dsh-mcp-manager，name == package.json 的 name（改名漏改立刻红）', {
@@ -2878,10 +3101,11 @@ check(
     },
   )
 
-  // —— P11：插件自己补不了容器行，两个半边必须把"要粘的那一行"原样给出来 ——
-  // P2/P3 定了归属（容器归 profile），而 `ctx.configEditor` 只能写覆写行、`ctx.loader.create()`
-  // 被 AGENTS 2.3 禁止 —— 所以"用户怎么把容器加上"全靠这条提示。少了它，用户看到的只是一句
-  // "找不到 group 条目"，只能猜。这里同时守两半边的**一致性**：两边给的行不一样，用户照哪边做都可能错。
+  // —— P11：容器由 bundle 自带，但"bundle 被跳过"时用户仍要能照抄一行兜底 ——
+  // P2/P3 定了归属（容器随 bundle 走 = 零手动），而 `ctx.configEditor` 只能改已存在的条目、
+  // `ctx.loader.create()` 被 AGENTS 2.3 禁止 —— 所以"插件没能声明容器时怎么办"全靠这条提示。
+  // 少了它，用户看到的只是一句"找不到 group 条目"，只能猜。
+  // 这里同时守两半边的**一致性**：两边给的行不一样，用户照哪边做都可能错。
   /** 从源码里抠出那行可照抄的流式 YAML，并把两半边的插值还原成同一个 id 再做比较。 */
   const rowIn = (text: string): string | null => {
     const resolved = text
@@ -2902,7 +3126,9 @@ check(
     '行里是 cordis:group': hostRow !== null && hostRow.includes("name: 'cordis:group'"),
     '行里 config 是空数组': hostRow !== null && hostRow.includes('config: []'),
     两边都点了目标文件: hostSource.includes('cordis.patch.yml') && clientSource.includes('cordis.patch.yml'),
-    '旧的"bundle 自带"指引已撤': !hostSource.includes('bundle 自带') && !clientSource.includes('bundle 自带'),
+    // v0.2.0 反过来：提示必须说明"容器由插件自带、正常不用你配"，
+    // 否则用户会以为又要手改 YAML（v0.1.x 的行为），把兜底当成常规步骤。
+    两半边都说明容器由插件自带: hostSource.includes('自带') && clientSource.includes('自带'),
   })
 }
 //#endregion
@@ -2918,7 +3144,7 @@ check(
  * 纪律不变：断言不碰实现细节，只钉输入 → 输出。
  */
 {
-  const { statusOf, settling, failureText } = await import('../src/client/core/status.ts')
+  const { statusOf, outsideStatus, settling, failureText } = await import('../src/client/core/status.ts')
   const { draftOf, serverOf, serverOfExisting, pairsToText, targetOf, supports, suggestName } =
     await import('../src/client/core/draft.ts')
   const { normalizeRow, toRecord, toStringArray } = await import('../src/host/rows.ts')
@@ -3127,6 +3353,30 @@ check(
   check(
     'F38 readString 非字符串 → undefined（"没写"与"写了空串"可区分）',
     readString({ a: '' }, 'a') === '' && readString({ a: 1 }, 'a') === undefined,
+  )
+
+  // —— outsideStatus：页面外服务器只有"工具已注册"这一条正面证据 ——
+  /** 造一条页面外记录；只写关心的字段。 */
+  const out = (over) => ({ id: 'magpie', serverName: 'x', config: {}, phase: 'active', ...over })
+  check(
+    'F39 页面外：active + 有工具 → 绿（工具真注册了才是证据）',
+    outsideStatus(out({ tools: { count: 2 } })).text === '运行中',
+  )
+  check(
+    'F40 页面外：active 但 0 个工具 → 琥珀「无工具」，**不报绿**（failOnStartupError:false 下连不上也是 active）',
+    outsideStatus(out({ tools: { count: 0 } })).text === '无工具',
+  )
+  check('F41 页面外：没有 tools 字段也按 0 个算（旧宿主/宿主没 tools 服务）', outsideStatus(out({})).text === '无工具')
+  check(
+    'F42 页面外：停用 → 灰；fiber FAILED → 红；日志有记录 → 连接异常且带原文',
+    outsideStatus(out({ disabled: true })).text === '已停用' &&
+      outsideStatus(out({ phase: 'failed' })).text === '加载失败' &&
+      outsideStatus(out({ error: { message: 'connect ECONNREFUSED' } })).text === '连接异常' &&
+      (outsideStatus(out({ error: { message: 'connect ECONNREFUSED' } })).reason ?? '').includes('ECONNREFUSED'),
+  )
+  check(
+    'F43 页面外：工具已注册时压过历史失败记录（正面证据优先，避免"绿行 + 红字"）',
+    outsideStatus(out({ tools: { count: 1 }, error: { message: '旧错误' } })).text === '运行中',
   )
 }
 //#endregion

@@ -10,17 +10,67 @@
  */
 import type { ReactElement } from 'react'
 import { asRecord, asText } from '../shared/guards.ts'
-import type { ServerSnapshot, Snapshot } from '../shared/types.ts'
+import type { ContainerState, OutsideServer, ServerSnapshot, Snapshot } from '../shared/types.ts'
 import { describeError, getSnapshot, postOp, SETTLE_ATTEMPTS, SETTLE_INTERVAL_MS, sleep } from './core/api.ts'
-import { draftOf, serverOf, serverOfExisting, supports, suggestName } from './core/draft.ts'
+import { draftOf, serverOf, serverOfExisting, supports, suggestName, targetOf } from './core/draft.ts'
 import type { Draft } from './core/draft.ts'
-import { settling } from './core/status.ts'
+import { outsideStatus, settling } from './core/status.ts'
 import { ServerForm } from './form.tsx'
 import { h, useCallback, useEffect, useMemo, useState } from './react.ts'
 import { ServerRow } from './row.tsx'
 
 /** 表单提交的载荷：`op: "save"` + 整份数组。 */
 type SavePayload = { op: 'save'; servers: unknown[] }
+
+/**
+ * 容器状态。新宿主直接给 `container`；旧宿主只有 `configured` 布尔：
+ * `false` 只可能是"没有这一行"（旧宿主根本没有"重复声明"这个概念）。
+ */
+function containerOf(data: Snapshot): ContainerState {
+  if (data.container === 'duplicated') return 'duplicated'
+  if (data.container === 'missing') return 'missing'
+  if (data.container === 'ok') return 'ok'
+  return data.configured === false ? 'missing' : 'ok'
+}
+
+/**
+ * 「页面外」的一台服务器：只读展示（来源条目 id + 状态 + 工具数）。
+ *
+ * 为什么不做成可管理的行：它们在容器外，本插件既没有探测通道（探测只走容器里的行），
+ * 也没有删除顶层条目的 API（`configEditor.edit()` 只能改 config，`disabled` 是行字段）。
+ * 硬塞一个「导入」按钮会让两台同名服务器同时在线、抢 `mcp__<name>__*` 的同一批工具名，
+ * 所以这里只把"它是什么、在哪、要不要搬到本页"说清楚。
+ */
+function OutsideRow({ server }: { server: OutsideServer }): ReactElement {
+  const status = outsideStatus(server)
+  const name = server.serverName === '' ? server.id : server.serverName
+  const transport = asText(server.config.transport) || 'streamable-http'
+  // 传输方式与目标只进 tooltip：行内不铺 URL（AGENTS 3.5 / A18）。
+  const detail = `${status.text} · ${transport} · ${targetOf(server.config)}`
+  const tools = server.tools
+  const count = typeof tools?.count === 'number' ? tools.count : 0
+  const source = `来源：${server.id}${count > 0 ? ` · 工具 ${String(count)} 个` : ''}`
+  return (
+    <div className="mcpm-outsideRow">
+      {/* 唯一的 inline 样式：圆点颜色走官方 token（AGENTS 3.1 / 3.2）。 */}
+      <span
+        className="mcpm-dot"
+        style={{ background: status.color }}
+        title={status.text}
+        aria-label={status.text}
+        role="img"
+      />
+      <div className="mcpm-meta">
+        <div className="mcpm-name" title={detail}>
+          {name}
+        </div>
+        <div className="mcpm-outsideSource" title={server.id}>
+          {source}
+        </div>
+      </div>
+    </div>
+  )
+}
 
 export function McpSection(): ReactElement {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
@@ -246,6 +296,10 @@ export function McpSection(): ReactElement {
   // 宿主半边不热重载：旧宿主不认识 `probe`，点了只会拿到「未知操作」。
   // 所以按能力协商决定这个按钮能不能点（AGENTS 1.2）。
   const canProbe = supports(snapshot, 'probe')
+  // 页面外的服务器（顶层 Loader 条目）：宿主声明了 `outside` 能力才可能有；
+  // 旧宿主不报这个字段 → 空数组 → 整块不渲染。
+  const outside = useMemo(() => snapshot?.outside ?? [], [snapshot])
+  const container: ContainerState = snapshot === null ? 'ok' : containerOf(snapshot)
 
   const header = (
     <div className="mcpm-heading">
@@ -324,9 +378,11 @@ export function McpSection(): ReactElement {
   return (
     <div className="mcpm-page">
       {header}
-      {configured ? null : (
+      {container === 'ok' ? null : (
         <div className="mcpm-notice mcpm-notice--error">
-          {`未找到 group 条目「${snapshot.groupId}」（cordis:group）。它由 profile 自己的补丁层声明，不由插件自带（这样卸载插件不会影响已配置的 MCP）：请把这一行粘进 profile 的 cordis.patch.yml —— - insert: [{id: ${snapshot.groupId}, name: 'cordis:group', config: []}]`}
+          {container === 'duplicated'
+            ? `group 条目「${snapshot.groupId}」被声明了两次：本插件 bundle 自带一份，profile 的 cordis.patch.yml 里还留着手写的一份。同 id 两行会让保存 / 启停 / 删除全部失败（写入前断言取到的是先出现的那条空 config），请删掉 profile 里那一行 —— - insert: [{id: ${snapshot.groupId}, name: 'cordis:group', config: []}] —— 然后重启 DSH。`
+            : `找不到 group 条目「${snapshot.groupId}」（cordis:group）。它由本插件 bundle 自带的补丁层声明，正常不需要你配置；只有在 bundle 被跳过时（多半是兼容性判定）才需要兜底：把这一行粘进 profile 的 cordis.patch.yml —— - insert: [{id: ${snapshot.groupId}, name: 'cordis:group', config: []}]`}
         </div>
       )}
       {/* 行内操作（停用/删除/检测）的报错：没有表单可挂，页面级是唯一位置。
@@ -336,7 +392,11 @@ export function McpSection(): ReactElement {
       {/* 每个服务器一张卡（对齐 ui-settings-models）：卡片头部是行本身，
           展开时在**同一张卡内**追加表单面板，不会在别处重复显示这一台。 */}
       {servers.length === 0 && editing === null ? (
-        <div className="mcpm-empty">还没有配置任何 MCP 服务器。</div>
+        <div className="mcpm-empty">
+          {outside.length === 0
+            ? '还没有配置任何 MCP 服务器。'
+            : '本页还没有配置 MCP 服务器；下面那几台页面外的服务器不在本页管理。'}
+        </div>
       ) : (
         <div className="mcpm-rows">
           {servers.map((server, index) => (
@@ -390,6 +450,25 @@ export function McpSection(): ReactElement {
               />
             </div>
           ) : null}
+        </div>
+      )}
+      {/* 页面外的服务器：只读。放在本页列表**之后**，因为它问的是"还有别的东西在跑吗"，
+          而不是替代本页的服务器。旧宿主没有 `outside` 字段 → 这一块整块不出现。 */}
+      {outside.length === 0 ? null : (
+        <div className="mcpm-outside">
+          <div className="mcpm-outsideHead">
+            <span className="mcpm-outsideTitle">{`页面外还有 ${String(outside.length)} 台 MCP 服务器`}</span>
+          </div>
+          <p className="mcpm-outsideHint">
+            它们是 profile 补丁层里的顶层 Loader 条目（例如插件市场替你写入的那一条），正在运行、工具也已注册，
+            但不在本页的容器里，所以这里只能看、不能启停或删除。要交给本页管理，请删掉 profile 的 cordis.patch.yml
+            里声明它的那一行，再用「新增」在这里重建一台。
+          </p>
+          <div className="mcpm-outsideRows">
+            {outside.map((item) => (
+              <OutsideRow key={item.id} server={item} />
+            ))}
+          </div>
         </div>
       )}
     </div>

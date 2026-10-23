@@ -18,7 +18,7 @@
  *      （启停/删除/保存）会让宿主清掉旧记录，所以那之后必然经过这一态，
  *      由 `recheck` 补一次探测把它推回绿/红（见 section.tsx）。
  */
-import type { FailureRecord, ServerSnapshot, Snapshot } from '../../shared/types.ts'
+import type { FailureRecord, OutsideServer, ServerSnapshot, Snapshot } from '../../shared/types.ts'
 
 /** 一条服务器的展示状态。`reason` 只有"红"的三种状态才有。 */
 export interface StatusView {
@@ -60,6 +60,31 @@ export function statusOf(server: ServerSnapshot, canProbe: boolean): StatusView 
     if (canProbe) return { color: STATUS_WARN, text: '未检测', reason: null }
     // 旧宿主没有探测通道，相位就是它唯一的证据（向后兼容）。
     return { color: STATUS_OK, text: '运行中', reason: null }
+  }
+  return { color: STATUS_IDLE, text: '未启动', reason: null }
+}
+
+/**
+ * **页面外**服务器的状态（顶层 Loader 条目，不在本页容器里）。
+ *
+ * 与 `statusOf` 的区别在于**证据来源**：它们在容器外，我们既不能探测（`runProbes` 只认容器里的行）
+ * 也拿不到写入通道，所以判断"能不能用"只有一条正面证据 —— **mcp-client 已经把工具注册完了**
+ * （`outside.tools.count > 0`）。相位 `active` 单独出现不算数：`failOnStartupError: false`
+ * 下连不上也是 active（AGENTS 3.10）。所以 active + 0 个工具报琥珀「无工具」，不给绿灯。
+ */
+export function outsideStatus(server: OutsideServer): StatusView {
+  if (server.disabled === true || server.phase === 'stopped')
+    return { color: STATUS_IDLE, text: '已停用', reason: null }
+  if (server.phase === 'failed') return { color: STATUS_ERROR, text: '加载失败', reason: null }
+  const count = typeof server.tools?.count === 'number' ? server.tools.count : 0
+  // 正面证据优先：工具已经注册 = 这次连接确实通了，此时历史失败记录不再代表现状。
+  if (server.phase === 'active' && count > 0) return { color: STATUS_OK, text: '运行中', reason: null }
+  if (typeof server.error?.message === 'string' && server.error.message !== '') {
+    return { color: STATUS_ERROR, text: '连接异常', reason: failureText(server.error) }
+  }
+  if (server.phase === 'active') return { color: STATUS_WARN, text: '无工具', reason: null }
+  if (server.phase === 'pending' || server.phase === 'loading') {
+    return { color: STATUS_WARN, text: '启动中', reason: null }
   }
   return { color: STATUS_IDLE, text: '未启动', reason: null }
 }
