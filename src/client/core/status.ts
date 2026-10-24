@@ -65,17 +65,18 @@ export function statusOf(server: ServerSnapshot, canProbe: boolean): StatusView 
 }
 
 /**
- * 还有服务器"探通了、但条目没挂上"吗？（相位稳定之前不能报绿）
- * `failed` 是终态，不必再等；其余非 active 的相位（pending/loading）都算没稳定。
+ * 还有服务器"没稳定下来"吗？（相位稳定之前不能把写入当作已完成）
+ * `failed` 是终态，不必再等；探测已判死（connected:false，红）也是终态。
+ * 其余**启用中**的服务器：相位还在 pending/loading 就算没稳定 —— 这一条与探测无关：
+ * stdio 的探测永远是 `connected:null`（探不了子进程），旧判据要求"探通才等"，
+ * 结果 stdio 服务器启用后相位稳定循环一次都不跑，页面停在「启动中」直到手动刷新。
  */
 export function settling(data: Snapshot | null | undefined): boolean {
-  return (data?.servers ?? []).some(
-    (server) =>
-      server.disabled !== true &&
-      server.probe?.connected === true &&
-      server.phase !== 'active' &&
-      server.phase !== 'failed',
-  )
+  return (data?.servers ?? []).some((server) => {
+    if (server.disabled === true || server.probe?.connected === false) return false
+    if (server.phase === 'pending' || server.phase === 'loading') return true
+    return server.probe?.connected === true && server.phase !== 'active' && server.phase !== 'failed'
+  })
 }
 
 /**

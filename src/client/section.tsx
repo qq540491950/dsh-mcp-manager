@@ -54,6 +54,8 @@ export function McpSection(): ReactElement {
   const [formError, setFormError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [probing, setProbing] = useState(false)
+  /** 正在落地启停意图的条目 id：从点击到"快照确认 + 相位稳定"为止，该行按钮保持禁用。 */
+  const [toggling, setToggling] = useState<string | null>(null)
 
   const refresh = useCallback(async (): Promise<Snapshot | null> => {
     try {
@@ -191,15 +193,25 @@ export function McpSection(): ReactElement {
   const toggle = useCallback(
     (server: ServerSnapshot): void => {
       const enabled = server.disabled === true
+      setToggling(server.id)
       void call(
         { op: 'setEnabled', entryId: server.id, enabled },
         (data) => {
-          recheckAfter(data, { entryId: server.id, disabled: !enabled })
+          // 意图落地 + 相位稳定之前，这一行的按钮必须保持禁用：宿主返回的快照是
+          // 重放前的旧状态，此刻行还显示旧的启停文案，放开按钮就是在邀请重复点击。
+          void recheck(data, { entryId: server.id, disabled: !enabled })
+            .catch(() => {})
+            .finally(() => {
+              setToggling((current) => (current === server.id ? null : current))
+            })
         },
-        setActionError,
+        (message) => {
+          setToggling((current) => (current === server.id ? null : current))
+          setActionError(message)
+        },
       )
     },
-    [call, recheckAfter],
+    [call, recheck],
   )
 
   const remove = useCallback(
@@ -315,6 +327,7 @@ export function McpSection(): ReactElement {
         server={server}
         canProbe={canProbe}
         busy={busy || !canPatch}
+        pending={toggling === server.id}
         editing={editing === server.id}
         onEdit={(): void => {
           if (editing === server.id) {

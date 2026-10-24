@@ -2421,7 +2421,7 @@ check(
   /**
    * 场景夹具：McpSection 的 useState 调用顺序 —— **新增一个状态就必须在这里补一位**，
    * 否则后面所有槽位都会错位（假 useState 是按顺序发值的）。
-   * [snapshot, loadError, busy, editing, draft, formError, actionError, probing]
+   * [snapshot, loadError, busy, editing, draft, formError, actionError, probing, toggling]
    */
   const scene = (
     snapshotValue,
@@ -2432,7 +2432,11 @@ check(
     formError = null,
     actionError = null,
     probing = false,
-  ) => renderSection({ McpSection: [snapshotValue, loadError, busy, editing, draft, formError, actionError, probing] })
+    toggling = null,
+  ) =>
+    renderSection({
+      McpSection: [snapshotValue, loadError, busy, editing, draft, formError, actionError, probing, toggling],
+    })
 
   // D1–D3 列表视图
   const list = scene(snapshot)
@@ -2567,6 +2571,29 @@ check(
       'D16b 副标题说明数据模型（列表即 profile 补丁文件里的顶层条目）',
       textsOf(list).some((t) => t.includes('profile 补丁文件')),
       textsOf(list).join('|'),
+    )
+  }
+
+  // D50（回归，用户实测"停止启用时仍然可以点击"）：宿主返回的快照是重放前的旧状态，
+  // 启停意图落地之前行还显示旧的启停文案 —— 这段时间该行的全部行内操作必须保持禁用，
+  // 否则就是在邀请重复点击（点了没反应 → 再点 → 看起来"完全没生效"）。
+  {
+    const actionButtons = (tree, label) =>
+      collect(tree, (n) => (n.type === 'button' && textsOf(n).includes(label) ? n.props : undefined))
+    const pendingScene = scene(snapshot, null, false, null, null, null, null, false, 'mcp-context7')
+    check(
+      'D50 启停意图未落地（toggling 置位）：该行的编辑/停用/删除全部禁用',
+      ['编辑', '停用', '删除'].every((label) => actionButtons(pendingScene, label)[0]?.disabled === true),
+      ['编辑', '停用', '删除']
+        .map((label) => `${label}=${String(actionButtons(pendingScene, label)[0]?.disabled)}`)
+        .join('|'),
+    )
+    check(
+      'D50b 意图落地后恢复可用（行内按钮只由 busy/pending 驱动，没有写死禁用）',
+      ['编辑', '停用', '删除'].every((label) => actionButtons(list, label)[0]?.disabled === false),
+      ['编辑', '停用', '删除']
+        .map((label) => `${label}=${String(actionButtons(list, label)[0]?.disabled)}`)
+        .join('|'),
     )
   }
 
@@ -3182,6 +3209,48 @@ check(
       stuck.length === 12 && gets === 11 && stuck.filter((request) => request.body?.op === 'probe').length === 1,
       `total=${String(stuck.length)} gets=${String(gets)}`,
     )
+
+    // D49（回归，用户实测"启用之后，不刷新不能正常显示状态"）：stdio 条目的探测永远是
+    // connected:null，相位稳定循环不能以"探通"为前提 —— 意图落地补检测之后必须继续重读
+    // 快照直到相位 active，否则页面停在「启动中」，只能手动刷新。
+    {
+      const probeNull = { connected: null, status: null, detail: '仅能探测 streamable-http', at: 1 }
+      const stdioEnable = await mount({
+        capabilities: newHost,
+        // 队列耗尽后的兜底（base）= 重放完成后的最终状态：active + stdio 探测记录。
+        server: row(false, { probe: probeNull }),
+        stateValues: values(newHost, row(true)),
+        responses: [
+          { capabilities: newHost, servers: [row(true)] }, // 挂载 GET：启用前（已停用）
+          { capabilities: newHost, servers: [row(true)] }, // 挂载补检测：停用条目探不了，快照不变
+          { capabilities: newHost, servers: [row(true)] }, // POST setEnabled 返回：重放前旧状态
+          { capabilities: newHost, servers: [row(true)] }, // 意图重读 #1：还没落地
+          { capabilities: newHost, servers: [row(false, { phase: 'pending' })] }, // 意图重读 #2：落地
+          {
+            capabilities: newHost,
+            servers: [row(false, { phase: 'pending', probe: probeNull })],
+          }, // 落地补检测（stdio → connected:null）
+          { capabilities: newHost, servers: [row(false, { phase: 'loading', probe: probeNull })] },
+          { capabilities: newHost, servers: [row(false, { phase: 'active', probe: probeNull })] },
+        ],
+        click: '启用',
+      })
+      await new Promise((resolve) => setTimeout(resolve, 1600))
+      check(
+        'D49 启用 stdio 条目：落地补检测后相位稳定循环继续重读到 active（不卡「启动中」）',
+        same(shape(stdioEnable), [
+          ['GET', undefined],
+          ['POST', 'probe'],
+          ['POST', 'setEnabled'],
+          ['GET', undefined],
+          ['GET', undefined],
+          ['POST', 'probe'],
+          ['GET', undefined],
+          ['GET', undefined],
+        ]),
+        JSON.stringify(shape(stdioEnable)),
+      )
+    }
   }
 
   // D48：真实表单提交：新增发 `op:add`（顶层条目协议，不再有整数组回传）。
@@ -3748,6 +3817,23 @@ check(
     settling({ servers: [srv({ disabled: true, phase: 'loading', probe: probeOk })] }) === false,
   )
   check('F16 快照缺失时不抛（旧宿主/首屏）', settling(null) === false && settling(undefined) === false)
+  {
+    const probeNull = { connected: null, status: null, detail: '仅能探测 streamable-http', at: 1 }
+    check(
+      'F20 stdio（探测 connected:null）相位未挂上 → 还没稳定：启用后必须继续重读，否则永远停在「启动中」',
+      settling({ servers: [srv({ phase: 'pending', probe: probeNull })] }) === true &&
+        settling({ servers: [srv({ phase: 'loading', probe: probeNull })] }) === true,
+    )
+    check(
+      'F21 探测已判死（connected:false）→ 不再等：红就是终态，别为它烧窗口',
+      settling({ servers: [srv({ phase: 'loading', probe: probeFail })] }) === false,
+    )
+    check(
+      'F22 stdio 相位已稳定（active/failed）→ 不再等',
+      settling({ servers: [srv({ phase: 'active', probe: probeNull })] }) === false &&
+        settling({ servers: [srv({ phase: 'failed', probe: probeNull })] }) === false,
+    )
+  }
 
   // —— failureText：时间 + 次数 + 原文 ——
   check(

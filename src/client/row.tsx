@@ -12,6 +12,8 @@ export interface ServerRowProps {
   /** 宿主能不能主动探测：决定"active 但没记录"是报「未检测」还是报绿。 */
   canProbe: boolean
   busy: boolean
+  /** 这一行的启停意图还没落地（快照确认 + 相位稳定）：行内操作保持禁用，防重复点击。 */
+  pending: boolean
   editing: boolean
   onEdit: () => void
   onToggle: () => void
@@ -95,11 +97,13 @@ export function ServerRow({
   server,
   canProbe,
   busy,
+  pending,
   editing,
   onEdit,
   onToggle,
   onRemove,
 }: ServerRowProps): ReactElement {
+  const locked = busy || pending
   const status = statusOf(server, canProbe)
   const [confirming, setConfirming] = useState(false)
   const [toolsOpen, setToolsOpen] = useState(false)
@@ -132,7 +136,7 @@ export function ServerRow({
       <div className="mcpm-actions">
         {confirming ? (
           <>
-            <button type="button" className="mcpm-btn mcpm-btn--danger" onClick={onRemove} disabled={busy}>
+            <button type="button" className="mcpm-btn mcpm-btn--danger" onClick={onRemove} disabled={locked}>
               {overridden ? '确认还原' : '确认删除'}
             </button>
             <button
@@ -147,7 +151,7 @@ export function ServerRow({
           </>
         ) : (
           <>
-            <button type="button" className="mcpm-btn" onClick={onEdit} disabled={busy}>
+            <button type="button" className="mcpm-btn" onClick={onEdit} disabled={locked}>
               {editing ? '收起' : '编辑'}
             </button>
             <button
@@ -155,7 +159,7 @@ export function ServerRow({
               className="mcpm-btn"
               title={enabled ? '停用这台服务器' : '启用这台服务器'}
               onClick={onToggle}
-              disabled={busy}
+              disabled={locked}
             >
               {enabled ? '停用' : '启用'}
             </button>
@@ -175,7 +179,7 @@ export function ServerRow({
                 onClick={(): void => {
                   setConfirming(true)
                 }}
-                disabled={busy}
+                disabled={locked}
                 title={overridden ? '删除覆写行，恢复外部原配置' : '从 profile 补丁文件里删除这台服务器'}
               >
                 {overridden ? '还原' : '删除'}
