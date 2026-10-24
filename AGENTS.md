@@ -7,10 +7,10 @@
 DSH 插件：在设置界面最下方加一页「MCP」，可视化管理 `@deepseek-ai/dsh-mcp-client` 的 Loader 条目。**源码在 `src/**`；`lib/**` 是构建产物，不要直接编辑。**
 
 - 客户端 `src/client/**` → `lib/client.js`：注册 `settings.section`（list 座位，`order: 900`）；把导航里**自己那一格**的兜底齿轮换成 MCP 标记（3.8）。
-- 宿主 `src/host/**` → `lib/index.js`：零 import；`ctx.connection.fetch.register()` 开 `/api/mcp-manager`；受控 profile patch 写入器负责受控块更新。
-- 数据模型（v0.3.0 起）：每台 MCP 都是 profile 补丁文件里的**顶层 Loader 条目**。本插件新增条目写成 `- insert: [ { id, name, config } ]`；外部已有 MCP 可“接管”追加 `- id: X` 覆写行，原声明保留。
-- 写入通道：由受控写入器 `src/host/patch-writer.ts` 结合 `src/shared/managed-block.ts` 只替换 profile 文件末尾的受控 marker 块（`# >>> dsh-mcp-manager:managed`），块外用户手写内容逐字节未变；使用 `package.json.lock` 文件锁保证原子写入与安全回滚。
-- 旧版兼容与迁移：启动时如检测到旧版 `cordis:group` 容器里仍有 MCP，页面提供一键迁移到顶层 `insert`，并在同一事务中清空旧容器 `config: []`。
+- 宿主 `src/host/**` → `lib/index.js`：零 import；`ctx.connection.fetch.register()` 开 `/api/mcp-manager`；条目寻址写入器负责 profile patch 的原位编辑。
+- 数据模型（v0.4.0 起）：**profile 补丁文件就是数据库**。每台 MCP 是 `cordis.patch.yml` 里的**普通顶层 Loader 条目**（与手写、市场插件写的完全同形，没有受控块/manifest/"接管"概念）。本插件按 id 寻址直接增删改那些行；声明在**别的层**（其他 bundle / home patch）的条目只能追加 `- id: X` 覆写行（source 三态：`profile` / `overridden` / `external`）。
+- 写入通道：`src/host/patch-writer.ts`（文件锁 `package.json.lock` + 临时文件原子替换 + 自动 `.bak`）执行 `src/shared/patch-doc.ts` 的编辑列表——**替换/删除目标条目的字节区间、末尾追加**，条目之外逐字节未变；同 id 多份声明、区间异常一律**拒绝写入**。
+- 旧版兼容与迁移：v0.3 marker 块的注释行被寻址器当透明（不剥离也能读写），启动时一次性剥离美化（`managed-block.ts` 的 `stripManagedMarkers`）；旧版 `cordis:group` 容器里仍有 MCP 时页面提供一键迁移为顶层条目（声明在 profile 里就直接删行，否则兜底清空覆写行）。
 - 唯一必跑：`node tools/verify.ts`，期望 `PASS`（条数看输出、别抄死；命令名以 [package.json](package.json) scripts 为准）。
 
 ## 1. 硬性纪律
@@ -33,7 +33,7 @@ DSH 插件：在设置界面最下方加一页「MCP」，可视化管理 `@deep
 
 **2.3 [硬] 禁止 `ctx.loader.create()/remove()`。** `Include.write()` → `writeFile(this.root.data)`，而 `_writeFile` 是 `yaml.dump(整份 config)`：**整体重写**，会压平用户手写的 `insert:` 分节。
 
-**2.4 [硬] 数据面写入仅限于受控 marker 块。** 严禁调用 `ctx.loader.create()/remove()` 或 `yaml.dump(整份文件)` 重写整个 profile；必须通过受控写入器只替换 `# >>> dsh-mcp-manager:managed` 与 `# <<< dsh-mcp-manager:managed` 之间的内容，块外内容逐字节保留。写入必须使用 profile 文件锁（`<profile>/package.json.lock`）、临时文件原子替换与自动 `.bak` 备份；任何 marker/manifest 异常时**拒绝写入**。
+**2.4 [硬] 数据面写入只做条目寻址的原位编辑。** 严禁调用 `ctx.loader.create()/remove()` 或 `yaml.dump(整份文件)` 重写整个 profile；必须通过 `patch-writer.ts` 执行 `patch-doc.ts` 的编辑列表——**替换/删除目标条目的字节区间**（由 `scanPatchDoc` 定位），条目之外逐字节保留。写入必须使用 profile 文件锁（`<profile>/package.json.lock`）、临时文件原子替换与自动 `.bak` 备份；扫描异常、同 id 多份声明、区间越界/重叠时**拒绝写入**（安全失败，不猜用户意图）。新条目只能走 `- {"insert":[…]}` 创建行——顶层裸行 `- id: X` 是覆写语义，目标不存在会被 `applyEntryPatches` 静默丢弃。
 
 **2.5 [边界] 行内操作走宿主定点操作，禁止回传整数组。** `setEnabled`/`remove` 只带 `{ serverName, ... }`，宿主按名字定位原地改、其余行原样回写；`save`（整数组）只给表单。回传整数组 + 逐行重建会**静默清空 `headers`/`env`**（历史事故）。
 
@@ -93,16 +93,15 @@ DSH 插件：在设置界面最下方加一页「MCP」，可视化管理 `@deep
 | 边界 | 说明 |
 |---|---|
 | 宿主不热重载 | 见 1.2：重启，或改 `hmr.root`（整表替换，先读出原值） |
-| 覆写层不合并 `insert:` 层 | 见 2.4。DSH 分层配置的固有行为，不是 bug |
+| 覆写层不合并 `insert:` 层 | DSH 分层配置的固有行为，不是 bug：覆写非空时只认覆写、绝不合并两层（B70） |
 | `listTokens` 不是全表 | 只列 14 个需 light/dark 双份覆写的 alias；`button-primary-fill`、`radius-*`、`settings-card-*`、`label-tertiary` 在表外但真实存在——**判断 token 以官方 CSS 用法为准** |
-| group 子条目不可寻址 | 契约里的 `readOnlyReason: "unaddressable"`；这正是"整体重写 group config 数组"的由来 |
+| group 子条目不可寻址 | 契约里的 `readOnlyReason: "unaddressable"`；这正是 v0.4 "每台 MCP 独立成顶层条目"的由来 |
 | `disabled` 有效 | 条目**或任一父条目** disabled 即不挂载，支持 `!!js`；启停机制没问题 |
 | 宿主日志基本不可看 | 只写 `crash-*.log`；cordis logger 是 1000 条环形缓冲，超出丢最旧 → 靠自检 + 渲染测试兜住。例外：本插件自己挂的 exporter 把 `mcp-client(<name>): …` 收进快照 |
 | 导航图标不可由插件提供 | 见 3.8；上游提案落地即改用注册参数 |
 | 导航位置由 `order` 决定 | 900 只是比官方页大，别的插件更大就排后面；标记按 label 认格，不受顺序影响 |
-| 容器归 bundle，卸载即掉线 | v0.2.0 的取舍（见 §0）：容器随插件走才能"装上即用"。卸载后 MCP 中止加载但**配置原文仍在 profile 覆写行里**，装回即恢复。要常年在线就别卸插件——别再翻回"容器归 profile"，那等于逼用户手写 YAML |
-| 同 id 声明两次 = 写操作全挂、读正常 | `applyEntryPatches` 的 `insert` 是 `push`（不去重），而 `configEditor` 写盘前断言用 `flatten(...).find(id)` 取**第一条**（bundle 那个空 config）→ 永远不等于待写值。宿主用 `containerState()` 把它报成 `duplicated` 并给"删哪一行"，**不要**用"读着正常"判断没事 |
-| 页面外的顶层条目改不了 | `disabled` 是**行字段**、不在 config 里，`configEditor.edit()` 只写 config；删除顶层条目无 API。所以只做只读展示 + 指向 profile 手工处理，**别加"一键导入"**（两台同名服务器会抢 `mcp__<name>__*` 同一批工具名） |
+| 别的层声明的条目删不掉、也永远做不到 | 声明在其他 bundle（node_modules）或 home patch 里的条目，原始声明物理上不在 profile 文件里；本插件最多追加/更新覆写行（`overridden`），删除 = 还原覆写行，**原声明只能去声明它的层处理**。别试图"一键接管删除" |
+| 同 id 多份声明（文件内） | `scanPatchDoc` 能看见全部声明：update/setEnabled **拒绝**（歧义），remove 删掉全部（良定义）。不要再拿"读着正常"判断没事 |
 | 上游 `insert` 共享对象缺陷（未在本机复现） | 上游报告：补丁可能改到共享 insert 对象（插件被静默 disable）；同 id 重复 insert → `duplicate loader entry id` |
 
 ## 7. Git 与发布

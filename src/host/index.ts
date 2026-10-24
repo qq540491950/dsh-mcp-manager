@@ -1,27 +1,33 @@
 /**
  * 宿主半边（Host half）——MCP 管理器的数据面。
  *
- * 数据模型（v0.3.0 起）：
- *   - 每台 MCP 是 profile `cordis.patch.yml` 里的一条**顶层** Loader 条目；
- *   - 本插件新增的条目写成 `- insert: [ { id, name, config } ]`；
- *   - 本插件管理的外部条目写成 `- id: X, name, config` 覆写行；
- *   - 所有受控行放在一个 marker 块里，由 `patch-writer.ts` 只替换块内内容。
- *
- * 为什么不再用 `cordis:group`：`configEditor.edit()` 只能改已存在条目，不能新增/删除；
- * `loader.create()/remove()` 会整份重写 YAML。旧方案用一个 group 数组绕开限制，
- * 但用户要求每台 MCP 都像官方模板一样以 `insert` 出现。v0.3.0 只保留一个版本用于
- * 迁移旧 group（清空它的 config），之后会删除 group 声明。
+ * 数据模型（v0.4.0 起）：**profile 补丁文件就是数据库**。
+ *   - 每台 MCP 是 profile `cordis.patch.yml` 里的一条**普通顶层 Loader 条目**，与手写、
+ *     市场插件写的完全同形——没有受控块、没有 manifest、没有"接管"概念；
+ *   - 本插件按 **id 寻址**直接增删改那些行（`patch-doc.ts` 找字节区间，
+ *     `patch-writer.ts` 在文件锁 + 原子替换下只重写目标行，其余字节逐字保留）；
+ *   - 声明在**别的层**（其他 bundle / home patch）的条目：保存/启停时自动追加一条
+ *     顶层覆写行（`- id: X`），原始声明无法由本插件删除——这是分层配置的边界。
  *
  * 读路径：`configEditor.entries()/configuration()` 拿顶层条目和原始 config
- * （保留 `!!js` 标记）；写路径：`patch-writer.ts` + `managed-block.ts`。
+ * （保留 `!!js` 标记）；写路径：`patch-writer.ts` + `patch-doc.ts`；
+ * 写完不调用任何 Loader API——`dsh-hmr` 监听该文件，秒级重组合，这里只轮询等它生效。
  */
 import { GROUP_ID, MCP_PACKAGE, ROUTE } from '../shared/constants.ts'
 import { isJsExpr } from '../shared/expr.ts'
 import { asRecord, asText, isRecord, readString } from '../shared/guards.ts'
-import { locateManagedBlock } from '../shared/managed-block.ts'
-import type { ManagedManifest, ManagedRecord } from '../shared/managed-block.ts'
+import { stripManagedMarkers } from '../shared/managed-block.ts'
+import {
+  entryItemOf,
+  flowScalar,
+  renderEntryItem,
+  renderInsertLine,
+  renderKillLine,
+  scanPatchDoc,
+} from '../shared/patch-doc.ts'
+import type { AddressedEntry, PatchEdit, ScanResult } from '../shared/patch-doc.ts'
 import { normalizeRow } from './rows.ts'
-import { readPatch, writeManagedBlock } from './patch-writer.ts'
+import { editPatch, readPatch } from './patch-writer.ts'
 import type { HmrLike } from './patch-writer.ts'
 import type { ConfigLayer, EntryRow, HostContext, LoaderEntry, LogMessage, ToolsService } from './service-types.ts'
 import type {
@@ -30,6 +36,7 @@ import type {
   LegacyState,
   ProbeRecord,
   ServerSnapshot,
+  ServerSource,
   Snapshot,
   ToolRecord,
 } from '../shared/types.ts'
@@ -57,14 +64,17 @@ const MCP_TOOL_PREFIX = 'mcp__'
 /** cordis FiberState → 本插件相位。 */
 const FIBER_PHASE: readonly FiberPhase[] = ['pending', 'loading', 'active', 'failed', 'disposed', 'unloading']
 const SERVER_NAME_PATTERN = /^[A-Za-z0-9_-]{1,32}$/
+/**
+ * 能力协商。`patchInsert` 保留给 v0.3 客户端做版本探测（它的写操作会得到明确的
+ * "已移除"错误）；`nativeRows` 是 v0.4 客户端的启用门槛。
+ */
 const CAPABILITIES = [
   'patchInsert',
+  'nativeRows',
   'add',
   'update',
   'remove',
   'setEnabled',
-  'adopt',
-  'release',
   'probe',
   'tools',
   'legacyMigration',
@@ -73,10 +83,6 @@ const CAPABILITIES = [
 export const name = 'dsh-mcp-manager'
 /** 依赖在 apply 内用 ctx.inject 声明，便于缺失服务时优雅降级。 */
 export const inject: string[] = []
-
-function emptyManifest(): ManagedManifest {
-  return { version: 1, entries: [] }
-}
 
 /** 把任意抛出物整理成一句话。Node 的 fetch 把网络层原因包在 cause 里。 */
 function reasonOf(error: unknown): string {
@@ -209,67 +215,56 @@ export function apply(ctx: HostContext): void {
       return count > 0 ? { state: 'needs-migration', count } : { state: 'none', count: 0 }
     }
 
-    /** 迁移后的一个版本里要保留一条 `- id: mcp-manager, config: []` 覆写，防止旧列表复活。 */
-    const legacyFlag = (manifest: ManagedManifest): boolean => {
-      const groups = groupEntries()
-      if (groups.length !== 1) return false
-      return manifest.legacyGroup === true || groupRows().length > 0
-    }
-
-    const readManifest = async (): Promise<{ manifest: ManagedManifest; patchError?: string }> => {
+    /** 读 profile 补丁文件并扫描条目声明；读不到/扫描异常时降级为"全部外部 + 禁写"。 */
+    const readDoc = async (): Promise<{ scan: ScanResult; patchError?: string }> => {
       try {
         const text = await readPatch(documentPath)
-        const block = locateManagedBlock(text)
-        return { manifest: block?.manifest ?? emptyManifest() }
+        return { scan: scanPatchDoc(text) }
       } catch (error) {
-        return { manifest: emptyManifest(), patchError: reasonOf(error) }
+        return { scan: { entries: [], unaddressable: 0 }, patchError: reasonOf(error) }
       }
     }
 
-    const recordsFrom = (
-      manifest: ManagedManifest,
-      entries: LoaderEntry[],
-      layers: Map<string, ConfigLayer>,
-    ): ManagedRecord[] => {
-      const byId = new Map(entries.map((entry) => [entry.options.id ?? '', entry]))
-      const records: ManagedRecord[] = []
-      for (const ref of manifest.entries) {
-        const entry = byId.get(ref.id)
-        if (entry === undefined) continue
-        records.push({
-          id: ref.id,
-          kind: ref.kind,
-          config: rawConfigOf(entry, layers),
-          disabled: entry.options.disabled === true,
-        })
+    /** 写操作的前置：文件必须可读可扫，否则拒绝写入（安全失败）。 */
+    const requireDoc = async (): Promise<ScanResult> => {
+      const doc = await readDoc()
+      if (doc.patchError !== undefined) {
+        throw new Error(`无法读取 profile 补丁文件，写入已禁用：${doc.patchError}`)
       }
-      return records
+      return doc.scan
     }
 
     const snapshot = async (): Promise<Snapshot> => {
-      const { manifest, patchError } = await readManifest()
+      const doc = await readDoc()
       const entries = topLevelEntries()
       const layers = layersOf()
-      const byId = new Map(entries.map((entry) => [entry.options.id ?? '', entry]))
-      const refs = new Map(manifest.entries.map((ref) => [ref.id, ref]))
-      const ordered: Array<{ entry: LoaderEntry; ref?: (typeof manifest.entries)[number] }> = []
-      for (const ref of manifest.entries) {
-        const entry = byId.get(ref.id)
-        if (entry !== undefined) ordered.push({ entry, ref })
+      const declared = new Map<string, AddressedEntry[]>()
+      if (doc.patchError === undefined) {
+        for (const item of doc.scan.entries) {
+          if (item.id === undefined) continue
+          const list = declared.get(item.id)
+          if (list === undefined) declared.set(item.id, [item])
+          else list.push(item)
+        }
       }
-      for (const entry of entries) {
-        const id = entry.options.id ?? ''
-        if (!refs.has(id)) ordered.push({ entry })
-      }
-      const servers: ServerSnapshot[] = ordered.map(({ entry, ref }, index) => {
+      const servers: ServerSnapshot[] = entries.map((entry, index) => {
         const id = entry.options.id ?? ''
         const config = rawConfigOf(entry, layers)
         const serverName = asText(config.serverName)
+        const ranges = declared.get(id) ?? []
+        const source: ServerSource =
+          doc.patchError !== undefined
+            ? 'external'
+            : ranges.some((item) => item.style === 'insert')
+              ? 'profile'
+              : ranges.length > 0
+                ? 'overridden'
+                : 'external'
         const server: ServerSnapshot = {
           index,
           id,
           serverName,
-          source: ref?.kind ?? 'external',
+          source,
           config,
           disabled: entry.options.disabled === true,
           phase: phaseOf(entry),
@@ -282,13 +277,11 @@ export function apply(ctx: HostContext): void {
         if (tools !== undefined) server.tools = tools
         return server
       })
-      const missing = manifest.entries.filter((ref) => !byId.has(ref.id)).map((ref) => ref.id)
       return {
         servers,
-        ...(missing.length > 0 ? { missing } : {}),
         legacy: legacyState(),
         profilePath: documentPath,
-        ...(patchError === undefined ? {} : { patchError }),
+        ...(doc.patchError === undefined ? {} : { patchError: doc.patchError }),
         mcpPackage: MCP_PACKAGE,
         capabilities: CAPABILITIES,
       }
@@ -301,16 +294,10 @@ export function apply(ctx: HostContext): void {
       }
     }
 
-    const commit = async (
-      records: ManagedRecord[],
-      legacyGroup: boolean,
-      predicate: () => boolean,
-    ): Promise<Snapshot> => {
-      await writeManagedBlock({ documentPath, hmr }, { records, legacyGroup })
+    const applyEdits = async (edits: PatchEdit[]): Promise<void> => {
+      await editPatch({ documentPath, hmr }, edits)
       failures.clear()
       probes.clear()
-      await waitFor(predicate)
-      return snapshot()
     }
 
     let writeQueue: Promise<void> = Promise.resolve()
@@ -337,126 +324,156 @@ export function apply(ctx: HostContext): void {
       }
     }
 
-    const uniqueId = (serverName: string, entries: LoaderEntry[], records: ManagedRecord[]): string => {
+    /** 收集"已占用"的条目 id：Loader 里的 + 文件里声明过的（后者可能是被 warn 丢弃的死行）。 */
+    const takenIds = (scan: ScanResult): Set<string> => {
       const taken = new Set<string>()
-      for (const entry of entries) {
+      for (const entry of topLevelEntries()) {
         const id = entry.options.id
         if (typeof id === 'string' && id !== '') taken.add(id)
       }
-      for (const record of records) taken.add(record.id)
+      for (const item of scan.entries) if (item.id !== undefined) taken.add(item.id)
+      return taken
+    }
+
+    const uniqueId = (serverName: string, taken: Set<string>): string => {
       const base = `mcp-${serverName}`.replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 48) || 'mcp-server'
       let candidate = base
       for (let suffix = 2; taken.has(candidate); suffix += 1) candidate = `${base}-${String(suffix)}`
       return candidate
     }
 
+    /**
+     * 「把 entryId 写成 config + disabled」所需的编辑。
+     * 声明在文件里 → 原地重写那个区间；不在 → 追加一条顶层覆写行（外部条目的隐式接管）。
+     * 同 id 多份声明是歧义状态，拒绝写入。
+     */
+    const entryWriteEdit = (
+      scan: ScanResult,
+      entryId: string,
+      config: Record<string, unknown>,
+      disabled: boolean,
+    ): PatchEdit => {
+      const ranges = scan.entries.filter((item) => item.id === entryId)
+      if (ranges.length > 1) {
+        throw new Error(
+          `条目 "${entryId}" 在 profile 里被声明了 ${String(ranges.length)} 次；请先手工清理 cordis.patch.yml（每台 MCP 只保留一行声明）`,
+        )
+      }
+      const target = ranges[0]
+      if (target === undefined) {
+        return { op: 'append', lines: [renderEntryItem({ id: entryId, config, disabled }, 'override')] }
+      }
+      if (target.flow !== undefined) {
+        if (target.flow.index === undefined) {
+          // 整行就是这条条目（顶层 flow 裸行 = override；insert 分节里的 flow 裸行 = insert）。
+          const line = renderEntryItem({ id: entryId, config, disabled }, target.style)
+          return {
+            op: 'replace',
+            start: target.start,
+            end: target.end,
+            line: target.indent > 0 ? `${' '.repeat(target.indent)}${line}` : line,
+          }
+        }
+        // 单行 flow 的 insert 数组里的一个元素：整行重写，其余元素原样保留。
+        const container = target.flow.value
+        const list = Array.isArray(container.insert) ? [...(container.insert as unknown[])] : []
+        list[target.flow.index] = entryItemOf({ id: entryId, config, disabled }, 'insert')
+        return { op: 'replace', start: target.start, end: target.end, line: `- ${flowScalar({ insert: list })}` }
+      }
+      const line = renderEntryItem({ id: entryId, config, disabled }, target.style)
+      return {
+        op: 'replace',
+        start: target.start,
+        end: target.end,
+        line: target.indent > 0 ? `${' '.repeat(target.indent)}${line}` : line,
+      }
+    }
+
+    /** 删除 entryId 在本文件里的全部声明；嵌套条目删空父分节时连父分节一起删。 */
+    const removalEdits = (scan: ScanResult, entryId: string): PatchEdit[] => {
+      const ranges = scan.entries.filter((item) => item.id === entryId)
+      if (ranges.length === 0) {
+        throw new Error(
+          `条目 "${entryId}" 的原始声明不在 profile 补丁文件里（由其他插件或补丁层声明），本插件无法删除；可以停用它`,
+        )
+      }
+      const edits: PatchEdit[] = []
+      const done = new Set<string>()
+      for (const range of ranges) {
+        if (range.flow !== undefined && range.flow.index !== undefined) {
+          const container = range.flow.value
+          const list = (Array.isArray(container.insert) ? [...(container.insert as unknown[])] : []).filter(
+            (_item, index) => index !== range.flow?.index,
+          )
+          if (list.length === 0) edits.push({ op: 'delete', start: range.start, end: range.end })
+          else
+            edits.push({ op: 'replace', start: range.start, end: range.end, line: `- ${flowScalar({ insert: list })}` })
+          done.add(String(range.start))
+          continue
+        }
+        if (range.parent !== undefined && range.siblings <= 1) {
+          const key = `parent-${String(range.parent.start)}`
+          if (!done.has(key)) {
+            done.add(key)
+            edits.push({ op: 'delete', start: range.parent.start, end: range.parent.end })
+          }
+          continue
+        }
+        const key = String(range.start)
+        if (!done.has(key)) {
+          done.add(key)
+          edits.push({ op: 'delete', start: range.start, end: range.end })
+        }
+      }
+      return edits
+    }
+
     const addServer = async (server: unknown): Promise<Snapshot> => {
-      const { manifest, patchError } = await readManifest()
-      if (patchError !== undefined) throw new Error(patchError)
+      const scan = await requireDoc()
       const row = normalizeRow(server)
       const config = asRecord(row.config)
-      const serverName = asText(config.serverName)
-      assertNameFree(serverName)
-      const entries = topLevelEntries()
-      const records = recordsFrom(manifest, entries, layersOf())
-      const id = uniqueId(serverName, entries, records)
-      row.id = id
-      records.push({ id, kind: 'insert', config, disabled: row.disabled === true })
-      return commit(records, legacyFlag(manifest), () => topLevelEntries().some((entry) => entry.options.id === id))
+      assertNameFree(asText(config.serverName))
+      const id = uniqueId(asText(config.serverName), takenIds(scan))
+      await applyEdits([{ op: 'append', lines: [renderInsertLine({ id, config, disabled: row.disabled === true })] }])
+      await waitFor(() => topLevelEntries().some((entry) => entry.options.id === id))
+      return snapshot()
     }
 
     const updateServer = async (entryId: string, server: unknown): Promise<Snapshot> => {
-      const { manifest, patchError } = await readManifest()
-      if (patchError !== undefined) throw new Error(patchError)
-      const ref = manifest.entries.find((item) => item.id === entryId)
-      if (ref === undefined) throw new Error('这是外部 MCP；请先“接管”再修改')
+      const scan = await requireDoc()
       const entries = topLevelEntries()
       const layers = layersOf()
       const entry = entries.find((item) => item.options.id === entryId)
-      const records = recordsFrom(manifest, entries, layers)
-      const record = records.find((item) => item.id === entryId)
-      if (record === undefined) throw new Error(`找不到受管条目 "${entryId}"；请刷新页面或先移除`)
-      const row = normalizeRow(
-        { ...asRecord(server), entryId },
-        entry === undefined ? record.config : rawConfigOf(entry, layers),
-      )
+      if (entry === undefined) throw new Error(`找不到 MCP 条目 "${entryId}"；请刷新页面后重试`)
+      const row = normalizeRow({ ...asRecord(server), entryId }, rawConfigOf(entry, layers))
       const config = asRecord(row.config)
-      const serverName = asText(config.serverName)
-      assertNameFree(serverName, entryId)
-      record.config = config
-      record.disabled = row.disabled === true
-      return commit(records, legacyFlag(manifest), () => topLevelEntries().some((item) => item.options.id === entryId))
-    }
-
-    const removeServer = async (entryId: string): Promise<Snapshot> => {
-      const { manifest, patchError } = await readManifest()
-      if (patchError !== undefined) throw new Error(patchError)
-      const ref = manifest.entries.find((item) => item.id === entryId)
-      if (ref === undefined) throw new Error('外部 MCP 不能由本插件删除；可先“接管”再取消接管')
-      if (ref.kind !== 'insert') throw new Error('覆写行不能删除原条目；请用“取消接管”恢复原配置')
-      const records = recordsFrom(manifest, topLevelEntries(), layersOf()).filter((item) => item.id !== entryId)
-      return commit(
-        records,
-        legacyFlag(manifest),
-        () => !topLevelEntries().some((entry) => entry.options.id === entryId),
-      )
+      assertNameFree(asText(config.serverName), entryId)
+      await applyEdits([entryWriteEdit(scan, entryId, config, row.disabled === true)])
+      await waitFor(() => topLevelEntries().some((item) => item.options.id === entryId))
+      return snapshot()
     }
 
     const setEnabled = async (entryId: string, enabled: boolean): Promise<Snapshot> => {
-      const { manifest, patchError } = await readManifest()
-      if (patchError !== undefined) throw new Error(patchError)
+      const scan = await requireDoc()
       const entries = topLevelEntries()
       const layers = layersOf()
-      const records = recordsFrom(manifest, entries, layers)
-      let record = records.find((item) => item.id === entryId)
-      if (record === undefined) {
-        const entry = entries.find((item) => item.options.id === entryId)
-        if (entry === undefined) throw new Error(`找不到条目 "${entryId}"`)
-        record = {
-          id: entryId,
-          kind: 'override',
-          config: rawConfigOf(entry, layers),
-          disabled: !enabled,
-        }
-        records.push(record)
-      } else {
-        record.disabled = !enabled
-      }
-      return commit(records, legacyFlag(manifest), () =>
-        topLevelEntries().some((entry) => entry.options.id === entryId),
-      )
-    }
-
-    const adoptServer = async (entryId: string): Promise<Snapshot> => {
-      const { manifest, patchError } = await readManifest()
-      if (patchError !== undefined) throw new Error(patchError)
-      if (manifest.entries.some((item) => item.id === entryId)) throw new Error('这台 MCP 已经被接管')
-      const entries = topLevelEntries()
       const entry = entries.find((item) => item.options.id === entryId)
-      if (entry === undefined) throw new Error(`找不到 MCP 条目 "${entryId}"`)
-      const records = recordsFrom(manifest, entries, layersOf())
-      records.push({
-        id: entryId,
-        kind: 'override',
-        config: rawConfigOf(entry, layersOf()),
-        disabled: entry.options.disabled === true,
-      })
-      return commit(records, legacyFlag(manifest), () => manifest.entries.some((item) => item.id === entryId))
+      if (entry === undefined) throw new Error(`找不到条目 "${entryId}"`)
+      const config = rawConfigOf(entry, layers)
+      await applyEdits([entryWriteEdit(scan, entryId, config, !enabled)])
+      await waitFor(() => topLevelEntries().some((item) => item.options.id === entryId))
+      return snapshot()
     }
 
-    const releaseServer = async (entryId: string): Promise<Snapshot> => {
-      const { manifest, patchError } = await readManifest()
-      if (patchError !== undefined) throw new Error(patchError)
-      const ref = manifest.entries.find((item) => item.id === entryId)
-      if (ref === undefined) throw new Error('这台 MCP 没有被本插件接管')
-      if (ref.kind !== 'override') throw new Error('insert 条目不能“取消接管”；请直接删除')
-      const records = recordsFrom(manifest, topLevelEntries(), layersOf()).filter((item) => item.id !== entryId)
-      return commit(records, legacyFlag(manifest), () => true)
+    const removeServer = async (entryId: string): Promise<Snapshot> => {
+      const scan = await requireDoc()
+      await applyEdits(removalEdits(scan, entryId))
+      await waitFor(() => !topLevelEntries().some((entry) => entry.options.id === entryId))
+      return snapshot()
     }
 
     const migrateLegacy = async (): Promise<Snapshot> => {
-      const { manifest, patchError } = await readManifest()
-      if (patchError !== undefined) throw new Error(patchError)
+      const scan = await requireDoc()
       const groups = groupEntries()
       if (groups.length > 1) throw new Error(`旧版 group 条目「${GROUP_ID}」被声明了两次；请先删掉 profile 里那一行`)
       if (groups.length === 0) return snapshot()
@@ -464,8 +481,9 @@ export function apply(ctx: HostContext): void {
       if (rows.length === 0) return snapshot()
       const entries = topLevelEntries()
       const layers = layersOf()
-      const records = recordsFrom(manifest, entries, layers)
       const usedNames = new Set(entries.map((entry) => nameOf(entry, layers)))
+      const taken = takenIds(scan)
+      const lines: string[] = []
       const expected: string[] = []
       for (const row of rows) {
         if (row.name !== MCP_PACKAGE) {
@@ -477,20 +495,22 @@ export function apply(ctx: HostContext): void {
         if (usedNames.has(serverName)) throw new Error(`迁移时发现重复 serverName：${serverName}`)
         usedNames.add(serverName)
         const preferred = typeof row.id === 'string' && row.id !== '' ? row.id : undefined
-        const id =
-          preferred !== undefined && !records.some((record) => record.id === preferred)
-            ? preferred
-            : uniqueId(serverName, entries, records)
-        records.push({ id, kind: 'insert', config, disabled: row.disabled === true })
+        const id = preferred !== undefined && !taken.has(preferred) ? preferred : uniqueId(serverName, taken)
+        taken.add(id)
+        lines.push(renderInsertLine({ id, config, disabled: row.disabled === true }))
         expected.push(id)
       }
-      return commit(
-        records,
-        true,
+      const edits: PatchEdit[] = [{ op: 'append', lines }]
+      // group 声明在本文件里 → 直接删掉声明行；在别的层 → 追加一条清空容器 config 的覆写行兜底。
+      if (scan.entries.some((item) => item.id === GROUP_ID)) edits.push(...removalEdits(scan, GROUP_ID))
+      else lines.push(renderKillLine())
+      await applyEdits(edits)
+      await waitFor(
         () =>
           expected.every((id) => topLevelEntries().some((entry) => entry.options.id === id)) &&
           groupRows().length === 0,
       )
+      return snapshot()
     }
 
     const jsonRpcMessage = (text: string): Record<string, unknown> | undefined => {
@@ -587,7 +607,7 @@ export function apply(ctx: HostContext): void {
             params: {
               protocolVersion: PROBE_PROTOCOL_VERSION,
               capabilities: {},
-              clientInfo: { name: 'dsh-mcp-manager', version: '0.3.0' },
+              clientInfo: { name: 'dsh-mcp-manager', version: '0.4.0' },
             },
           }),
           signal: controller.signal,
@@ -698,19 +718,20 @@ export function apply(ctx: HostContext): void {
               ok: true,
               data: await serialized(() => setEnabled(resolveEntryId(payload), payload.enabled === true)),
             })
-          case 'adopt':
-            return respond(200, { ok: true, data: await serialized(() => adoptServer(resolveEntryId(payload))) })
-          case 'release':
-            return respond(200, { ok: true, data: await serialized(() => releaseServer(resolveEntryId(payload))) })
           case 'migrate':
             return respond(200, { ok: true, data: await serialized(migrateLegacy) })
           case 'probe': {
             const target = readString(payload, 'entryId') ?? readString(payload, 'serverName')
             return respond(200, { ok: true, data: await runProbes(target) })
           }
+          case 'adopt':
+          case 'release':
+            throw new Error(
+              'v0.4.0 已移除「接管 / 取消接管」：profile 里的条目可直接编辑删除；外部条目保存或启停时会自动追加覆写行',
+            )
           case 'save':
           case 'saveRows':
-            throw new Error('客户端与宿主版本不一致：v0.3.0 已改用顶层 insert/override 协议；请刷新页面并重启 DSH')
+            throw new Error('客户端与宿主版本不一致：v0.4.0 已改用条目寻址协议；请刷新页面并重启 DSH')
           default:
             return respond(400, { ok: false, error: `未知操作：${String(payload.op)}` })
         }
@@ -725,5 +746,15 @@ export function apply(ctx: HostContext): void {
       requestBody: 'buffered',
       fetch: handler,
     })
+
+    // 一次性清理 v0.3 遗留的 marker 注释行（纯美化）：寻址器把注释当透明，不清理也能正常
+    // 读写，所以失败静默——最坏情况是文件里多三行没人看的注释。
+    void serialized(async () => {
+      try {
+        await editPatch({ documentPath, hmr }, [{ op: 'transform', transform: stripManagedMarkers }])
+      } catch {
+        // 纯清理，不打扰用户。
+      }
+    }).catch(() => {})
   })
 }

@@ -16,8 +16,6 @@ export interface ServerRowProps {
   onEdit: () => void
   onToggle: () => void
   onRemove: () => void
-  onAdopt: () => void
-  onRelease: () => void
 }
 
 function toolsBlock(tools: ToolRecord, names: string[], open: boolean, onToggle: () => void): ReactElement {
@@ -66,10 +64,31 @@ function toolsBlock(tools: ToolRecord, names: string[], open: boolean, onToggle:
   )
 }
 
-function SourceBadge({ source }: { source: ServerSnapshot['source'] }): ReactElement | null {
-  if (source === 'insert') return <span className="mcpm-source mcpm-source--insert">insert</span>
-  if (source === 'override') return <span className="mcpm-source mcpm-source--override">覆写</span>
-  return <span className="mcpm-source mcpm-source--external">外部</span>
+/**
+ * 来源说明：`profile` = 声明在 profile 补丁文件里（可原地编辑删除）；
+ * `overridden` = 原始声明在别的层、这里只有覆写行（可"还原"）；
+ * `external` = 原始声明在别的层且还没有覆写行（无法由此删除）。
+ * 渲染成**纯文字**元数据：描边 chip 看起来像误放的按钮、压过真正的状态圆点；
+ * 三态的含义放 title，悬停可见。
+ */
+const SOURCE_LABELS: Record<ServerSnapshot['source'], string> = {
+  profile: '本地',
+  overridden: '覆写',
+  external: '外部',
+}
+
+const SOURCE_TITLES: Record<ServerSnapshot['source'], string> = {
+  profile: '声明在 profile 补丁文件里：可直接编辑、启停、删除',
+  overridden: '原始声明在别的插件或补丁层，这里只有一条覆写行；「还原」会删掉覆写行、恢复原配置',
+  external: '原始声明在别的插件或补丁层：编辑或启停会自动追加覆写行，原始声明无法由此删除',
+}
+
+function SourceLabel({ source }: { source: ServerSnapshot['source'] }): ReactElement {
+  return (
+    <span className="mcpm-source" title={SOURCE_TITLES[source]}>
+      {SOURCE_LABELS[source]}
+    </span>
+  )
 }
 
 export function ServerRow({
@@ -80,8 +99,6 @@ export function ServerRow({
   onEdit,
   onToggle,
   onRemove,
-  onAdopt,
-  onRelease,
 }: ServerRowProps): ReactElement {
   const status = statusOf(server, canProbe)
   const [confirming, setConfirming] = useState(false)
@@ -91,7 +108,7 @@ export function ServerRow({
   const detail = `${status.text} · ${asText(config.transport) || 'streamable-http'} · ${targetOf(config)}`
   const enabled = server.disabled !== true
   const external = server.source === 'external'
-  const override = server.source === 'override'
+  const overridden = server.source === 'overridden'
   const reason = status.reason
 
   const row = (
@@ -103,35 +120,20 @@ export function ServerRow({
         aria-label={status.text}
         role="img"
       />
-      <div className="mcpm-meta">
-        <div className="mcpm-name" title={detail}>
+      <div className="mcpm-nameLine">
+        <span className="mcpm-name" title={detail}>
           {name}
-        </div>
-        <div className="mcpm-sourceLine" title={`Loader 条目 id：${server.id}`}>
-          <SourceBadge source={server.source} />
-          <span className="mcpm-entryId">{server.id}</span>
-        </div>
+        </span>
+        <SourceLabel source={server.source} />
+        <span className="mcpm-entryId" title={`Loader 条目 id：${server.id}`}>
+          {server.id}
+        </span>
       </div>
       <div className="mcpm-actions">
-        {external ? (
-          <button
-            type="button"
-            className="mcpm-btn"
-            onClick={onAdopt}
-            disabled={busy}
-            title="追加一条 - id 覆写行来编辑/启停这台外部 MCP；原声明保留"
-          >
-            接管
-          </button>
-        ) : confirming ? (
+        {confirming ? (
           <>
-            <button
-              type="button"
-              className="mcpm-btn mcpm-btn--danger"
-              onClick={override ? onRelease : onRemove}
-              disabled={busy}
-            >
-              {override ? '确认取消接管' : '确认删除'}
+            <button type="button" className="mcpm-btn mcpm-btn--danger" onClick={onRemove} disabled={busy}>
+              {overridden ? '确认还原' : '确认删除'}
             </button>
             <button
               type="button"
@@ -157,17 +159,28 @@ export function ServerRow({
             >
               {enabled ? '停用' : '启用'}
             </button>
-            <button
-              type="button"
-              className="mcpm-btn mcpm-btn--danger"
-              onClick={(): void => {
-                setConfirming(true)
-              }}
-              disabled={busy}
-              title={override ? '删除本插件的覆写行，恢复外部原配置' : '删除这条 insert 条目'}
-            >
-              {override ? '取消接管' : '删除'}
-            </button>
+            {external ? (
+              <button
+                type="button"
+                className="mcpm-btn mcpm-btn--danger"
+                disabled
+                title="原始声明不在 profile 补丁文件里（由其他插件或补丁层声明），无法由此删除；可以停用"
+              >
+                删除
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="mcpm-btn mcpm-btn--danger"
+                onClick={(): void => {
+                  setConfirming(true)
+                }}
+                disabled={busy}
+                title={overridden ? '删除覆写行，恢复外部原配置' : '从 profile 补丁文件里删除这台服务器'}
+              >
+                {overridden ? '还原' : '删除'}
+              </button>
+            )}
           </>
         )}
       </div>

@@ -1,4 +1,4 @@
-import type { ManagedBlockState, ManagedManifest } from '../shared/managed-block.ts';
+import type { PatchEdit } from '../shared/patch-doc.ts';
 export interface HmrLike {
     runExclusive?: (<T>(operation: () => Promise<T>) => Promise<T>) | undefined;
 }
@@ -16,16 +16,7 @@ export interface PatchWriteResult {
 /** 读取当前 profile patch 原文。 */
 export declare function readPatch(documentPath: string): Promise<string>;
 /**
- * 读取并验证当前受控块，返回 manifest 与原文。
- * marker 损坏、manifest 不一致时抛错，调用方必须把错误展示给用户。
+ * 在文件锁内执行一批编辑：锁内重读原文 → `composeEdit` 合成 → 有变化才备份 + 原子写。
+ * 合成抛错（区间越界/重叠）时什么都不写。
  */
-export declare function inspectPatch(documentPath: string): Promise<{
-    text: string;
-    manifest: ManagedManifest | undefined;
-}>;
-/**
- * 用新的受控块替换 profile patch。
- *
- * 空状态会删除整个块；如果文件因此没有条目，保留合法的 `[]`。
- */
-export declare function writeManagedBlock(options: PatchWriterOptions, state: ManagedBlockState): Promise<PatchWriteResult>;
+export declare function editPatch(options: PatchWriterOptions, edits: PatchEdit[]): Promise<PatchWriteResult>;

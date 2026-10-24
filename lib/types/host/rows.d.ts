@@ -13,13 +13,6 @@ import type { EntryRow } from './service-types.ts';
  * @returns 可直接写进 YAML 的条目行。
  */
 export declare function normalizeRow(server: unknown, base?: unknown): EntryRow;
-/**
- * 直接信任客户端回传的**未修改**行（`op: "saveRows"`）。
- * 这里只做"config 是不是对象"的形状检查；字段本身是用户 YAML 原文，不能被表单重建。
- */
-export declare function rawRow(value: unknown): EntryRow;
-/** 同一 group 作用域内 serverName 必须唯一；mcp-client 对重复名字只会让后一条加载失败。 */
-export declare function assertUniqueServerNames(rows: EntryRow[]): void;
 /** 把客户端来的换行分隔文本整理成字符串数组（也接受数组；每项都可能是 `!!js` 表达式）。 */
 export declare function toStringArray(value: unknown): Array<string | JsExpr>;
 /**

@@ -10,7 +10,5 @@ export interface ServerRowProps {
     onEdit: () => void;
     onToggle: () => void;
     onRemove: () => void;
-    onAdopt: () => void;
-    onRelease: () => void;
 }
-export declare function ServerRow({ server, canProbe, busy, editing, onEdit, onToggle, onRemove, onAdopt, onRelease, }: ServerRowProps): ReactElement;
+export declare function ServerRow({ server, canProbe, busy, editing, onEdit, onToggle, onRemove, }: ServerRowProps): ReactElement;

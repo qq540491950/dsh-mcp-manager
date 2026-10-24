@@ -51,8 +51,15 @@ export interface ToolRecord {
   truncated?: boolean | undefined
 }
 
-/** 一台顶层 MCP 条目的来源。 */
-export type ServerSource = 'insert' | 'override' | 'external'
+/**
+ * 一台顶层 MCP 条目的**声明来源**（v0.4.0）：
+ *   · 'profile'    —— 声明在 profile 补丁文件里（insert 创建行），可原地编辑/删除；
+ *   · 'overridden' —— 原始声明在别的层（其他 bundle / home patch），profile 里已有
+ *                     本插件或手写的覆写行；可编辑覆写行、可"还原"（删覆写行）；
+ *   · 'external'   —— 声明在别的层且还没有覆写行；保存/启停会自动追加覆写行，
+ *                     原始声明无法由本插件删除。
+ */
+export type ServerSource = 'profile' | 'overridden' | 'external'
 
 /** 快照里的一台服务器。 */
 export interface ServerSnapshot {
@@ -82,15 +89,13 @@ export interface LegacyState {
 
 /** GET 快照与每个写操作的返回值。 */
 export interface Snapshot {
-  /** 所有顶层 MCP 条目：managed（insert/override）+ external。 */
+  /** 所有顶层 MCP 条目：profile 声明的 + 外部层的（含已覆写的）。 */
   servers: ServerSnapshot[]
-  /** manifest 里登记、但 Loader 里已经不存在的 id（用户手删/改坏）。 */
-  missing?: string[] | undefined
   /** 旧版 group 迁移提示。 */
   legacy?: LegacyState | undefined
   /** profile 的 `cordis.patch.yml` 绝对路径，仅用于诊断。 */
   profilePath?: string | undefined
-  /** 受控块 marker/manifest 损坏时的原文错误；此时写操作必须拒绝。 */
+  /** profile 补丁文件读取/解析失败时的原文错误；此时写操作必须拒绝。 */
   patchError?: string | undefined
   mcpPackage: string
   /**

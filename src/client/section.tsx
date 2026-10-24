@@ -1,24 +1,34 @@
 /**
  * 设置面板里的一页：MCP 服务器管理。
  *
- * v0.3.0 数据模型：每台 MCP 是 profile 里一条顶层 Loader 条目。
- *   - 本插件新增 → `- insert:` 行；
- *   - 本插件接管的外部条目 → `- id: X` 覆写行；
- *   - 未接管的外部条目 → 只读，点「接管」后才可编辑/启停。
+ * v0.4.0 数据模型：每台 MCP 都是 profile 补丁文件里的**普通顶层条目**——
+ * 没有受控块，也没有"接管"概念：
+ *   - `profile`    ：声明在本文件里，直接原地增删改；
+ *   - `overridden` ：原始声明在别的层，profile 里已有覆写行，可编辑、可"还原"；
+ *   - `external`   ：原始声明在别的层且还没有覆写行，保存/启停会自动追加覆写行，
+ *                    原始声明无法由本插件删除。
  *
  * 两条**互斥**的错误通道（AGENTS 3.9）：
  *   formError   ← 表单提交失败，只渲染在那张表单里
- *   actionError ← 行内操作（接管/启停/删除/检测）失败，只渲染在页面级
+ *   actionError ← 行内操作（启停/删除/检测）失败，只渲染在页面级
  */
 import type { ReactElement } from 'react'
 import { asRecord, asText } from '../shared/guards.ts'
 import type { ServerSnapshot, Snapshot } from '../shared/types.ts'
-import { describeError, getSnapshot, postOp, SETTLE_ATTEMPTS, SETTLE_INTERVAL_MS, sleep } from './core/api.ts'
+import {
+  describeError,
+  getSnapshot,
+  INTENT_ATTEMPTS,
+  postOp,
+  SETTLE_ATTEMPTS,
+  SETTLE_INTERVAL_MS,
+  sleep,
+} from './core/api.ts'
 import { draftOf, serverOf, supports, suggestName } from './core/draft.ts'
 import type { Draft } from './core/draft.ts'
 import { settling } from './core/status.ts'
 import { ServerForm } from './form.tsx'
-import { Fragment, h, useCallback, useEffect, useMemo, useState } from './react.ts'
+import { h, useCallback, useEffect, useMemo, useState } from './react.ts'
 import { ServerRow } from './row.tsx'
 
 function emptyDraft(): Draft {
@@ -87,8 +97,6 @@ export function McpSection(): ReactElement {
   )
 
   const servers = useMemo(() => snapshot?.servers ?? [], [snapshot])
-  const managed = useMemo(() => servers.filter((server) => server.source !== 'external'), [servers])
-  const external = useMemo(() => servers.filter((server) => server.source === 'external'), [servers])
 
   const detect = useCallback(
     (options?: { silent?: boolean | undefined }): void => {
@@ -97,21 +105,35 @@ export function McpSection(): ReactElement {
     [call],
   )
 
+  /**
+   * 一次启停的意图：写入后 `dsh-hmr` 重放补丁是异步的，宿主返回的快照可能还是
+   * 写入前的旧状态（表现为"点了停用/启用没反应"）。带着意图重读快照到落地为止，
+   * 再走探测与相位稳定那一套；窗口有界（INTENT_ATTEMPTS × 200ms），不是轮询。
+   */
   const recheck = useCallback(
-    async (data: Snapshot | null): Promise<void> => {
-      if (!supports(data, 'probe')) return
-      let current = await call({ op: 'probe' }, undefined, setActionError, { silent: true })
-      for (let attempt = 0; attempt < SETTLE_ATTEMPTS && settling(current); attempt += 1) {
+    async (data: Snapshot | null, intent?: { entryId: string; disabled: boolean }): Promise<void> => {
+      let current = data
+      if (intent !== undefined) {
+        for (let attempt = 0; attempt < INTENT_ATTEMPTS; attempt += 1) {
+          const entry = (current?.servers ?? []).find((item) => item.id === intent.entryId)
+          if (entry !== undefined && (entry.disabled === true) === intent.disabled) break
+          await sleep(SETTLE_INTERVAL_MS)
+          current = await refresh()
+        }
+      }
+      if (!supports(current, 'probe')) return
+      let probed = await call({ op: 'probe' }, undefined, setActionError, { silent: true })
+      for (let attempt = 0; attempt < SETTLE_ATTEMPTS && settling(probed); attempt += 1) {
         await sleep(SETTLE_INTERVAL_MS)
-        current = await refresh()
+        probed = await refresh()
       }
     },
     [call, refresh],
   )
 
   const recheckAfter = useCallback(
-    (data: Snapshot): void => {
-      void recheck(data)
+    (data: Snapshot, intent?: { entryId: string; disabled: boolean }): void => {
+      void recheck(data, intent)
     },
     [recheck],
   )
@@ -120,7 +142,7 @@ export function McpSection(): ReactElement {
     const lifecycle = { cancelled: false }
     void (async (): Promise<void> => {
       const data = await refresh()
-      if (lifecycle.cancelled || !supports(data, 'patchInsert') || !supports(data, 'probe')) return
+      if (lifecycle.cancelled || !supports(data, 'nativeRows') || !supports(data, 'probe')) return
       void recheck(data)
     })()
     return (): void => {
@@ -168,13 +190,12 @@ export function McpSection(): ReactElement {
 
   const toggle = useCallback(
     (server: ServerSnapshot): void => {
-      if (server.source === 'external') {
-        setActionError('这是外部 MCP；请先点「接管」')
-        return
-      }
+      const enabled = server.disabled === true
       void call(
-        { op: 'setEnabled', entryId: server.id, enabled: server.disabled === true },
-        recheckAfter,
+        { op: 'setEnabled', entryId: server.id, enabled },
+        (data) => {
+          recheckAfter(data, { entryId: server.id, disabled: !enabled })
+        },
         setActionError,
       )
     },
@@ -183,19 +204,7 @@ export function McpSection(): ReactElement {
 
   const remove = useCallback(
     (server: ServerSnapshot): void => {
-      if (server.source === 'external') {
-        setActionError('外部 MCP 的原条目不能由本插件删除；可先接管再取消接管')
-        return
-      }
-      const op = server.source === 'override' ? 'release' : 'remove'
-      void call({ op, entryId: server.id }, recheckAfter, setActionError)
-    },
-    [call, recheckAfter],
-  )
-
-  const adopt = useCallback(
-    (server: ServerSnapshot): void => {
-      void call({ op: 'adopt', entryId: server.id }, recheckAfter, setActionError)
+      void call({ op: 'remove', entryId: server.id }, recheckAfter, setActionError)
     },
     [call, recheckAfter],
   )
@@ -204,11 +213,10 @@ export function McpSection(): ReactElement {
     void call({ op: 'migrate' }, recheckAfter, setActionError)
   }, [call, recheckAfter])
 
-  const canPatch = supports(snapshot, 'patchInsert') && snapshot?.patchError === undefined
+  const canPatch = supports(snapshot, 'nativeRows') && snapshot?.patchError === undefined
   const canProbe = supports(snapshot, 'probe')
   const legacy = snapshot?.legacy
   const patchError = snapshot?.patchError
-  const missing = snapshot?.missing ?? []
 
   const header = (
     <div className="mcpm-heading">
@@ -244,7 +252,9 @@ export function McpSection(): ReactElement {
           </button>
         </div>
       </div>
-      <p className="mcpm-subtitle">新增的服务器写成顶层 insert 条目；外部条目可点「接管」追加覆写行，原声明保留。</p>
+      <p className="mcpm-subtitle">
+        列表就是 profile 补丁文件里的顶层条目；「本地」条目直接增删改，「外部」条目保存或启停时会自动追加覆写行。
+      </p>
     </div>
   )
 
@@ -277,12 +287,12 @@ export function McpSection(): ReactElement {
     )
   }
 
-  if (!snapshot.capabilities.includes('patchInsert')) {
+  if (!snapshot.capabilities.includes('nativeRows')) {
     return (
       <div className="mcpm-page">
         {header}
         <div className="mcpm-notice mcpm-notice--error">
-          宿主半边仍是旧版本（不认 patchInsert）；请重启 DSH 后再管理 MCP。
+          宿主半边仍是旧版本（不认 nativeRows）；请重启 DSH 后再管理 MCP。
         </div>
         <div className="mcpm-actions mcpm-actions--form">
           <button
@@ -299,15 +309,14 @@ export function McpSection(): ReactElement {
     )
   }
 
-  const renderRow = (server: ServerSnapshot, isManaged: boolean): ReactElement => (
+  const renderRow = (server: ServerSnapshot): ReactElement => (
     <div className="mcpm-rowCard" key={server.id}>
       <ServerRow
         server={server}
         canProbe={canProbe}
         busy={busy || !canPatch}
-        editing={isManaged && editing === server.id}
+        editing={editing === server.id}
         onEdit={(): void => {
-          if (!isManaged) return
           if (editing === server.id) {
             closeForm()
             return
@@ -322,14 +331,8 @@ export function McpSection(): ReactElement {
         onRemove={(): void => {
           remove(server)
         }}
-        onAdopt={(): void => {
-          adopt(server)
-        }}
-        onRelease={(): void => {
-          remove(server)
-        }}
       />
-      {isManaged && editing === server.id && draft !== null ? (
+      {editing === server.id && draft !== null ? (
         <ServerForm
           draft={draft}
           onDraft={setDraft}
@@ -347,7 +350,7 @@ export function McpSection(): ReactElement {
     <div className="mcpm-page">
       {header}
       {patchError === undefined ? null : (
-        <div className="mcpm-notice mcpm-notice--error">{`受控块损坏，写入已禁用：${patchError}`}</div>
+        <div className="mcpm-notice mcpm-notice--error">{`无法解析 profile 补丁文件，写入已禁用：${patchError}`}</div>
       )}
       {legacy?.state === 'duplicated' ? (
         <div className="mcpm-notice mcpm-notice--error">
@@ -356,36 +359,17 @@ export function McpSection(): ReactElement {
       ) : null}
       {legacy?.state === 'needs-migration' ? (
         <div className="mcpm-notice">
-          <span>{`发现旧版 group 里的 ${String(legacy.count)} 台 MCP。`}</span>
+          <span>{`发现旧版 group 容器里的 ${String(legacy.count)} 台 MCP。`}</span>
           <button type="button" className="mcpm-btn" onClick={migrate} disabled={busy || !canPatch}>
-            迁移到顶层 insert
+            迁移为顶层条目
           </button>
         </div>
       ) : null}
-      {missing.length === 0 ? null : (
-        <div className="mcpm-notice mcpm-notice--error">
-          {`manifest 里登记的条目已不在 Loader 中：${missing.join(', ')}；下一次写入会清理这些记录。`}
-        </div>
-      )}
       {actionError === null ? null : <div className="mcpm-notice mcpm-notice--error">{actionError}</div>}
       {servers.length === 0 && editing === null ? (
         <div className="mcpm-empty">还没有配置任何 MCP 服务器。</div>
       ) : (
-        <>
-          {managed.length === 0 ? null : <div className="mcpm-sectionTitle">本插件管理的 MCP</div>}
-          {managed.length === 0 ? null : (
-            <div className="mcpm-rows">{managed.map((server) => renderRow(server, true))}</div>
-          )}
-          {external.length === 0 ? null : (
-            <>
-              <div className="mcpm-sectionTitle">外部 MCP（未接管）</div>
-              <p className="mcpm-subtitle">
-                这些条目不是本插件创建的。点「接管」后，本插件会追加 `- id` 覆写行来编辑/启停；原声明保留。
-              </p>
-              <div className="mcpm-rows">{external.map((server) => renderRow(server, false))}</div>
-            </>
-          )}
-        </>
+        <div className="mcpm-rows">{servers.map((server) => renderRow(server))}</div>
       )}
       {editing === 'new' && draft !== null ? (
         <div className="mcpm-rowCard">

@@ -1,26 +1,21 @@
 /**
- * 受控的 profile patch 写入器。
+ * profile patch 写入器（v0.4.0：条目寻址编辑）。
  *
  * 为什么存在：MCP 需要是**顶层 Loader 条目**，而 `ctx.configEditor.edit()` 只能改
  * 已存在条目、不能新增/删除。`loader.create()/remove()` 又会整份重写 YAML（AGENTS 2.3）。
- * 所以这里只替换 `cordis.patch.yml` 中两个 marker 之间的受控块，块外一个字节都不动。
+ * v0.4 起写入表达为 `patch-doc.ts` 的编辑列表（替换/删除某个条目的字节区间、末尾追加），
+ * 目标条目之外的字节逐字保留。
  *
- * 纪律（AGENTS 2.4 的新版本）：
- *   - 只允许 `replaceManagedBlock()` / `removeManagedBlock()`；
+ * 纪律（AGENTS 2.4）：
  *   - 写入必须拿 `<profile>/package.json.lock`（与 configEditor 同一个锁文件）；
  *   - 原子写（同目录临时文件 + rename），失败保留原文件；
  *   - 写前留一份 `cordis.patch.yml.mcp-manager.bak`；
- *   - 任何 marker/manifest 异常都拒绝写入，不猜测用户意图。
+ *   - 编辑区间越界 / 重叠时 `composeEdit` 抛错，不落盘。
  *
  * 本文件不写静态 import：运行时只用 Node 内置模块，通过 `process.getBuiltinModule()` 取。
  */
-import {
-  locateManagedBlock,
-  removeManagedBlock,
-  renderManagedBlock,
-  replaceManagedBlock,
-} from '../shared/managed-block.ts'
-import type { ManagedBlockState, ManagedManifest } from '../shared/managed-block.ts'
+import { composeEdit } from '../shared/patch-doc.ts'
+import type { PatchEdit } from '../shared/patch-doc.ts'
 
 import type * as cryptoModule from 'node:crypto'
 import type * as fsPromises from 'node:fs/promises'
@@ -154,33 +149,13 @@ export async function readPatch(documentPath: string): Promise<string> {
 }
 
 /**
- * 读取并验证当前受控块，返回 manifest 与原文。
- * marker 损坏、manifest 不一致时抛错，调用方必须把错误展示给用户。
+ * 在文件锁内执行一批编辑：锁内重读原文 → `composeEdit` 合成 → 有变化才备份 + 原子写。
+ * 合成抛错（区间越界/重叠）时什么都不写。
  */
-export async function inspectPatch(documentPath: string): Promise<{
-  text: string
-  manifest: ManagedManifest | undefined
-}> {
-  const text = await readPatch(documentPath)
-  const block = locateManagedBlock(text)
-  return { text, manifest: block?.manifest }
-}
-
-/**
- * 用新的受控块替换 profile patch。
- *
- * 空状态会删除整个块；如果文件因此没有条目，保留合法的 `[]`。
- */
-export async function writeManagedBlock(
-  options: PatchWriterOptions,
-  state: ManagedBlockState,
-): Promise<PatchWriteResult> {
+export async function editPatch(options: PatchWriterOptions, edits: PatchEdit[]): Promise<PatchWriteResult> {
   const run = async (): Promise<PatchWriteResult> => {
     const before = await fs.readFile(options.documentPath, 'utf8')
-    const next =
-      state.records.length === 0 && state.legacyGroup !== true
-        ? removeManagedBlock(before)
-        : replaceManagedBlock(before, renderManagedBlock(state))
+    const next = composeEdit(before, edits)
     if (next === before) return { documentPath: options.documentPath, text: before }
     const backupPath = await backupOf(options.documentPath)
     await writeFileAtomic(options.documentPath, next)

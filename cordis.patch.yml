@@ -1,33 +1,13 @@
 # dsh-mcp-manager bundle 自带的补丁层（`package.json` 的 `dsh.bundle.patch` 指向本文件）。
 #
-# 这里有两行，都是"插件装上就该生效"的东西 —— **用户不需要在 profile 里粘任何东西**：
+# v0.4.0 起这里**只有插件自己这一行**：每台 MCP 都是用户 profile `cordis.patch.yml`
+# 里的普通顶层 Loader 条目（与手写、市场插件写的完全同形），插件按 id 原地增删改那些行，
+# 不再需要任何容器条目。v0.2/v0.3 的 `cordis:group` 容器（id: mcp-manager）随之退役——
+# 旧数据由页面里的「迁移为顶层条目」一次性搬出，之后卸载插件零痕迹、配置随时可手工维护。
 #
-#   1. 承载 MCP 服务器的 `cordis:group` 容器（id 见 src/shared/constants.ts 的 GROUP_ID）；
-#   2. 插件自己这一行。
-#
-# 为什么容器归 bundle 而不是 profile（v0.2.0 改；v0.1.1 曾要求用户手粘一行）：
-#   插件**没有**创建 Loader 条目的能力 —— `ctx.configEditor.edit()` 只接受"已存在且 fiber
-#   活着"的条目（dsh-config-editor/lib/index.js：`entries().includes(entry)` 与
-#   `fiber.state !== 2` 两道检查，`document.add()` 只给已存在的条目补覆写行），而
-#   `ctx.loader.create()` 会整份重写 YAML、压平手写的 `insert:` 结构（AGENTS 2.3 禁止）。
-#   于是"零手动"只有 bundle 层这一个位置。要求每个用户先手改 YAML 才能用，代价远大于
-#   "卸载插件后 MCP 停止加载"：服务器列表写在 profile 的 `- id: mcp-manager` 覆写行里，
-#   数据不会丢，重装插件即恢复（离线复现：容器缺失时合成结果 0 行 + `patch: entry …
-#   not found`，但覆写行原文仍在 profile 文件里）。
-#
-# 容器只能声明**一次**。profile 里若还留着 v0.1.x 的 `- insert: [{id: mcp-manager, ...}]`，
-# `applyEntryPatches` 会让两个同 id 条目同时存在（insert 是 `push`，不去重），于是
-# configEditor 写盘前的断言 `flatten(composeEntries(...)).find(row => row.id === id)` 取到
-# 先出现的那条（空 config），保存 / 启停 / 删除全部报 `overridden by a home patch`，而读取
-# 看着完全正常。宿主的 `containerState()` 会把这种重复单独报出来（自检 B82/B83/D14），
-# 用户照提示删掉 profile 那一行、重启 DSH 即可。
-#
-# ⚠️ 容器行必须写在 `insert:` 下，**不能**写成顶层的 `- id: X`：顶层 `- id: X` 是"覆写已存在
-#    条目"，目标不存在时 `applyEntryPatches` 直接 warn 并丢弃（README 2.3）——那样容器根本
-#    不会出现，表现就是"设置里没有 MCP 页"。自检 P3 钉住"容器行在 insert 里、且排在插件行之前"。
+# ⚠️ 插件行必须写在 `insert:` 下，**不能**写成顶层的 `- id: X`：顶层 `- id: X` 是"覆写已存在
+#    条目"，目标不存在时 `applyEntryPatches` 直接 warn 并丢弃（README 2.3）——那样插件根本
+#    不会出现，表现就是"设置里没有 MCP 页"。自检 P3 钉住"插件行在 insert 里"。
 - insert:
-    - id: mcp-manager # 容器：所有 MCP 服务器都住在它的 config 数组里
-      name: 'cordis:group'
-      config: []
     - id: dsh-mcp-manager # Loader 条目 id（profile 里的 include:dsh-mcp-manager 就是它）
       name: '@qq540491950/dsh-mcp-manager' # 必须等于 package.json 的 name（自检 P4）

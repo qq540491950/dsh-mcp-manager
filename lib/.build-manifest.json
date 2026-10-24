@@ -3,39 +3,41 @@
   "targets": [
     {
       "output": "lib/index.js",
-      "outputSha256": "d25a44740c8059c56b63756252241cb7c03a2f6bd3ec6336954ec11c66bb3028",
+      "outputSha256": "10983ebf005af92188df38fb8f8a079654cb248b7a8eccfc97722e348ad940f2",
       "inputs": {
-        "src/host/index.ts": "ef757b64eab4e1d421e284e6dd8bd28d005e2edfc543d98e18d8015b9a20cab9",
-        "src/host/patch-writer.ts": "3f964abc754398cdf619a7be44821dbaecc7dd1b77f33a486db78656e1a507a3",
-        "src/host/rows.ts": "a79ffb3b21f61d0096b8151d2164327b4a1183315f2a10b49a93fd8899aff653",
+        "src/host/index.ts": "43032526bb123d61a8bedc28fac411d8e697c137a1657ddc3d3c1ea8614b415b",
+        "src/host/patch-writer.ts": "09cce5a13a401a2f1be6abb74d5f09283ad7ff48288557d2f64d5de5438615e3",
+        "src/host/rows.ts": "68c90f39ca5ee5270ae32baaee9e487682fae045de7afee6d08ad36330c7b717",
         "src/host/service-types.ts": "5a036f0a8f879f897c34eb89ba609113f1d6de9bdb6f1ff2c2a43fdbf27ac525",
         "src/shared/constants.ts": "2b22ccaf5b28a1e700a1b825f21f6438fb072f731c76239e5d992d7e18be3209",
         "src/shared/expr.ts": "7917e7f0093d2e3ab12ce7d05de4f68922b3190da4579a8f320c3d3af2e7e9c5",
         "src/shared/guards.ts": "26406e95e3377c1d4c7a47e2f1dec05186f71b8c666b6c00b460fd3d2dc295c7",
-        "src/shared/managed-block.ts": "06f7cb5e77cc7ffcd8a3f57fb326c2cb2b9d263d6df8eddfb3359fb9849fa99e",
-        "src/shared/types.ts": "52cd4e4590c63563b1ffb24cad0c50d72a2a71cf2afa33f3ebddefff4e385381"
+        "src/shared/managed-block.ts": "292bc1823a4df24ea25debd212d1630c7ea1c28b3141bf8d4fc16ba9f0e08be1",
+        "src/shared/patch-doc.ts": "775f1f67c3aa61ae6921b84f33da7d789476b3173832697338e84aadaf7aa978",
+        "src/shared/types.ts": "84d72ac599d7572b5a4e404a76a8428e070757f4e76d284f52dd1d2c8a4c6b25"
       }
     },
     {
       "output": "lib/client.js",
-      "outputSha256": "a24fadbd16ca0c65f0d24a66e24673fb165701c5a9d69e93fa7a33a441ab16a7",
+      "outputSha256": "c73e87983d3a05f2b6a62bae7e48f272493b090ce26dc7643c5e44616046baa5",
       "inputs": {
-        "src/client/core/api.ts": "3d21093d096293ba8d48f87a19e3766702d3ffe094bd438e45b77e4063b1d427",
+        "src/client/core/api.ts": "628634fd9c6c45e9ce8837cd696e447c761cab2cf26c42a799250ae28b765488",
         "src/client/core/draft.ts": "ba4dd62c0291342d219e244b535943aa129d9b36b9210877a7e1a0ce6ca2f470",
         "src/client/core/status.ts": "fa2a61046dd405b3bb426dd55ba4586eaa530e5317e2a4ad3e18de52969a1024",
         "src/client/form.tsx": "039bced1bb5dd437b044f644717ac77f242df964d76b0b1abff79374f5efa370",
         "src/client/index.ts": "c404605baf01b605ef1069f7e865713c162a631f816295081d6cdfce188dda83",
         "src/client/nav-mark.ts": "36b58fd7fdbc44a8bdb4a5c5ba8937cebf9a4bbffe5a162e85fd9c1dda8a2666",
         "src/client/react.ts": "21a4a5cdb8072953c7fbf3b08d5c6503ef3dd8d8b059412fa4f6d04cdfd40cd5",
-        "src/client/row.tsx": "d05bd8594e6ae93320402eea03bc5ca3bad31e8f9a8bef115d7a92915611d4b0",
-        "src/client/section.tsx": "e773de4e1d377962926a2c8d07cd9f674d344ff76c267755f21343432f80a58d",
+        "src/client/row.tsx": "733c0a2c344de40d25dac3ab4e8949306604b1c46247d56dd4578e758b12006e",
+        "src/client/section.tsx": "e91c48a5a0e6d75c6fbcf9f537ff58af5c8c195660866ce811a68ad865112907",
         "src/client/service-types.ts": "b911f5168b14ac2e463424cf94a2b668e0a943f6d2346ba052851ac638d69b29",
-        "src/client/styles.ts": "59294526099b816fcff4482356e090bff89a7a05d7883a42aecc7d59d871906c",
+        "src/client/styles.ts": "3b95383961b0cc271c9a0bedfbd37dfa5c8970f2f6d089a11f96de5bf072ac2e",
         "src/shared/constants.ts": "2b22ccaf5b28a1e700a1b825f21f6438fb072f731c76239e5d992d7e18be3209",
         "src/shared/expr.ts": "7917e7f0093d2e3ab12ce7d05de4f68922b3190da4579a8f320c3d3af2e7e9c5",
         "src/shared/guards.ts": "26406e95e3377c1d4c7a47e2f1dec05186f71b8c666b6c00b460fd3d2dc295c7",
-        "src/shared/managed-block.ts": "06f7cb5e77cc7ffcd8a3f57fb326c2cb2b9d263d6df8eddfb3359fb9849fa99e",
-        "src/shared/types.ts": "52cd4e4590c63563b1ffb24cad0c50d72a2a71cf2afa33f3ebddefff4e385381"
+        "src/shared/managed-block.ts": "292bc1823a4df24ea25debd212d1630c7ea1c28b3141bf8d4fc16ba9f0e08be1",
+        "src/shared/patch-doc.ts": "775f1f67c3aa61ae6921b84f33da7d789476b3173832697338e84aadaf7aa978",
+        "src/shared/types.ts": "84d72ac599d7572b5a4e404a76a8428e070757f4e76d284f52dd1d2c8a4c6b25"
       }
     }
   ]

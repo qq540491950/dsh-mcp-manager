@@ -139,33 +139,6 @@ function reconnectOf(value: unknown): Record<string, unknown> | undefined {
   return Object.keys(next).length > 0 ? next : undefined
 }
 
-/**
- * 直接信任客户端回传的**未修改**行（`op: "saveRows"`）。
- * 这里只做"config 是不是对象"的形状检查；字段本身是用户 YAML 原文，不能被表单重建。
- */
-export function rawRow(value: unknown): EntryRow {
-  const source = asRecord(value)
-  if (!isRecord(source.config)) throw new Error('saveRows 的每一行都必须带 config 对象')
-  const row: EntryRow = { name: MCP_PACKAGE, config: source.config }
-  const rowId = readString(source, 'rowId')
-  if (rowId !== undefined && rowId !== '') row.id = rowId
-  if (source.disabled === true) row.disabled = true
-  return row
-}
-
-/** 同一 group 作用域内 serverName 必须唯一；mcp-client 对重复名字只会让后一条加载失败。 */
-export function assertUniqueServerNames(rows: EntryRow[]): void {
-  const seen = new Set<string>()
-  for (const row of rows) {
-    const name = asText(asRecord(row.config).serverName)
-    if (name === '') continue
-    if (seen.has(name)) {
-      throw new Error(`MCP 服务器名重复："${name}"；同一作用域内 serverName 必须唯一`)
-    }
-    seen.add(name)
-  }
-}
-
 /** 把客户端来的换行分隔文本整理成字符串数组（也接受数组；每项都可能是 `!!js` 表达式）。 */
 export function toStringArray(value: unknown): Array<string | JsExpr> {
   const rawList: unknown[] = Array.isArray(value)

@@ -69,16 +69,14 @@ export const CSS = `
 .mcpm-toolsToggle:hover:not(:disabled) { background:var(--dsw-alias-interactive-bg-hover); }
 .mcpm-toolsToggle:focus-visible { outline:var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-brand-primary)); outline-offset:1px; }
 .mcpm-empty { padding:8px 0; color:var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary)); font-size:12px; line-height:16px; }
-/* MCP 来源标记：insert / 覆写 / 外部。颜色全部走 token。 */
-.mcpm-sectionTitle { min-width:0; margin-top:2px; color:var(--dsw-alias-label-secondary); font-size:12px; font-weight:500; line-height:16px; }
-.mcpm-sourceLine { display:flex; align-items:center; gap:6px; min-width:0; margin-top:2px; }
-.mcpm-source { flex:none; padding:0 4px; border:.5px solid var(--dsw-alias-border-l2); border-radius:var(--dsw-radius-sm, 4px); color:var(--dsw-alias-label-secondary); font-size:10px; line-height:14px; white-space:nowrap; }
-.mcpm-source--insert { color:var(--dsw-alias-state-success-primary, #2ea043); border-color:currentColor; }
-.mcpm-source--override { color:var(--dsw-alias-state-warn-primary, #d8a24a); border-color:currentColor; }
-.mcpm-source--external { color:var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary)); }
-.mcpm-entryId { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary)); font-family:ui-monospace, monospace; font-size:11px; line-height:14px; }
-.mcpm-meta { flex:1 1 auto; min-width:0; display:flex; flex-direction:column; }
-.mcpm-name { font-size:13px; font-weight:500; line-height:18px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* 标题行：名称 · 来源说明 · 条目 id 同一行。来源与 id 是**纯文字**元数据（描边 chip 会像
+   误放的按钮、压过真正的状态圆点），分隔点走 ::before/::after；三态含义在 title 里。
+   挤压顺序：名称与 id 都可省略（min-width:0），来源说明只有两字、不收缩。 */
+.mcpm-nameLine { flex:1 1 auto; min-width:0; display:flex; align-items:baseline; }
+.mcpm-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; font-weight:500; line-height:18px; }
+.mcpm-source { flex:none; color:var(--dsw-alias-label-secondary); font-size:11px; line-height:14px; white-space:nowrap; }
+.mcpm-source::before, .mcpm-source::after { content:"·"; margin:0 5px; color:var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary)); }
+.mcpm-entryId { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary)); font-family:ui-monospace, monospace; font-size:11px; line-height:14px; }
 .mcpm-dot { flex:none; width:6px; height:6px; border-radius:50%; }
 /* 操作区必须单行：flex:none 才不会被左侧长文本压缩，去掉 wrap 才不会把"删除"折到下一行。 */
 .mcpm-actions { display:flex; align-items:center; justify-content:flex-end; flex:none; gap:4px; margin-left:auto; }

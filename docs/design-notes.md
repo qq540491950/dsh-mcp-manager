@@ -792,3 +792,16 @@ account -10 | general 0 | models 10 | plugins 15 | agent-presets 20 | mcp 900 �
    - 如旧容器 `mcp-manager`（group）存在残留服务器，页面提供「迁移到顶层 insert」按钮，调用 `op:migrate` 一键生成顶层 insert 并清空旧容器。
 
 **自检**：`node tools/verify.ts` → `PASS 290/290`。
+## 10. v0.4.0：条目寻址（历史结论的适用范围修正）
+
+本文 §4 及更早章节描述的**受控 marker 块方案已退役**（v0.3.0 的历史记录保留在上面，供考古）。v0.4.0 的实际架构：
+
+- **寻址器**（`src/shared/patch-doc.ts`，纯函数）：`scanPatchDoc` 把 `cordis.patch.yml` 按行扫描成可寻址条目（顶层第 0 列 `- ` 行开一个条目；`- insert:` 分节里的内嵌条目各自独立寻址；flow 单行按 JSON 解析、`!!js "…"` 先预处理成 `{__jsExpr}` 标记对象——与 include 方言的内存表示一致）。解析不了的行计入 `unaddressable`（不阻塞别的条目；对它自己的写走"外部"路径或安全失败）。
+- **编辑合成**：`composeEdit(text, edits)` —— replace/delete 字节区间 + 至多一个 append；区间越界/重叠/多个 append/transform 混用一律抛错；删空时兜底保留注释 + `[]`（空字符串在部分 YAML 加载器上是"没有文档"）。
+- **写入器**（`src/host/patch-writer.ts`）：`editPatch` 在 `package.json.lock` 内重读原文 → composeEdit → 有变化才 `.bak` + 临时文件原子替换（Windows rename 重试保留）。锁、备份、原子性与 v0.3 相同——只有"替换什么"从 marker 块变成了目标条目的区间。
+- **来源三态**：`profile`（声明在本文件，原地编辑）/ `overridden`（声明在别的层、有覆写行，可还原）/ `external`（声明在别的层、无覆写行，删除禁用）。v0.2 的 `outside[]` 概念随之消失。
+- **同 id 多份声明**：update/setEnabled 拒绝（歧义）、remove 删全部（良定义）——v0.2/v0.3 "读正常写全挂"的暗坑在写入侧被显式挡住。
+- **v0.3 遗留**：marker 行是注释，寻址器当透明——不剥离也能读写；启动时 `stripManagedMarkers`（`src/shared/managed-block.ts`，本文件现在只剩这一个职责）一次性剥掉三行注释做美化。
+- **内嵌条目替换的缩进**：重写内嵌条目时按其首行前导空格补缩进（`indent` 字段），保证还在父 insert 分节的序列层级里。
+
+**自检**：`node tools/verify.ts` → `PASS 303/303`（v0.4.0 撰写时点）。反向验证记录见 README §7.13。

@@ -215,3 +215,13 @@ cordis_inspect_query(platform: client, provider: Slots, method: listSubTree,
 **导航图标不可由插件提供**：`settings.section` 的注册契约只有 `id`/`order`/`label`，图标是 `navIcon(id)` 硬编码查表 + 齿轮兜底（证据见第 2 节）。本插件靠给自己那一格打 `data-mcpm-nav` + CSS 覆盖实现（AGENTS 3.8 的例外），代价是依赖官方 DOM 结构。上游 [discussion #1229](https://github.com/deepseek-ai/deepseek-harness/discussions/1229) 正是要补上可选 `icon`。
 
 **判据权威顺序**（AGENTS §5 的一句话展开）：① 本机**已安装**的 DSH 产物（`resources/app.asar` 内的 `lib/index.js` + `lib/types/**/*.d.ts`）——官方 skills 自己写着 *"the installed Harness is the authority"*；② 随安装附带的官方 skills 文档；③ 官方 GitHub 仓库与 discussions；④ 二手文章。**不要**用 ④ 去推翻 ①。
+
+## 11. v0.4.0 的规则口径修正
+
+AGENTS §2.4 在 v0.4.0 从"受控 marker 块"改写为"条目寻址的原位编辑"。变化点：
+
+- **写入目标**：不再是两个 marker 之间的块，而是 `scanPatchDoc` 定位的**目标条目字节区间**；块外逐字节保留的保证不变（F45 反向验证过：把 replace 改成整份重写会被 B30/F45 精确抓住）。
+- **拒绝写入的触发面**：marker/manifest 异常 → 改为"扫描异常 + 同 id 多份声明 + 区间越界/重叠"。其中同 id 多份声明在 update/setEnabled 是**拒绝**、remove 是**删全部**（良定义）。
+- **新条目形状**：只能走 `- {"insert":[…]}`（renderInsertLine）；顶层裸行 `- id: X` 是覆写语义、目标不存在会被 `applyEntryPatches` 静默丢弃——这条 README §2.3 的行语义在 v0.4 依然是写入形状选择的依据。
+- **v0.3 兼容**：marker 行是注释、寻址器当透明，所以"不迁移也能读写"；`stripManagedMarkers` 只是启动时的美化（幂等，异常静默——最坏情况是文件里多三行没人看的注释）。
+- **B 区 stub 的去重**：真实 `configEditor.entries()` 对重复 id 只保留一条（宿主注释明确依赖），自检 stub 因此按"后出现的行原地覆盖"去重——写新宿主测试时别忘了这条，否则"基础层 + 文件 insert 同 id"会数出两台。

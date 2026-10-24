@@ -16,13 +16,14 @@
 | 客户端 | `lib/client.js` | 往 `settings.section`（list 座位）注册一页，`order: 900` → 落在设置导航最下方；纯 `window.__ModuleLoader__` 懒 CJS bundle |
 | 宿主 | `lib/index.js` | `ctx.connection.fetch.register()` 开一条**自带鉴权的同源 HTTP 路由**（`/api/mcp-manager`）；`ctx.configEditor.edit()` 做**外科手术式的配置写入** |
 
-**数据模型（v0.3.0 起）**：每台 MCP 服务器都是 profile 补丁文件（`cordis.patch.yml`）里的**顶层 Loader 条目**，不再放进 `cordis:group` 容器：
-- **本插件新增**：以 `- insert: [ { id: mcp-<name>, name: '@deepseek-ai/dsh-mcp-client', config } ]` 形式写入；
-- **外部已有 MCP**（手写或市场插件写入）：显示来源标记为「外部」，可一键「接管」追加 `- id: X` 覆写行进行编辑或启停，原声明原封不动保留；点「取消接管」删除覆写行、恢复原配置；
-- **受控块写入**：由专用受控写入器只更新 profile 末尾由 `# >>> dsh-mcp-manager:managed` 围住的区域，块外用户手写内容逐字节未变；写前自动备份、使用 profile 文件锁防并发冲突；
-- **旧版平滑迁移**：如检测到旧版 `cordis:group` 容器里仍有数据，页面提示一键迁移至顶层 `insert`，并自动清空旧容器。
+**数据模型（v0.4.0 起）**：**profile 补丁文件就是数据库**。每台 MCP 服务器都是 profile `cordis.patch.yml` 里的**普通顶层 Loader 条目**，与手写、市场插件写的完全同形——没有受控块、没有 manifest、没有"接管"概念：
 
-页面提供：顶层服务器列表（标注 insert/覆写/外部） + 状态四色 + 失败原因行 + 工具名单 + 行内启停/编辑/删除/接管/取消接管 + 「检测」连通握手。
+- **声明在本文件里**（本插件新增，或手写、市场插件写在 profile 里的）：source 标记为「本地」，**原地增删改**——编辑/删除只重写那个条目的字节区间，其余内容逐字节未变；
+- **声明在别的层**（其他 bundle / home patch）：source 标记为「外部」，保存或启停时自动追加一条顶层覆写行（`- id: X`），此后变为「覆写」态——可编辑覆写行、可「还原」（删覆写行恢复原配置）；原始声明物理上不在 profile 里，无法由本插件删除；
+- **受控写入**：由条目寻址写入器（`src/shared/patch-doc.ts` 定位字节区间 + `src/host/patch-writer.ts` 文件锁 / 原子替换 / 自动 `.bak`）执行；同 id 多份声明、区间异常一律**拒绝写入**；
+- **旧版平滑迁移**：v0.3 受控块只是几行注释，不剥离也能读写，启动时自动剥掉美化；旧版 `cordis:group` 容器里仍有 MCP 时页面提供一键「迁移为顶层条目」。
+
+页面提供：服务器列表（标注 本地/覆写/外部） + 状态四色 + 失败原因行 + 工具名单 + 行内启停/编辑/删除/还原 + 「检测」连通握手。**卸载插件 = 零痕迹**：配置就是一份谁都能手工维护的普通 YAML。
 
 ---
 
@@ -120,14 +121,12 @@ ctx.inject(["slots"], (scope) => {
 
 ## 4. 本仓库的架构
 
-### 4.1 顶层条目模式与受控 marker 块（v0.3.0 起）
+### 4.1 条目寻址：profile 里的普通顶层条目（v0.4.0 起）
 
-每台 MCP 服务器都是一条顶层的 `@deepseek-ai/dsh-mcp-client` 条目，与官方模板及插件市场安装的 MCP 完全同形：
+每台 MCP 服务器都是一条顶层的 `@deepseek-ai/dsh-mcp-client` 条目，与官方模板及插件市场安装的 MCP **完全同形**——文件里没有本插件的任何"私有标记"：
 
 ```yaml
-# profile 的 cordis.patch.yml 末尾受控块
-# >>> dsh-mcp-manager:managed
-# dsh-mcp-manager:manifest=[{"id":"mcp-context7","kind":"insert"},{"id":"magpie-mcp-dbx","kind":"override"}]
+# profile 的 cordis.patch.yml —— 手写、市场插件写、本插件写，都长这样
 - insert:
     - id: mcp-context7
       name: '@deepseek-ai/dsh-mcp-client'
@@ -143,24 +142,21 @@ ctx.inject(["slots"], (scope) => {
     serverName: dbx
     transport: streamable-http
     url: https://api.dbx.example.com/mcp
-# <<< dsh-mcp-manager:managed
 ```
 
-| 操作 | 本插件创建的 insert 条目 | 外部已有 MCP 条目 |
+| 操作 | 声明在 profile 文件里（本地） | 声明在别的层（外部） |
 |---|---|---|
-| 显示 | 正常列出，标记为 `insert` | 正常列出，标记为 `外部` |
-| 新增 | 在受控块中追加 `- insert:` 行 | — |
-| 修改 | 直接修改受控块中该条 insert 项 | 追加/更新 `- id: X` 覆写行（标记为 `覆写`） |
-| 启停 | 在 insert 项中设置 `disabled: true/false` | 在覆写行中设置 `disabled: true/false` |
-| 删除 | 从受控块中完全移除该条目 | 取消接管：从受控块移除覆写行，恢复外部原配置 |
+| 显示 | 正常列出，标记为 `本地` | 正常列出，标记为 `外部`；有覆写行后标记为 `覆写` |
+| 新增 | 文件末尾追加 `- {"insert":[…]}` 创建行 | — |
+| 修改 | 原地重写该条目的字节区间（表单外的字段原样带回） | 追加/更新顶层覆写行（隐式发生，原声明不动） |
+| 启停 | 原地重写该条目的 `disabled` | 追加/更新覆写行 |
+| 删除 | 删掉该条目的全部声明行（父 insert 分节变空就连分节一起删） | 有覆写行 → 删覆写行（「还原」）；无 → 拒绝并说明 |
 
-**为什么既不用 `ctx.loader.create()/remove()` 也不整体重写**：Loader 的持久化实现 `Include.write()` 会调用 `yaml.dump(整份 config)`，把用户手写的 `insert:` 分节和注释压平（AGENTS 2.3）。本插件的受控写入器只读写 marker 块内的字节，块外用户手写内容逐字节未变；使用 `package.json.lock` 避免并发写坏文件。
+**为什么既不用 `ctx.loader.create()/remove()` 也不整体重写**：Loader 的持久化实现 `Include.write()` 会调用 `yaml.dump(整份 config)`，把用户手写的 `insert:` 分节和注释压平（AGENTS 2.3）。本插件的条目寻址写入器只重写**目标条目自己的字节区间**（由 `src/shared/patch-doc.ts` 的行扫描器定位，认得块式/flow 单行/`!!js` 预处理），其余字节逐字保留；使用 `package.json.lock` 避免并发写坏文件，写前自动 `.bak`。
 
 ### 4.2 写入路径的合法性闭环
 
-`configEditor.edit(groupEntry, () => nextArray)` 对 insert 声明的条目走 `index < 0` 分支 → `document.add({ id, name, config })`，即在**文件末尾追加一条顶层覆写行**。它有效是因为 `applyEntryPatches` 先处理 `insert:`（并 `buildMap`）、**后**处理覆写行，此时 `mcp-manager` 已在 `entryMap` 里 → `target.config = nextArray`。
-
-写完还过一道断言：`composeEntries(...)` 里该条目的 config 必须深等于 `nextArray`，否则抛错。**这道断言在写盘之前**，所以假设不成立时也是**安全失败**：报错、不落盘、不损坏配置。最后由 `reconcileProfilePatches()` 让 Loader 热重载。
+写操作 = `requireDoc()`（读文件 + 扫描，异常则拒绝写入）→ 组装编辑列表（`entryWriteEdit` / `removalEdits`，同 id 多份声明是歧义状态、直接拒绝）→ `composeEdit` 在内存里合成（区间越界/重叠也抛错）→ `editPatch` 在文件锁内重读原文再合成一次 → 有变化才备份 + 原子替换。写完不调用任何 Loader API——`dsh-hmr` 监听该文件秒级重组合，这里只轮询 `configEditor.entries()` 等它生效（有界 10 × 100ms）。因为校验全部发生在**写盘之前**（或原子替换之前的内存合成），假设不成立时都是**安全失败**：报错、不落盘、不损坏配置。
 
 ### 4.3 文件清单
 
@@ -179,7 +175,7 @@ assets/icon.svg          bundle 卡片图标（64x64，圆角底色 + 标记；�
 LICENSE                  MIT（版权人见文件首行）
 src/client/**            客户端半边源码（TSX）  → 产物 lib/client.js
 src/host/**              宿主半边源码（TS）      → 产物 lib/index.js
-src/shared/**            两半边共享的协议值（ROUTE / GROUP_ID / MCP_PACKAGE / SECTION_ID / SECTION_LABEL）
+src/shared/**            两半边共享的协议值（ROUTE / GROUP_ID / MCP_PACKAGE / SECTION_ID / SECTION_LABEL）+ 条目寻址（patch-doc.ts）与 v0.3 遗留清理（managed-block.ts）
 lib/**                   构建产物（带 lib/.build-manifest.json 指纹），不要手改
 assets/mcp-mark.svg      设置导航那一格用的 MCP 标记（16x16，几何取自官方 favicon）
 assets/nav-preview.png   改后导航那一格的模拟对照图（自绘，非截图；§8.6 引用）
@@ -198,7 +194,7 @@ tools/build.ts           esbuild 打包两半边 + 客户端包装 + 写构建�
 
 ### 5.1 能"一键安装"吗——**能，GitHub 路线已实测**
 
-**先记住一条归属规则（v0.2.0 起）**：承载 MCP 服务器的那个容器条目（`mcp-manager`）由 **plugin bundle 自带的 `cordis.patch.yml`** 声明，**用户不需要手写任何东西**。v0.1.1 曾把它推给 profile（"卸载插件不影响 MCP"），但插件根本没有创建 Loader 条目的能力，于是那句话的代价变成"每个用户装完插件还得先手改一次 YAML，否则页面提示你缺容器"。两害相权取"装上即用"：数据不会丢（服务器列表在 profile 的顶层覆写行 `- id: mcp-manager` 里），卸载插件只是让容器与列表一起暂停加载，装回即恢复。完整推导与迁移见 §5.6。
+**先记住一条归属规则（v0.4.0 起）**：**没有容器了**。每台 MCP 就是用户 profile `cordis.patch.yml` 里的普通顶层条目，插件只负责按 id 原地增删改那些行——bundle 的补丁文件里只有插件自己这一行（§5.6 是 v0.2/v0.3 容器方案的历史与退役原因）。卸载插件不影响任何 MCP 服务器；升级 / 手工维护直接改文件即可。v0.1–v0.3 时代的容器行（`id: mcp-manager`）已退役：v0.2/v0.3 遗留的容器由页面一键迁移，v0.1.x 手写的容器行同样走「迁移为顶层条目」。
 
 | 接线 / 安装方式 | 现在 | 说明 |
 |---|---|---|
@@ -300,44 +296,33 @@ plugin_manager(action:'remove_bundle', target:'@qq540491950/dsh-mcp-manager')
 
 上面几行里前两行是"它到底能不能用"的实测；v0.1.2 与 v0.2.0 目前只有自检结论、**没有真机安装证据**。未跑的部分（npm 渠道 / `.tgz` URL / 卸载回归）见 §7.2。
 
-### 5.6 容器行归 **bundle**（v0.2.0 起；v0.1.x 曾是 profile）
+### 5.6 容器的兴衰（v0.4.0 起**已退役**；v0.2/v0.3 曾归 bundle，v0.1.x 曾是 profile）
 
-`cordis.patch.yml`（bundle 自带，`dsh.bundle.patch` 指向它）现在声明**两行**：容器 + 插件自己。装完即用，profile 里**不需要**任何东西。
+**v0.4.0 起没有容器**：每台 MCP 就是 profile 里的普通顶层条目，条目寻址写入器让插件**第一次具备了运行时创建/删除 Loader 条目的能力**（按 id 定位字节区间原位编辑）——容器当初"插件不能创建条目所以需要一个数组容器"的存在理由消失了。bundle 的 `cordis.patch.yml` 现在只有插件自己这一行：
 
 ```yaml
 - insert:
-    - id: mcp-manager          # 容器：所有 MCP 服务器都在它的 config 数组里
-      name: 'cordis:group'
-      config: []
-    - id: dsh-mcp-manager      # 插件行
+    - id: dsh-mcp-manager      # 插件行（name 必须等于 package.json 的 name）
       name: '@qq540491950/dsh-mcp-manager'
 ```
 
-**为什么翻回来**（v0.1.1 曾把它推给 profile）：容器条目不可能由插件**在运行时**创建 —— `configEditor.edit()` 只接受"已存在且 fiber 活着"的条目（`dsh-config-editor/lib/index.js`：`entries().includes(entry)` + `fiber.state !== 2` 两道检查），`ctx.loader.create()` 又会整份重写用户 YAML（AGENTS 2.3，禁止）。于是"零手动"只剩 bundle 层一个位置。v0.1.1 的取舍是"卸载插件不影响 MCP"，代价是**每个用户装完插件还得先手改一次 YAML**，否则页面上只剩一条"缺容器"的提示 —— 装个可视化配置器要先手写配置，这个代价明显更大。
+**历史方案与其代价**（保留给考古；两者都已被 v0.4 消灭）：
 
-**现在的取舍（写在这里，别再翻）**：
+- **容器在 bundle**（v0.2.0/v0.3.0）：装好即用，但卸载插件 = 容器消失 = 承载列表的覆写行被判 `not found` 整条丢弃 → MCP 停止加载（配置原文仍在 profile，装回即恢复）。也因此"容器被声明两次"（profile 手写一份 + bundle 一份）会让 `configEditor` 写盘断言取到空 config，**读正常、写全挂**——v0.2/v0.3 的页面为此单独做了 `duplicated` 检测。
+- **容器在 profile**（v0.1.1）：卸载插件不影响 MCP，代价是每个用户装完插件还得先手改一次 YAML。
 
-- 容器在 **bundle** 里（v0.2.0 起）：装好即用。卸载插件 = 那一层消失 = 容器消失 = 承载服务器列表的 `- id: mcp-manager` 覆写行被判 `not found` **整条丢弃** → 服务器停止加载（**配置原文仍在 profile 文件里，装回即恢复**）。离线复现：容器相关 WARN 出现 `patch: entry mcp-manager not found`，合成结果 **0 行**。
-- 卸载后仍要 MCP 继续跑的用户，唯一做法是**把容器行抄回 profile 并删掉 bundle 里那份** —— 但 bundle 的那份是包的一部分，删不掉。所以结论只有一句：**要 MCP 常年在线就别卸插件**；要卸就先接受"暂时掉线、装回即恢复"。
+**v0.3 → v0.4 升级**：就地装新版 + 重启 DSH 即可。v0.3 写在受控块里的条目**不迁移也能用**（marker 行只是注释，寻址器当透明），启动时会自动剥掉那三行注释；旧 group 容器里还有服务器时页面给一键「迁移为顶层条目」（容器声明在 profile 里就直接删行，在别的层就兜底追加清空覆写行）。降级回 v0.3 的代价：v0.4 写的普通条目会被 v0.3 当成"外部条目"只读展示。
 
-**⚠️ 从 v0.1.x 升级：profile 里那行容器必须删掉。** v0.1.x 的 profile 里有手写的 `- insert: [{id: mcp-manager, …}]`，与 bundle 现在这份撞成**两次声明**：
+**bundle 被整体跳过时怎么办**（`evaluatePluginCompatibility` 判 incompatible，patch 层不参与合成）：页面本体照常打开，只多一条提示 —— 宿主与客户端都会把插件行 YAML 原样给出来（可直接复制粘贴到 profile），自检 P11 守住两半边给出**同一行**。这是兜底，不是常规步骤。
 
-  - **读**：`declaredRows()` 取覆写层 / 继承层，页面看着完全正常；
-  - **写**：`configEditor` 写盘前的自检（`dsh-config-editor` 的 `flatten().find()`，而 `flatten` **不去重**）取到**先出现的**那条空 config → **保存 / 启停 / 删除全部抛** `Configuration for "mcp-manager" is overridden by a home patch`。
-  - **页面怎么说**：宿主按 `ctx.loader` 全表数出 2 条同 id 条目 → `container: 'duplicated'` → 页面明确写"被声明了两次 …… 请删掉 profile 里那一行"，并附上要删的那一行原文（自检 B82/B83/D14 守这一区分）。删完重启 DSH 即可。
-  - 离线复现（逐字抄 `applyEntryPatches` + `flatten`，喂真实 patch 文件）：两行时 `flatten().find().config` 是 0 台而待提交是 3 台 → 断言必失败；一行时两边都是 3 台 → 通过。
+### 5.7 外部条目（声明不在 profile 文件里的顶层条目）
 
-**bundle 被整体跳过时怎么办**（`evaluatePluginCompatibility` 判 incompatible，patch 层不参与合成）：页面本体照常打开，只多一条提示 —— 宿主与客户端都会把上面那 4 行 YAML 原样给出来（可直接复制粘贴到 profile），自检 P11 守住两半边给出**同一行**。这是兜底，不是常规步骤。
+声明**不在** profile 补丁文件里的 MCP 条目（真实案例：其他 bundle 的补丁层声明了它，source 标记为「外部」）**在跑**、工具也注册给了模型，但它的原始声明物理上不在本插件可写的文件里。
 
-### 5.7 页面外的服务器（别的插件写进 profile 的顶层条目）
-
-profile 补丁层里可能还有**顶层**的 `@deepseek-ai/dsh-mcp-client` 条目 —— 插件市场就会替用户写一条（真实案例：`id: magpie-mcp-context7`，`serverName: context7`）。它们**在跑**、工具也注册给了模型，但不在本插件的容器里，所以本页既不能探测也不能启停/删除。
-
-v0.1.x 的表现是**什么都不显示**，空态文案却是「还没有配置任何 MCP 服务器」—— 用户会以为配置丢了/没生效。v0.2.0 改成：快照带 `outside[]`（识别谓词复用官方的 `configEditor.entries()` = "顶层、id 唯一、可寻址"的条目，容器的子条目天然不在其中），页面上单列一块「页面外还有 N 台」，报状态（圆点）+ loader 条目 id + 工具数。
-
-- **只读**：`disabled` 是**行字段**、不在 config 里，`configEditor.edit()` 写不到；删除顶层条目更是没有 API。所以不做「导入」按钮 —— 真导入了就是两台同名服务器同时在线，抢 `mcp__<name>__*` 的同一批工具名。
-- **搬到本页**：先删掉 profile 里声明它的那一行，再用「新增」在这里重建一台。
-- **状态判据**：只有一条正面证据 —— **工具已经注册**（`outside.tools.count > 0`）；相位 `active` 单独不算数（`failOnStartupError: false` 下连不上也是 active，AGENTS 3.10），所以 active + 0 个工具报琥珀「无工具」而不是绿。
+- **可编辑、可启停**：保存或启停时自动追加一条顶层覆写行（`- id: X`）——此后该条目标记为「覆写」，原始声明不动；
+- **删除 = 还原**：删掉覆写行、恢复外部原配置；原始声明本身无法由本插件删除（去声明它的层处理），没有覆写行时删除按钮禁用并说明原因；
+- **profile 里的顶层条目不再是"页面外"**：v0.2 的 `outside[]` 概念随容器一起退役——市场插件写在 profile 里的条目现在就是「本地」条目，直接增删改；
+- **状态判据**：与本地条目同一套（AGENTS 3.10 的四色语义）。
 
 
 ---
@@ -584,3 +569,11 @@ pnpm verify                 # = node tools/verify.ts
 - **受控块安全**：引入 `src/shared/managed-block.ts` 与 `src/host/patch-writer.ts`，只更新 marker 块，块外内容逐字节保留；原子写 + `package.json.lock` 锁 + 自动 `.bak` 备份。
 - **旧版迁移**：启动时如检测到旧版 group 容器有数据，页面显示「迁移到顶层 insert」按钮，调用 `op:migrate` 一键将旧服务器搬迁为顶层 insert 并清空旧 group `config: []`。
 - **自检**：`node tools/verify.ts` → `PASS 290/290`。
+### 7.13 v0.4.0：条目寻址——没有受控块，没有接管，profile 就是数据库
+
+- **架构变化**：受控 marker 块、manifest、「接管/取消接管」整套概念全部移除。每台 MCP 是 profile 里的普通顶层条目；本插件按 **id 寻址**原地增删改那些行（`src/shared/patch-doc.ts` 行扫描器定位字节区间，认块式 / flow 单行 / `!!js` 预处理），声明在别的层的条目保存/启停时自动追加覆写行（source 三态 `profile` / `overridden` / `external`）。bundle 补丁文件只剩插件一行，卸载插件零痕迹。
+- **写入安全**：`composeEdit` 纯函数合成（区间越界/重叠/多 append 抛错）→ `editPatch` 文件锁内重读原文再合成 → 有变化才 `.bak` + 原子替换；同 id 多份声明时 update/setEnabled 拒绝、remove 删全部；删空兜底保留 `[]`。
+- **兼容**：v0.3 受控块的 marker 行是注释，寻址器当透明——不迁移也能读写，启动时自动剥离美化（`stripManagedMarkers`）；旧 group 容器一键迁移（声明在 profile 里删行，否则兜底清空覆写行）；能力表新增 `nativeRows`（保留 `patchInsert` 给 v0.3 客户端做版本提示），adopt/release op 返回明确的"已移除"错误。
+- **自检**：`node tools/verify.ts` → `PASS 303/303`（新增 F39–F49 patch-doc 纯函数、B27–B44 手写条目/遗留形态/外部条目/同 id 歧义、B84/B85 容器在文件里的迁移；P2/P3 反转为"patch 只有一行、容器不得再声明"）。
+- **反向验证**（注入 → 精确报错 → 还原）：patch 加回容器行 → P2/P3 红（点名"只有一行"/"容器行已退役"）；composeEdit 区间替换改成整份重写 → B30/F45 红（块外字节被吞）；stripManagedMarkers 改成空操作 → B40/F49 红（marker 残留）。
+- **未实测**：真机安装 v0.4.0 与重启前后的能力协商、v0.3 受控块/手写容器行的真机迁移现场、真机对 flow 行与 `!!js` 条目的编辑（以上全部只有离线自检证据）。宿主半边改了，生效需要重启 DSH。
