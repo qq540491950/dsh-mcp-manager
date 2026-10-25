@@ -1290,6 +1290,103 @@ function makeHostCtx({
 }
 
 {
+  // 扫描器失明年代的遗留形态：官方美化把单行 flow 条目展开成多行，当时的启停走了
+  // "追加覆写行"兜底 → 同 id 两份声明（用户实测：来源变「覆写」）。收拢 = 改创建行 +
+  // 删同内容覆写行；内容有差异仍然拒绝（歧义安全失败）。
+  const row = (disabled) =>
+    `- {"id":"mcp-dup","name":"@deepseek-ai/dsh-mcp-client","config":{"serverName":"dup","transport":"stdio","command":"cmd","args":["/c","npx"]},"disabled":${disabled}}`
+  const seed = [
+    '# head',
+    '- insert:',
+    '    # magpie',
+    '    - {',
+    '        "id": "mcp-dup",',
+    '        "name": "@deepseek-ai/dsh-mcp-client",',
+    '        "config":',
+    '          {',
+    '            "serverName": "dup",',
+    '            "transport": "stdio",',
+    '            "command": "cmd",',
+    '            "args": [ "/c", "npx" ]',
+    '          }',
+    '      }',
+    row(false),
+    '',
+  ].join('\n')
+  const { ctx, captured, documentPath } = makeHostCtx({ seed })
+  host.apply(ctx)
+  const post = (payload: Record<string, unknown>): Promise<Response> =>
+    captured.route.fetch(
+      new Request('http://localhost/api/mcp-manager', { method: 'POST', body: JSON.stringify(payload) }),
+    )
+  const declarationsOf = (): number =>
+    readFileSync(documentPath, 'utf8')
+      .split('\n')
+      .filter((line) => line.includes('"id":"mcp-dup"')).length
+
+  const initial = await bodyOf(await captured.route.fetch(new Request('http://localhost/api/mcp-manager')))
+  check(
+    'B41 美化条目 + 遗留覆写行：合并语义下按一台 profile 服务器读取',
+    initial.data?.servers?.length === 1 &&
+      initial.data.servers[0]?.id === 'mcp-dup' &&
+      initial.data.servers[0]?.source === 'profile' &&
+      initial.data.servers[0]?.disabled === false,
+    JSON.stringify(initial.data?.servers),
+  )
+
+  const stop = await post({ op: 'setEnabled', entryId: 'mcp-dup', enabled: false })
+  const stoppedText = readFileSync(documentPath, 'utf8')
+  check(
+    'B42 停用即收拢：创建行原地写 disabled:true、遗留覆写行删除，只剩一份声明',
+    stop.status === 200 &&
+      declarationsOf() === 1 &&
+      stoppedText.includes('"disabled":true') &&
+      stoppedText.includes('# magpie') &&
+      !stoppedText.includes('        "id"'),
+    `${String(stop.status)}\n${stoppedText}`,
+  )
+
+  const start = await post({ op: 'setEnabled', entryId: 'mcp-dup', enabled: true })
+  check(
+    'B43 收拢后再启停走单声明路径：启用后无 disabled 字段、仍只有一份声明',
+    start.status === 200 && declarationsOf() === 1 && !readFileSync(documentPath, 'utf8').includes('"disabled"'),
+    readFileSync(documentPath, 'utf8'),
+  )
+}
+{
+  // 内容不同的多份声明仍是歧义：拒绝写入（不猜用户意图）。
+  const seed = [
+    '- insert:',
+    '    - {',
+    '        "id": "mcp-amb",',
+    '        "name": "@deepseek-ai/dsh-mcp-client",',
+    '        "config":',
+    '          {',
+    '            "serverName": "amb",',
+    '            "transport": "stdio",',
+    '            "command": "cmd"',
+    '          }',
+    '      }',
+    '- {"id":"mcp-amb","name":"@deepseek-ai/dsh-mcp-client","config":{"serverName":"RENAMED","transport":"stdio","command":"cmd"}}',
+    '',
+  ].join('\n')
+  const { ctx, captured } = makeHostCtx({ seed })
+  host.apply(ctx)
+  const reject = await captured.route.fetch(
+    new Request('http://localhost/api/mcp-manager', {
+      method: 'POST',
+      body: JSON.stringify({ op: 'setEnabled', entryId: 'mcp-amb', enabled: false }),
+    }),
+  )
+  const rejectBody = await bodyOf(reject)
+  check(
+    'B44 多份声明内容不同 → 409 拒绝并说明（收拢只对"同内容兜底行"生效）',
+    reject.status === 409 && String(rejectBody.error ?? '').includes('声明了 2 次'),
+    `${String(reject.status)} ${JSON.stringify(rejectBody)}`,
+  )
+}
+
+{
   // 外部条目（声明在别的层）：能启停（追加覆写行），不能删除；同 id 两份声明 → 拒绝写。
   const extRow = {
     id: 'ext-only',
@@ -2971,6 +3068,8 @@ check(
     stateValues = [],
     click,
     submit = false,
+    instantTimers = false,
+    document: documentStub = undefined,
   } = {}) => {
     const requests = []
     const base = {
@@ -3000,9 +3099,12 @@ check(
       console,
       fetch: stubFetch,
       // 相位稳定那一步要等一拍；平时（挂载即稳定）不会用到。
-      setTimeout,
+      // instantTimers：衰减长尾（约 30s）在真实时钟下等不完，测试里把 sleep 压成零拍，
+      // 请求序列不受影响（节奏本身由 F52 的形状断言钉住）。
+      setTimeout: instantTimers ? (callback: () => void) => setTimeout(callback, 0) : setTimeout,
       clearTimeout,
-      // 故意不提供 AbortSignal / document：客户端两处都有 typeof 守卫。
+      ...(documentStub === undefined ? {} : { document: documentStub }),
+      // 故意不提供 AbortSignal：客户端两处都有 typeof 守卫。
     }
     sandbox.globalThis = sandbox
     vm.runInNewContext(clientSource, sandbox, { filename: 'lib/client.js' })
@@ -3200,13 +3302,18 @@ check(
       JSON.stringify(shape(settle)),
     )
 
-    // 相位永远不稳定 → 有界收手（不是轮询），总重读次数 == SETTLE_ATTEMPTS（10 × 200ms）。
-    const stuck = await mount({ capabilities: newHost, server: { ...settled, phase: 'loading' } })
-    await new Promise((resolve) => setTimeout(resolve, 2400))
+    // 相位永远不稳定 → 有界收手（不是轮询）。长尾引入后总重读次数 == SETTLE_SCHEDULE_MS
+    // 的长度（16：200ms×10 + 2s×4 + 10s×2，共 ≈30s）；真实时钟等不完，这里把 sleep 压成零拍。
+    const stuck = await mount({
+      capabilities: newHost,
+      server: { ...settled, phase: 'loading' },
+      instantTimers: true,
+    })
+    await tick(80) // 零拍 sleep 也要逐拍排空：16 次重读 × (sleep + fetch) ≈ 32 拍
     const gets = stuck.filter((request) => request.method === 'GET').length
     check(
-      'D41 相位一直不稳定时有界收手（10 次重读后不再问，不轮询）',
-      stuck.length === 12 && gets === 11 && stuck.filter((request) => request.body?.op === 'probe').length === 1,
+      'D41 相位一直不稳定时有界收手（衰减节奏 16 次重读后不再问，不轮询）',
+      stuck.length === 18 && gets === 17 && stuck.filter((request) => request.body?.op === 'probe').length === 1,
       `total=${String(stuck.length)} gets=${String(gets)}`,
     )
 
@@ -3249,6 +3356,79 @@ check(
           ['GET', undefined],
         ]),
         JSON.stringify(shape(stdioEnable)),
+      )
+    }
+
+    // D53（回归，用户实测"先停止再启用，状态一直是黄色"）：mcp-client 的 apply 会**等
+    // 首连 + 工具发现完成**（stdio 的 npx 冷启动、首连失败后 500ms 起步翻倍的退避，可达
+    // 几十秒）——loading 相位远超 2s 起步窗口。衰减长尾必须把激活后的状态接住。
+    {
+      const probeNull = { connected: null, status: null, detail: '仅能探测 streamable-http', at: 1 }
+      const slow = (phase: string, withProbe: boolean) => ({
+        capabilities: newHost,
+        servers: [{ ...row(false, withProbe ? { probe: probeNull } : {}), phase }],
+      })
+      const slowStart = await mount({
+        capabilities: newHost,
+        server: slow('active', true), // 队列耗尽后的兜底 = 最终状态（已激活）
+        responses: [
+          slow('loading', false), // 挂载 GET：还在首连
+          slow('loading', true), // 挂载补检测（stdio → connected:null）
+          ...Array.from({ length: 13 }, () => slow('loading', true)), // 前段重读：仍在首连（旧判据 10 次就放弃）
+          slow('active', true), // 第 14 次重读：激活
+        ],
+        instantTimers: true,
+      })
+      await tick(120) // 14 次重读逐拍排空
+      check(
+        'D53 慢启动：loading 超过起步窗口后，衰减长尾继续重读直到 active（不永远停在「启动中」）',
+        slowStart.length === 16 &&
+          slowStart[0]?.method === 'GET' &&
+          slowStart[1]?.body?.op === 'probe' &&
+          slowStart.filter((request) => request.method === 'GET').length === 15,
+        JSON.stringify(shape(slowStart)),
+      )
+    }
+
+    // D54：长尾（≈30s）仍可能短于 mcp-client 首连退避的总时长——窗口切回可见时补一拍读，
+    // 仍不稳定就继续走一遍衰减节奏（事件驱动的有界补读，不是常驻轮询）。
+    {
+      const listeners: Array<() => void> = []
+      const doc = {
+        visibilityState: 'hidden',
+        addEventListener: (type: string, listener: () => void) => {
+          if (type === 'visibilitychange') listeners.push(listener)
+        },
+        removeEventListener: (type: string, listener: () => void) => {
+          const index = listeners.indexOf(listener)
+          if (index >= 0) listeners.splice(index, 1)
+        },
+        // ensureStyles 的最小 DOM 面：按 id 找不到就注入一个 <style>。
+        getElementById: () => null,
+        createElement: () => ({ dataset: {} as Record<string, string> }),
+        head: { appendChild: () => {} },
+      }
+      const visible = await mount({
+        capabilities: newHost,
+        server: { ...settled, phase: 'loading' },
+        instantTimers: true,
+        document: doc,
+      })
+      await tick(80) // 同 D41：等挂载路径的衰减重读排空
+      check(
+        'D54a document 存在时注册 visibilitychange，挂载路径照旧（GET + probe + 衰减重读）',
+        listeners.length === 1 && visible.length === 18,
+        `${String(listeners.length)} ${JSON.stringify(shape(visible))}`,
+      )
+      const afterMount = visible.length
+      doc.visibilityState = 'visible'
+      for (const listener of listeners) listener()
+      await tick(60)
+      const extraGets = visible.filter((request) => request.method === 'GET').length - visible.filter((request, index) => index < afterMount && request.method === 'GET').length
+      check(
+        'D54b 切回可见 → 补一次读；仍不稳定 → 重走一遍衰减节奏（1 读 + 1 探测 + 16 重读）',
+        visible.length - afterMount === 18 && extraGets === 17,
+        `extra=${String(visible.length - afterMount)} gets=${String(extraGets)}`,
       )
     }
   }
@@ -3745,6 +3925,7 @@ check(
  */
 {
   const { statusOf, settling, failureText } = await import('../src/client/core/status.ts')
+  const { SETTLE_SCHEDULE_MS } = await import('../src/client/core/api.ts')
   const { draftOf, serverOf, pairsToText, targetOf, supports, suggestName } =
     await import('../src/client/core/draft.ts')
   const { normalizeRow, toRecord, toStringArray } = await import('../src/host/rows.ts')
@@ -4184,6 +4365,70 @@ check(
           stripManagedMarkers('# no markers\n- x\n') === '# no markers\n- x\n'
         )
       })(),
+    )
+    // F50–F52：官方配置写入（configEditor 的整表重写）会把整份文件**美化**，单行 flow 条目
+    // 会被展开成多行。扫描器不认多行 flow 的年代，这里全部失明 → 启停走了"追加覆写行"兜底 →
+    // 同 id 两份声明（用户实测：来源变「覆写」）。
+    const pretty = [
+      '# head',
+      '- insert:',
+      '    # magpie',
+      '    - {',
+      '        "id": "mcp-pretty",',
+      '        "name": "@deepseek-ai/dsh-mcp-client",',
+      '        "config":',
+      '          {',
+      '            "serverName": "pretty",',
+      '            "transport": "stdio",',
+      '            "command": "cmd",',
+      '            "args": [ "/c", "npx" ]',
+      '          }',
+      '      }',
+      '',
+    ].join('\n')
+    const prettyScan = scanPatchDoc(pretty)
+    const prettyEntry = prettyScan.entries.find((item) => item.id === 'mcp-pretty')
+    check(
+      'F50 美化后的**多行** flow 内嵌条目可寻址，配置无损（args 数组原样）',
+      prettyEntry !== undefined &&
+        prettyEntry.style === 'insert' &&
+        prettyEntry.indent === 4 &&
+        prettyScan.unaddressable === 0 &&
+        same(prettyEntry.flow?.value?.config, {
+          serverName: 'pretty',
+          transport: 'stdio',
+          command: 'cmd',
+          args: ['/c', 'npx'],
+        }),
+      JSON.stringify(prettyScan),
+    )
+    check(
+      'F51 多行 flow 条目的写入：整段区间收拢为一行，注释与其余字节保留',
+      (() => {
+        if (prettyEntry === undefined) return false
+        const next = composeEdit(pretty, [
+          {
+            op: 'replace',
+            start: prettyEntry.start,
+            end: prettyEntry.end,
+            line: `${' '.repeat(prettyEntry.indent)}${renderEntryItem({ id: 'mcp-pretty', config: prettyEntry.flow?.value?.config ?? {}, disabled: true }, 'insert')}`,
+          },
+        ])
+        const rescanned = scanPatchDoc(next)
+        return (
+          next.startsWith('# head\n- insert:\n    # magpie\n') &&
+          rescanned.entries.length === 1 &&
+          rescanned.entries[0]?.flow?.value?.disabled === true &&
+          rescanned.unaddressable === 0
+        )
+      })(),
+    )
+    check(
+      'F52 SETTLE_SCHEDULE_MS：200ms×10 起步 + 2s×4、10s×2 衰减长尾（共 ≈30s，16 读，有界非轮询）',
+      SETTLE_SCHEDULE_MS.length === 16 &&
+        SETTLE_SCHEDULE_MS.every((delay, index) => (index >= 10 ? delay >= SETTLE_SCHEDULE_MS[index - 1] ?? 0 : delay === 200)) &&
+        SETTLE_SCHEDULE_MS.reduce((sum, delay) => sum + delay, 0) === 30000,
+      JSON.stringify(SETTLE_SCHEDULE_MS),
     )
   }
 }

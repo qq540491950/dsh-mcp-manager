@@ -62,7 +62,7 @@ DSH 插件：在设置界面最下方加一页「MCP」，可视化管理 `@deep
 **3.9 [边界] 一条错误只允许一个渲染点。** 错误跟着来源走：`formError` 只由表单提交失败写入、渲染在表单内部；`actionError` 只由行内操作（启停/删除/检测）失败写入、渲染在页面级。`call(payload, after, onError)` 的第三个参数就是"写进哪条通道"，**必须只写一条**。
 
 **3.10 [边界] 状态色必须有正面证据，禁止只看 fiber 相位报绿。** `mcp-client` 默认 `failOnStartupError: false`——连接失败也不抛错（退避 10 次后放弃并注销工具），fiber 全程 `ACTIVE`："apply 跑完了" ≠ "能用"。判定顺序即优先级（[status.ts](src/client/core/status.ts) 的 `statusOf`，F 区逐分支钉住）：停用 / 无活条目 → 灰；**绿只有三条**（探测通过**且** phase `active`、phase `active` 且有记录但探不了（stdio 的 `connected: null`）、旧宿主）；**红三源**（探测失败 / logger 里 `mcp-client(...)` 原文 / phase `failed`）；`pending`/`loading` → 琥珀「启动中」；**有 `probe` 能力却一条探测记录都没有 → 「未检测」，不许退回相位报绿**。
-配套：探测自带 `PROBE_TIMEOUT_MS` = **8s** 超时（按**冷连接**定，别再退回 3s）+ `AbortController`、只读首个数据块（SSE 会挂着）、网络错误取 `error.cause.message`；旧宿主没有 `probe` → 按钮禁用 + 提示重启，别让用户点出「未知操作」；打开页面自动检测一次（先 GET 拿 capability、silent 模式，不锁按钮）；**写入后必须补检测**（启停/删除/保存都算，因为清空的是全部记录）：静默探一次，相位未稳定（pending/loading 就算没稳定——**含探不了的 stdio**，别把"探通"当等待前提）或探通但未 `active` 就重读快照到稳定，探测已判死（红）不再等，**有界 10 × 200ms，不是轮询**；启停意图落地前该行按钮保持禁用（宿主返回的是重放前旧快照，行还显示旧文案，放开就是在邀请重复点击）。
+配套：探测自带 `PROBE_TIMEOUT_MS` = **8s** 超时（按**冷连接**定，别再退回 3s）+ `AbortController`、只读首个数据块（SSE 会挂着）、网络错误取 `error.cause.message`；旧宿主没有 `probe` → 按钮禁用 + 提示重启，别让用户点出「未知操作」；打开页面自动检测一次（先 GET 拿 capability、silent 模式，不锁按钮）；**写入后必须补检测**（启停/删除/保存都算，因为清空的是全部记录）：静默探一次，相位未稳定（pending/loading 就算没稳定——**含探不了的 stdio**，别把"探通"当等待前提）或探通但未 `active` 就按 `SETTLE_SCHEDULE_MS` 重读快照到稳定（200ms×10 起步 + 2s×4、10s×2 衰减长尾，共 ≈30s——**mcp-client 的 apply 会等首连+发现完成**，stdio 冷启动/退避可达几十秒，2s 窗口会永远停在「启动中」），探测已判死（红）不再等，长尾耗尽后由 visibilitychange（切回可见）再补一拍；启停意图落地前该行按钮保持禁用（宿主返回的是重放前旧快照，行还显示旧文案，放开就是在邀请重复点击）。
 
 ## 4. 改代码与交付流程
 
@@ -101,7 +101,7 @@ DSH 插件：在设置界面最下方加一页「MCP」，可视化管理 `@deep
 | 导航图标不可由插件提供 | 见 3.8；上游提案落地即改用注册参数 |
 | 导航位置由 `order` 决定 | 900 只是比官方页大，别的插件更大就排后面；标记按 label 认格，不受顺序影响 |
 | 别的层声明的条目删不掉、也永远做不到 | 声明在其他 bundle（node_modules）或 home patch 里的条目，原始声明物理上不在 profile 文件里；本插件最多追加/更新覆写行（`overridden`），删除 = 还原覆写行，**原声明只能去声明它的层处理**。别试图"一键接管删除" |
-| 同 id 多份声明（文件内） | `scanPatchDoc` 能看见全部声明：update/setEnabled **拒绝**（歧义），remove 删掉全部（良定义）。不要再拿"读着正常"判断没事 |
+| 同 id 多份声明（文件内） | `scanPatchDoc` 能看见全部声明：update/setEnabled **拒绝**（歧义），remove 删掉全部（良定义）。**唯一例外**：恰是一条创建行 + 若干**同内容**覆写行（多行 flow 失明年代的兜底遗迹）时，启停就地收拢为一份（改创建行、删覆写行）——合并结果确定，不算歧义；内容有任何差异仍拒绝。不要再拿"读着正常"判断没事 |
 | 上游 `insert` 共享对象缺陷（未在本机复现） | 上游报告：补丁可能改到共享 insert 对象（插件被静默 disable）；同 id 重复 insert → `duplicate loader entry id` |
 
 ## 7. Git 与发布

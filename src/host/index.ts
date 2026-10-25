@@ -342,51 +342,95 @@ export function apply(ctx: HostContext): void {
       return candidate
     }
 
+    /** 条目的**规范化文本**（键按名排序、递归），只用于"两份声明内容是否一致"的比较。 */
+    const canonicalText = (value: unknown): string => {
+      if (value === undefined) return 'undefined'
+      if (Array.isArray(value)) return `[${value.map((item) => canonicalText(item)).join(',')}]`
+      if (isRecord(value)) {
+        return `{${Object.keys(value)
+          .sort()
+          .map((key) => `${JSON.stringify(key)}:${canonicalText(value[key])}`)
+          .join(',')}}`
+      }
+      return JSON.stringify(value)
+    }
+
     /**
      * 「把 entryId 写成 config + disabled」所需的编辑。
      * 声明在文件里 → 原地重写那个区间；不在 → 追加一条顶层覆写行（外部条目的隐式接管）。
-     * 同 id 多份声明是歧义状态，拒绝写入。
+     * 同 id 多份声明：若恰是一条创建行 + 若干**同内容**的覆写行（扫描器还不认多行 flow
+     * 的年代，官方美化整份文件后启停走了"追加覆写行"兜底留下的），合并结果是确定的——
+     * 就地收拢为一份：改创建行、删多余覆写行；内容有任何差异仍然是歧义，拒绝写入。
      */
     const entryWriteEdit = (
       scan: ScanResult,
       entryId: string,
       config: Record<string, unknown>,
       disabled: boolean,
-    ): PatchEdit => {
+    ): PatchEdit[] => {
       const ranges = scan.entries.filter((item) => item.id === entryId)
       if (ranges.length > 1) {
+        const inserts = ranges.filter((item) => item.style === 'insert')
+        const overrides = ranges.filter((item) => item.style === 'override')
+        const insert = inserts[0]
+        const comparable = ranges.every((item) => item.flow?.value !== undefined)
+        if (
+          inserts.length === 1 &&
+          insert !== undefined &&
+          overrides.length >= 1 &&
+          comparable &&
+          ranges.every((item) => {
+            const value = item.flow?.value
+            return value?.name === MCP_PACKAGE && canonicalText(value.config) === canonicalText(config)
+          })
+        ) {
+          const line = renderEntryItem({ id: entryId, config, disabled }, insert.style)
+          return [
+            {
+              op: 'replace',
+              start: insert.start,
+              end: insert.end,
+              line: insert.indent > 0 ? `${' '.repeat(insert.indent)}${line}` : line,
+            },
+            ...overrides.map((item): PatchEdit => ({ op: 'delete', start: item.start, end: item.end })),
+          ]
+        }
         throw new Error(
           `条目 "${entryId}" 在 profile 里被声明了 ${String(ranges.length)} 次；请先手工清理 cordis.patch.yml（每台 MCP 只保留一行声明）`,
         )
       }
       const target = ranges[0]
       if (target === undefined) {
-        return { op: 'append', lines: [renderEntryItem({ id: entryId, config, disabled }, 'override')] }
+        return [{ op: 'append', lines: [renderEntryItem({ id: entryId, config, disabled }, 'override')] }]
       }
       if (target.flow !== undefined) {
         if (target.flow.index === undefined) {
           // 整行就是这条条目（顶层 flow 裸行 = override；insert 分节里的 flow 裸行 = insert）。
           const line = renderEntryItem({ id: entryId, config, disabled }, target.style)
-          return {
-            op: 'replace',
-            start: target.start,
-            end: target.end,
-            line: target.indent > 0 ? `${' '.repeat(target.indent)}${line}` : line,
-          }
+          return [
+            {
+              op: 'replace',
+              start: target.start,
+              end: target.end,
+              line: target.indent > 0 ? `${' '.repeat(target.indent)}${line}` : line,
+            },
+          ]
         }
         // 单行 flow 的 insert 数组里的一个元素：整行重写，其余元素原样保留。
         const container = target.flow.value
         const list = Array.isArray(container.insert) ? [...(container.insert as unknown[])] : []
         list[target.flow.index] = entryItemOf({ id: entryId, config, disabled }, 'insert')
-        return { op: 'replace', start: target.start, end: target.end, line: `- ${flowScalar({ insert: list })}` }
+        return [{ op: 'replace', start: target.start, end: target.end, line: `- ${flowScalar({ insert: list })}` }]
       }
       const line = renderEntryItem({ id: entryId, config, disabled }, target.style)
-      return {
-        op: 'replace',
-        start: target.start,
-        end: target.end,
-        line: target.indent > 0 ? `${' '.repeat(target.indent)}${line}` : line,
-      }
+      return [
+        {
+          op: 'replace',
+          start: target.start,
+          end: target.end,
+          line: target.indent > 0 ? `${' '.repeat(target.indent)}${line}` : line,
+        },
+      ]
     }
 
     /** 删除 entryId 在本文件里的全部声明；嵌套条目删空父分节时连父分节一起删。 */
@@ -448,7 +492,7 @@ export function apply(ctx: HostContext): void {
       const row = normalizeRow({ ...asRecord(server), entryId }, rawConfigOf(entry, layers))
       const config = asRecord(row.config)
       assertNameFree(asText(config.serverName), entryId)
-      await applyEdits([entryWriteEdit(scan, entryId, config, row.disabled === true)])
+      await applyEdits(entryWriteEdit(scan, entryId, config, row.disabled === true))
       await waitFor(() => topLevelEntries().some((item) => item.options.id === entryId))
       return snapshot()
     }
@@ -460,7 +504,7 @@ export function apply(ctx: HostContext): void {
       const entry = entries.find((item) => item.options.id === entryId)
       if (entry === undefined) throw new Error(`找不到条目 "${entryId}"`)
       const config = rawConfigOf(entry, layers)
-      await applyEdits([entryWriteEdit(scan, entryId, config, !enabled)])
+      await applyEdits(entryWriteEdit(scan, entryId, config, !enabled))
       await waitFor(() => topLevelEntries().some((item) => item.options.id === entryId))
       return snapshot()
     }

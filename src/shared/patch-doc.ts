@@ -9,10 +9,13 @@
  *     并去掉尾部的空行 / 第 0 列注释（它们属于"条目之间"，不跟着条目走）；
  *   · 块式条目：首行是 `键:` —— `- id: x` 裸行是**覆写语义**（override），
  *     `- insert:` 分节里的**内嵌条目**（缩进的 `- ` 行）各自独立寻址、是**创建语义**；
- *   · flow 单行条目：首行以 `{` / `[` 开头，按 JSON 解析（`!!js "…"` 先预处理成
- *     `{__jsExpr}` 标记对象——与 include 方言的内存表示一致，往返无损）。
+ *   · flow 条目：首行以 `{` / `[` 开头，按 JSON 解析（`!!js "…"` 先预处理成
+ *     `{__jsExpr}` 标记对象——与 include 方言的内存表示一致，往返无损）；
+ *     **允许多行**——官方配置写入（configEditor 的整表重写）会把整份文件美化，
+ *     单行 flow 会被展开成多行，不认多行就会在这里失明（历史事故：启停走了
+ *     "追加覆写行"兜底，同 id 两份声明）。
  *
- * 解析不了的行（多行 flow、首行没有 id、JSON 语法错误）记入 `unaddressable`——
+ * 解析不了的行（括号配不平、首行没有 id、JSON 语法错误）记入 `unaddressable`——
  * 不阻塞其它条目；对它自己的写操作走「外部条目」路径（追加覆写行）或安全失败。
  *
  * 写入通过 `composeEdit` 表达为「替换 / 删除某个字节区间 + 末尾追加」，由
@@ -126,7 +129,7 @@ function scalarText(raw: string): string | undefined {
 
 /**
  * flow 行解析：`!!js "…"` 预处理成 `{"__jsExpr":"…"}` 后按 JSON 解析。
- * 只接受单行完整解析；语法错误 / 多行 flow 返回 undefined（不可寻址）。
+ * 单行与**多行**（被官方配置写入美化过的）都接受；语法错误返回 undefined（不可寻址）。
  */
 const JS_TAG_IN_FLOW = /(^|[{,[:]\s*)!!js\s*("(?:[^"\\]|\\.)*")/g
 
@@ -141,6 +144,56 @@ export function parseFlowLine(content: string): Record<string, unknown> | undefi
   } catch {
     return undefined
   }
+}
+
+/**
+ * 从 `startLine` 起收集一个 flow 值的**闭合行**下标：括号深度归零的那一行。
+ * 字符串字面量里的括号不计数（转义按 JSON 规则）；flow 内 `#` 前有空白时视为注释、
+ * 本行余下不参与配平。配不平（结构异常 / 截断）退回 `lastLine`——解析交给
+ * parseFlowLine 报 undefined，扫描退回"不可寻址"的安全路径。
+ */
+function flowCloseLineOf(lines: Line[], startLine: number, lastLine: number): number {
+  let depth = 0
+  let quote: string | undefined
+  for (let index = startLine; index <= lastLine; index += 1) {
+    const line = lines[index]
+    if (line === undefined) break
+    const text = line.body
+    for (let cursor = 0; cursor < text.length; cursor += 1) {
+      const char = text[cursor]
+      if (quote !== undefined) {
+        if (char === '\\' && quote === '"') {
+          cursor += 1
+          continue
+        }
+        if (char === quote) quote = undefined
+        continue
+      }
+      if (char === '"' || char === "'") {
+        quote = char
+        continue
+      }
+      if (char === '{' || char === '[') depth += 1
+      else if (char === '}' || char === ']') {
+        depth -= 1
+        if (depth === 0) return index
+      } else if (char === '#' && (cursor === 0 || text[cursor - 1] === ' ' || text[cursor - 1] === '\t')) {
+        break
+      }
+    }
+  }
+  return lastLine
+}
+
+/** 把 flow 值的若干行拼回单行文本：首行去掉条目前缀（`- `），其余行收紧空白。 */
+function joinFlowLines(lines: Line[], startLine: number, closeLine: number, stripPrefix: string): string {
+  const parts: string[] = []
+  for (let index = startLine; index <= closeLine; index += 1) {
+    const line = lines[index]
+    if (line === undefined) continue
+    parts.push(index === startLine ? line.body.trimStart().slice(stripPrefix.length).trim() : line.body.trim())
+  }
+  return parts.join(' ')
 }
 
 /**
@@ -178,8 +231,11 @@ export function scanPatchDoc(text: string): ScanResult {
     const content = first.body.slice(1).trim()
 
     if (content.startsWith('{') || content.startsWith('[')) {
-      // flow 单行条目。
-      const parsed = parseFlowLine(content)
+      // flow 条目：可能是单行，也可能是被官方配置写入美化成的**多行** flow——
+      // 按括号配平收集到闭合行，拼回单行再解析（不认多行 flow 的年代，这里一律
+      // 不可寻址，启停走了"追加覆写行"的兜底，同 id 出现两份声明）。
+      const closeLine = flowCloseLineOf(lines, i, extent - 1)
+      const parsed = parseFlowLine(joinFlowLines(lines, i, closeLine, '-'))
       if (parsed === undefined) {
         unaddressable += 1
       } else if (Array.isArray(parsed.insert)) {
@@ -266,10 +322,12 @@ export function scanPatchDoc(text: string): ScanResult {
         }
         const lastKept = lines[endLine - 1]
         const itemEnd = lastKept === undefined ? startLine.end : lastKept.end
-        // 内嵌条目也有两种形状：块式（- id: x）与 flow 单行（- {"id":"x",…}，本插件重写后的产物）。
+        // 内嵌条目也有两种形状：块式（- id: x）与 flow（- {"id":"x",…}，本插件重写后的产物；
+        // 官方美化后可能占多行——按括号配平收齐再解析）。
         const nestedContent = startLine.body.trimStart().slice(1).trim()
-        if (nestedContent.startsWith('{')) {
-          const parsed = parseFlowLine(nestedContent)
+        if (nestedContent.startsWith('{') || nestedContent.startsWith('[')) {
+          const closeLine = flowCloseLineOf(lines, startIndex, endLine - 1)
+          const parsed = parseFlowLine(joinFlowLines(lines, startIndex, closeLine, '-'))
           const id = parsed !== undefined && typeof parsed.id === 'string' ? parsed.id : undefined
           if (id === undefined || id === '' || parsed === undefined) unaddressable += 1
           else {

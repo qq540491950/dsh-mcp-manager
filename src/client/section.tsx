@@ -20,8 +20,8 @@ import {
   getSnapshot,
   INTENT_ATTEMPTS,
   postOp,
-  SETTLE_ATTEMPTS,
   SETTLE_INTERVAL_MS,
+  SETTLE_SCHEDULE_MS,
   sleep,
 } from './core/api.ts'
 import { draftOf, serverOf, supports, suggestName } from './core/draft.ts'
@@ -125,13 +125,44 @@ export function McpSection(): ReactElement {
       }
       if (!supports(current, 'probe')) return
       let probed = await call({ op: 'probe' }, undefined, setActionError, { silent: true })
-      for (let attempt = 0; attempt < SETTLE_ATTEMPTS && settling(probed); attempt += 1) {
-        await sleep(SETTLE_INTERVAL_MS)
+      for (const delay of SETTLE_SCHEDULE_MS) {
+        if (!settling(probed)) break
+        await sleep(delay)
         probed = await refresh()
       }
     },
     [call, refresh],
   )
+
+  /**
+   * 窗口切回可见时补一次读：衰减长尾（共 ≈30s）仍可能短于 `mcp-client` 首连退避的
+   * 总时长（500ms 起步翻倍 × 10 次，可达几分钟）——长尾耗尽后行会停在「启动中」，
+   * 用户切走再切回来，这一拍就把已经激活的状态接住。仍是事件驱动的有界补读。
+   */
+  useEffect(() => {
+    const api = globalThis as {
+      document?: {
+        visibilityState?: string | undefined
+        addEventListener?: ((type: string, listener: () => void) => void) | undefined
+        removeEventListener?: ((type: string, listener: () => void) => void) | undefined
+      } | undefined
+    }
+    const doc = api.document
+    if (doc === undefined) return
+    const { addEventListener, removeEventListener } = doc
+    if (addEventListener === undefined || removeEventListener === undefined) return
+    const onVisible = (): void => {
+      if (doc.visibilityState !== 'visible') return
+      void refresh().then((data) => {
+        if (!settling(data)) return
+        return recheck(data)
+      })
+    }
+    addEventListener('visibilitychange', onVisible)
+    return (): void => {
+      removeEventListener('visibilitychange', onVisible)
+    }
+  }, [refresh, recheck])
 
   const recheckAfter = useCallback(
     (data: Snapshot, intent?: { entryId: string; disabled: boolean }): void => {

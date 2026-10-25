@@ -22,10 +22,23 @@ export const REQUEST_TIMEOUT_MS = 20000
 /**
  * 写入之后等"条目重新挂上"的节奏：Loader 重建子条目是异步的（相位会走
  * pending → loading → active），而绿灯要求"探测通过 **且** 条目 active"。
- * 所以探通之后还要重读快照，直到相位稳定 —— 有界（约 2s），不是轮询。
+ * 所以探通之后还要重读快照，直到相位稳定 —— 有界，不是轮询。
+ *
+ * 节奏是**衰减**的：起步 200ms×10（≈2s，覆盖补丁热重放），随后 2s×4、10s×2 的长尾。
+ * 长尾的存在是因为 `mcp-client` 的 apply 会**等首连 + 工具发现完成**才激活
+ * （官方 README："apply … awaits the initial connection plus discovery"）——
+ * stdio 的 `npx` 冷启动、以及首连失败后 500ms 起步翻倍的退避，都能把 loading
+ * 拖到几十秒；只有 2s 窗口的旧判据在这里放弃后，页面就永远停在「启动中」，
+ * 哪怕条目随后早已激活（用户实测：先停用再启用，黄色状态一直不消失）。
  */
+export const SETTLE_SCHEDULE_MS: readonly number[] = [
+  ...Array.from({ length: 10 }, () => 200),
+  ...Array.from({ length: 4 }, () => 2000),
+  ...Array.from({ length: 2 }, () => 10000),
+]
+
+/** 意图重读与起步节奏共用的 200ms 一拍。 */
 export const SETTLE_INTERVAL_MS = 200
-export const SETTLE_ATTEMPTS = 10
 
 /**
  * 启停**意图**的等待窗口（≈ 4s）：写入后 `dsh-hmr` 重放补丁是异步的，宿主返回的
