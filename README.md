@@ -253,7 +253,7 @@ plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manag
 
 ```text
 # 主渠道：git + tag（用户机器上要有 git；GitHub 会先跑一次 5s 的 git ls-remote 预检）
-plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manager#v0.2.0')
+plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manager#v0.4.1')
 
 # 备选：Release 资产里的 .tgz（纯 HTTPS，不需要 git，也没有那个预检）
 plugin_manager(action:'install_bundle', target:'https://github.com/qq540491950/dsh-mcp-manager/releases/download/v0.2.0/qq540491950-dsh-mcp-manager-0.2.0.tgz')
@@ -263,8 +263,8 @@ plugin_manager(action:'install_bundle', target:'D:\project\dsh-plugins\dsh-mcp-m
 
 # 升级：**就地装新版，不要先卸**（换 tag 就是换 spec：`dsh-plugin-manager` 用
 # "依赖串变了"判定装上了哪个包；返回 restart-required 是正常的 —— 宿主半边变了，
-# 装完重启一次 DSH）。
-plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manager#v0.2.0')
+# 装完重启一次 DSH）。2026-10-25 实测：`file:` 依赖 → `github:…#v0.4.1` 就地替换成功。
+plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manager#v0.4.2')
 
 # ⚠️ 从 v0.1.x 升上来时：**就地装**，然后删掉 profile 里那行手写的容器
 #    （`- insert: [{id: mcp-manager, …}]`）并重启 DSH。不删的话容器会被声明两次：
@@ -293,9 +293,9 @@ plugin_manager(action:'remove_bundle', target:'@qq540491950/dsh-mcp-manager')
 | `v0.1.1`（tag `v0.1.1`，commit `dc1e253`） | `github:qq540491950/dsh-mcp-manager#v0.1.1`（GUI「设置 → 插件 → 添加插件 → 包名或地址」） | 0.2.0-rc.2（desktop profile） | ✅ **装上即生效（未重启）**，2026-10-14 真机全新安装：`include:dsh-mcp-manager` 1 条（name = 包名）、座位 `{id:'mcp',order:900,active:true}` 只一格、3 台 `dsh-mcp-client` 仍在挂、合成结果 = **1 行容器 + 3 台**（写盘前断言 3/3 → 保存/启停/删除均可写）。本版改动：patch 不再声明容器行、缺容器时提示给出可照抄的整行。⚠️ 该版 `engines.dsh` 是**精确 pin** `0.2.0-rc.2`，在 0.2.1-rc.2 上会被判 `incompatible-version` |
 | `v0.1.2`（tag `v0.1.2`） | `github:qq540491950/dsh-mcp-manager#v0.1.2` | 0.2.1-rc.2（desktop profile） | ⚠️ **只放宽了 `engines.dsh`：`0.2.0-rc.2` → `^0.2.0-rc.2`**（其余文件与 v0.1.1 逐字节相同）。**未实测安装** |
 | `v0.2.0`（tag `v0.2.0`） | `github:qq540491950/dsh-mcp-manager#v0.2.0` | 0.2.1-rc.2（desktop profile） | **未实测安装**。改动：①容器行移回 bundle（装上即用，profile 不再需要任何东西）；②容器三态（缺失/重复/正常）+ 页面在"声明两次"时点名要删的那一行；③快照新增 `outside[]`，页面单列「页面外还有 N 台」并给出工具数（解决 `magpie-mcp-context7` 那种"在跑却看不见"）。本轮只跑了 `node tools/verify.ts`（PASS）与新增断言的反向验证；**真机安装 + 迁移验收待执行** |
-| `v0.4.1`（tag `v0.4.1`） | `github:qq540491950/dsh-mcp-manager#v0.4.1` | 0.2.1-rc.3（desktop profile） | **未实测安装**（本机 desktop profile 以 file: 依赖就地运行同版产物）。改动：①启停后的状态跟进——稳定节奏改衰减长尾（200ms×10 + 2s×4 + 10s×2 ≈ 30s）+ 切回窗口补读，修「先停用再启用后一直黄色」（mcp-client 的 apply 等首连+发现，stdio 冷启动/退避可达几十秒）；②扫描器支持官方美化产生的多行 flow 条目；③启停遇「创建行 + 同内容覆写行」就地收拢为一份声明（内容不同仍拒绝）。启停意图落地前行内按钮保持禁用。仅离线自检（`PASS 320/320`）与等价反馈回路证据，**真机安装/升级待执行** |
+| `v0.4.1`（tag `v0.4.1`） | `github:qq540491950/dsh-mcp-manager#v0.4.1` | 0.2.1-rc.3（desktop profile） | ✅ **已实测安装**（2026-10-25 19:36 真机）：依赖由开发用 `file:` 路径**就地替换**为 `github:…#v0.4.1`——spec 变更升级成立，未触发 `ambiguous-install`、无需先 `remove_bundle`；装后产物四份 sha256 与发布构建一致，`mcp__context7__*` 真机调用正常。同逻辑副本（装前手动同步，仅版本号字符串不同）上：重启 DSH 后首次启停把「创建行 + 遗留覆写行」**收拢为单份**（单行、注释保留），官方插件页的行级启停写入与我们的写入器共存。装后补丁文件被整体改写为块式 YAML 并新增 3 台 stdio 服务器——块式条目原生可寻址。改动（对 v0.4.0）：启停状态跟进改衰减长尾 + 可见性补读（修「停用→启用后一直黄色」）、扫描器支持官方美化产生的多行 flow、同内容覆写行就地收拢 |
 
-上面几行里前两行是"它到底能不能用"的实测；v0.1.2 与 v0.2.0 目前只有自检结论、**没有真机安装证据**。未跑的部分（npm 渠道 / `.tgz` URL / 卸载回归）见 §7.2。
+上面几行里 v0.1.0 / v0.1.1 / v0.4.1 是"它到底能不能用"的真机安装实测；v0.1.2 与 v0.2.0 只有自检结论、**没有真机安装证据**。未跑的部分（npm 渠道 / `.tgz` URL / 卸载回归 / 同包换 `#ref` 的常规升级）见 §7.2 与 [docs/publish-plan.md](docs/publish-plan.md) §9。
 
 ### 5.6 容器的兴衰（v0.4.0 起**已退役**；v0.2/v0.3 曾归 bundle，v0.1.x 曾是 profile）
 
@@ -394,7 +394,7 @@ pnpm verify                 # = node tools/verify.ts
 2. **`configEditor.edit()` 对 insert 条目的 `document.add` 分支**尚未产生过一次真实写入（首次在 UI 点「保存」时才走）；失败是安全的（写入前断言、不落盘）。
 3. **group 子条目当前没有显式 `id`**（Loader 自动生成 `ef60a0d1` 这类十六进制 id）；`serverName` 重命名按数组下标定位，会保留原 `rowId`，改的是 `insert:` 声明而非覆写行时可能新建条目。
 4. **导航那一格的 MCP 标记没在真实界面里点过**：离线侧已证明几何（A32–A38）与假 DOM 三条路径（C12–C17），缺"真机打开设置面板，齿轮确实变成 MCP 标记"这一环。
-5. **「停用 → 再启用之后自动复查」没在真机浏览器里点过**：离线 D38–D41 已断言请求序列与两条边界；2026-10-14 已重启 DSH（宿主半边随 bundle 重新加载，`probe` 能力应当就位），但"点完「启用」后约 1s 内那一行变色"仍未逐一点过。
+5. **「停用 → 再启用之后自动复查」——2026-10-25 真机已点过**：v0.4.1 之前的代码复现了「再启用后一直黄色」（本轮修复的触发现场），v0.4.1 同逻辑代码在真机触发了收拢（文件级证据见 §5.5 v0.4.1 行）；离线 D38–D41/D49–D54 断言请求序列与边界。仍缺的目视确认：点完「启用」后那一行**自己变绿**——期望也不是 1s：慢启动走 ≈30s 衰减长尾，更久的退避靠切回窗口的补读。
 6. **卸载回归（`remove_bundle`）没跑**：装是实测过的（§5.5），卸没有。**v0.2.0 的形态下卸载会把容器一起带走**：容器行在 bundle 补丁层里，卸载 = 那一层消失 = 承载列表的 `- id: mcp-manager` 覆写行被判 `not found` 整条丢弃 → 服务器停止加载（**配置原文仍在 profile 文件里，装回即恢复**）。这是 v0.2.0 明确接受的取舍（§5.6）：换来的是"装完即用、用户不用手写 YAML"。目前是离线证据，没实跑过 `remove_bundle`。
    已知的**卸载被拒**情形（离线复现，逐字抄 `removeBundle` 的判定式）：**v0.1.0 + profile 已有容器行 → `bundle-in-use`**（该 bundle 声明过容器行，而那个容器当时由 profile 提供、永远活着）；v0.1.0 + profile 无容器行 → 允许；**v0.1.1/v0.1.2 + profile 有容器行 → 允许**。
    **v0.2.0 的现场**：容器由 bundle 声明，卸载照常允许（那份声明就在被卸的 bundle 里），代价是 MCP 随之中止加载、装回即恢复。
@@ -403,6 +403,7 @@ pnpm verify                 # = node tools/verify.ts
 8. **Release 资产 `.tgz` 的 URL 安装没跑**：`github:` spec 已实测；纯 HTTPS 的 `.tgz` 路线只做了 `npm pack` 内容审查与本地 git 依赖的对照。
 9. **逐按钮的点击回归没做**：页面渲染与数据读取已确认正常（重启前后各一次），但启停 / 删除 / 检测 / 刷新这几个按钮本轮没有逐个点过。
 10. ~~**v0.1.1 的真机重装 + 重启后四查没做**~~ —— **2026-10-14 已做**：GUI「添加插件」填 `github:qq540491950/dsh-mcp-manager#v0.1.1` 装成功（`dependencies` 落成 `…#v0.1.1`、`dsh.profile.bundles` 选上），**未重启即生效**；核查结果见 §5.5 那一行。唯一仍只有离线覆盖的是**缺容器时那段提示文案**（本机容器在位，走不到那个分支）。
+11. **同包换 `#ref` 的常规升级没单独走过**（v0.4.1 → 下一版）：spec 变更升级已实测（2026-10-25，`file:` → `github:…#v0.4.1` 就地替换，见 §5.5），换 `#ref` 的依赖串变化机理相同，但没有单独验证过；同 spec 重复安装会报 `ambiguous-install`（源码判读，未复现）。详见 [docs/publish-plan.md](docs/publish-plan.md) §9。
 
 ### 7.3 行内操作曾经静默丢字段（已修）
 

@@ -409,7 +409,7 @@ plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manag
 
 1. `package.json` 声明 `dsh.bundle.patch`，且 **patch 文件与 `lib/**` 都提交进仓库** —— pnpm 拉的是仓库内容，**不会替你跑 `pnpm build`**。本仓库"`lib/` 入库"的决策（§2）正好为此服务，`.gitignore` 也没有忽略 `lib/`。
 2. P6 加的 `files` 白名单决定 git 依赖实际拿到哪些文件 —— `cordis.patch.yml`、`locale/*.json`、图标都必须在里面。
-3. **同一个 spec 重复安装会报 `ambiguous-install`**（`:1779-1782`：依赖没变化 → 找不到"新装的那一个"）。升级请先 `remove_bundle` 再装，或换一个 `#ref`。
+3. **同一个 spec 重复安装会报 `ambiguous-install`**（`:1779-1782`：依赖没变化 → 找不到"新装的那一个"）。升级就**换 spec 就地装**（换 `#ref`，或从 `file:` 换成 `github:`）——只有重复同一个 spec 才需要先 `remove_bundle` 再装（与 README §5.4 的升级口径一致）。
 4. 私有仓库需要 pnpm 自己能用的凭据：预检**特意禁用了凭据助手与交互提示**，认证失败留给 pnpm 处理（含 HTTPS→SSH 回退）。
 
 **已实测（2026-10-14，desktop profile）**：`github:` 路线走通了 ——
@@ -417,6 +417,12 @@ plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manag
 落成 `github:…#v0.1.0` 且列入 `dsh.profile.bundles`；**不需要重启即生效**；git 依赖实际拿到的
 30 个文件与自检通过的那份**逐字节一致**（`files` 白名单被严格遵守），`dsh.bundle.patch` /
 `icon` / `exports["./locale/*.json"]` 都活着。包装完 `remove_bundle` 那条路还没走过。
+
+**已实测（2026-10-25，desktop profile，v0.4.1）**：spec 变更升级 —— 开发用 `file:D:/…` 依赖
+**就地换装** `github:qq540491950/dsh-mcp-manager#v0.4.1` 成功：依赖原地替换、
+`dsh.profile.bundles` 不变、装到的产物与发布构建四份 sha256 一致，装后 MCP 照常
+（`mcp__context7__*` 真机调用通过），未触发 `ambiguous-install`。**仍留待下次发版验证**：
+同包换 `#ref` 的常规升级（v0.4.1 → v0.4.2）——机理与本次相同（依赖串变化），但没单独走过。
 
 **仍未实测**：npm 路线（`npm publish` 与按 registry 名再装一次）、Release 资产的 `.tgz` URL 安装、
 `remove_bundle` 卸载回归、私有仓库。
