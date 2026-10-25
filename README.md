@@ -293,6 +293,7 @@ plugin_manager(action:'remove_bundle', target:'@qq540491950/dsh-mcp-manager')
 | `v0.1.1`（tag `v0.1.1`，commit `dc1e253`） | `github:qq540491950/dsh-mcp-manager#v0.1.1`（GUI「设置 → 插件 → 添加插件 → 包名或地址」） | 0.2.0-rc.2（desktop profile） | ✅ **装上即生效（未重启）**，2026-10-14 真机全新安装：`include:dsh-mcp-manager` 1 条（name = 包名）、座位 `{id:'mcp',order:900,active:true}` 只一格、3 台 `dsh-mcp-client` 仍在挂、合成结果 = **1 行容器 + 3 台**（写盘前断言 3/3 → 保存/启停/删除均可写）。本版改动：patch 不再声明容器行、缺容器时提示给出可照抄的整行。⚠️ 该版 `engines.dsh` 是**精确 pin** `0.2.0-rc.2`，在 0.2.1-rc.2 上会被判 `incompatible-version` |
 | `v0.1.2`（tag `v0.1.2`） | `github:qq540491950/dsh-mcp-manager#v0.1.2` | 0.2.1-rc.2（desktop profile） | ⚠️ **只放宽了 `engines.dsh`：`0.2.0-rc.2` → `^0.2.0-rc.2`**（其余文件与 v0.1.1 逐字节相同）。**未实测安装** |
 | `v0.2.0`（tag `v0.2.0`） | `github:qq540491950/dsh-mcp-manager#v0.2.0` | 0.2.1-rc.2（desktop profile） | **未实测安装**。改动：①容器行移回 bundle（装上即用，profile 不再需要任何东西）；②容器三态（缺失/重复/正常）+ 页面在"声明两次"时点名要删的那一行；③快照新增 `outside[]`，页面单列「页面外还有 N 台」并给出工具数（解决 `magpie-mcp-context7` 那种"在跑却看不见"）。本轮只跑了 `node tools/verify.ts`（PASS）与新增断言的反向验证；**真机安装 + 迁移验收待执行** |
+| `v0.4.1`（tag `v0.4.1`） | `github:qq540491950/dsh-mcp-manager#v0.4.1` | 0.2.1-rc.3（desktop profile） | **未实测安装**（本机 desktop profile 以 file: 依赖就地运行同版产物）。改动：①启停后的状态跟进——稳定节奏改衰减长尾（200ms×10 + 2s×4 + 10s×2 ≈ 30s）+ 切回窗口补读，修「先停用再启用后一直黄色」（mcp-client 的 apply 等首连+发现，stdio 冷启动/退避可达几十秒）；②扫描器支持官方美化产生的多行 flow 条目；③启停遇「创建行 + 同内容覆写行」就地收拢为一份声明（内容不同仍拒绝）。启停意图落地前行内按钮保持禁用。仅离线自检（`PASS 320/320`）与等价反馈回路证据，**真机安装/升级待执行** |
 
 上面几行里前两行是"它到底能不能用"的实测；v0.1.2 与 v0.2.0 目前只有自检结论、**没有真机安装证据**。未跑的部分（npm 渠道 / `.tgz` URL / 卸载回归）见 §7.2。
 

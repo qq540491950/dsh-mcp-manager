@@ -651,7 +651,7 @@ export function apply(ctx: HostContext): void {
             params: {
               protocolVersion: PROBE_PROTOCOL_VERSION,
               capabilities: {},
-              clientInfo: { name: 'dsh-mcp-manager', version: '0.4.0' },
+              clientInfo: { name: 'dsh-mcp-manager', version: '0.4.1' },
             },
           }),
           signal: controller.signal,

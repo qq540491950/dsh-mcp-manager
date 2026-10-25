@@ -3,9 +3,9 @@
   "targets": [
     {
       "output": "lib/index.js",
-      "outputSha256": "ac7cedf195f2f4530124b20328a7d97c8a9949d44b4f31ccb355a4edd0461dfc",
+      "outputSha256": "83de0cf7f82c0dbf008071d6af45915a49a181172f07c1ca1df7aba2935ad6bf",
       "inputs": {
-        "src/host/index.ts": "ba4288e5ba648946d0e2042179a185ddabf4c03e65e4c78b9640932bbc6dffd4",
+        "src/host/index.ts": "9273cc9586ec895b0386c2751bf3c65a489211afb727e349a8b5fa688de4c9b4",
         "src/host/patch-writer.ts": "09cce5a13a401a2f1be6abb74d5f09283ad7ff48288557d2f64d5de5438615e3",
         "src/host/rows.ts": "68c90f39ca5ee5270ae32baaee9e487682fae045de7afee6d08ad36330c7b717",
         "src/host/service-types.ts": "5a036f0a8f879f897c34eb89ba609113f1d6de9bdb6f1ff2c2a43fdbf27ac525",

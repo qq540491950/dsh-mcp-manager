@@ -1,6 +1,6 @@
 {
   "name": "@qq540491950/dsh-mcp-manager",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "在 DSH 设置页可视化管理 profile 里的 MCP 顶层条目：增删改、启停、连通探测与工具名单。",
   "keywords": [
     "dsh",
