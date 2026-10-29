@@ -1,0 +1,49 @@
+name: Release
+
+# tag 推上去就自动建 Release，并把 `npm pack` 产物挂成资产。
+# 为什么要有这一步：`github:` spec 是主渠道，Release 里的 `.tgz` 是给"机器上没有 git"的用户的备选；
+# 手工 `gh release create` 会漏（v0.2.0 / v0.3.0 / v0.4.1 就这么漏过，2026-10-29 已补建）。
+# 历史版本的补建命令见 docs/github-release-plan.md §4。
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # 零依赖自检（与 ci.yml 同一顺序：install 之前，守住"克隆下来就能自检"）
+      - name: 自检（零依赖）
+        run: node tools/verify.ts
+
+      # tag 与包内版本必须一致，否则"装的哪个版本"说不清
+      - name: 校验 tag 与 package.json.version
+        run: |
+          node -e "const v=require('./package.json').version; if (process.env.GITHUB_REF_NAME !== 'v'+v) { console.error('tag ' + process.env.GITHUB_REF_NAME + ' != v' + v); process.exit(1) }"
+
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+
+      - name: 类型 + 风格 + 产物契约
+        run: pnpm check
+
+      # 产物必须与 src 同步：lib/** 入库（git 路线靠它出货），指纹在 lib/.build-manifest.json
+      - name: 产物与 src 同步
+        run: git diff --exit-code lib/
+
+      - name: 打包（npm 格式 .tgz）
+        run: npm pack
+
+      - name: 发布到 GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" *.tgz --verify-tag --title "${GITHUB_REF_NAME}" --generate-notes

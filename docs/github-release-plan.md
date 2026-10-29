@@ -124,7 +124,7 @@ npm pack
 gh release create v0.1.0 qq540491950-dsh-mcp-manager-0.1.0.tgz --title "v0.1.0" --notes-file .git/RELEASE_NOTES.md
 ```
 
-**建议同时加 `.github/workflows/release.yml`**，让资产永远与 tag 同源（下面的 YAML **没有在本仓库跑过**，首次要盯 CI 输出）：
+**`.github/workflows/release.yml` 已入库（2026-10-29）**：tag `v*` 推上去就自动跑自检 → `pnpm check` → `npm pack` → `gh release create`。下面的 YAML 是入库时的版本，留作对照（**首次被 tag 触发时要盯 CI 输出**——历史 tag 都在它入库之前推的，所以一次都没跑过）：
 
 ```yaml
 name: Release
@@ -182,7 +182,8 @@ jobs:
 plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manager#v0.1.0')
 
 # B. 备选：Release 资产的 .tgz（纯 HTTPS，不需要 git；也没有 git ls-remote 预检）
-plugin_manager(action:'install_bundle', target:'https://github.com/qq540491950/dsh-mcp-manager/releases/download/v0.1.0/qq540491950-dsh-mcp-manager-0.1.0.tgz')
+#    v0.1.0 没有 Release 资产（那一版发布时没建），v0.1.1 起每个 tag 都有
+plugin_manager(action:'install_bundle', target:'https://github.com/qq540491950/dsh-mcp-manager/releases/download/v0.4.1/qq540491950-dsh-mcp-manager-0.4.1.tgz')
 
 # C. 只有你自己机器才有的路径形式（开发循环用）
 plugin_manager(action:'install_bundle', target:'D:\project\dsh-plugins\dsh-mcp-manager')
@@ -283,7 +284,7 @@ profile 被改坏时用 G2 第 1 步的 `.bak` 还原（`package.json` + `cordis
 - [x] G0 基线 `PASS n/n`，`git check-ignore lib/client.js` 无输出
 - [x] G1 `pnpm check` 全绿；`npm pack` 内容审查（有产物/patch/locale/图标，无 src/tools/docs/AGENTS，无密钥）；新断言反向验证过（244 → 254 条）
 - [x] G2 装 → 四查（**没走"卸"**）；`node_modules/` 里确实有 `lib/`、`cordis.patch.yml`、`locale/`（30 个文件与自检通过的那份逐字节一致）
-- [x] G3 tag `v0.1.0` 与 `package.json.version` 一致且已推送到 GitHub；**Release 资产没建**（没跑 `release.yml` / `gh release create`）
+- [x] G3 tag `v0.1.0` 与 `package.json.version` 一致且已推送到 GitHub；v0.1.0 的 **Release 资产当时没建**。后续：v0.1.1 / v0.1.2 手工建过（带 `.tgz`）；v0.2.0 / v0.3.0 / v0.4.1 于 **2026-10-29 补建**（资产由各自 tag 的仓库快照 `npm pack` 生成，v0.4.1 已标 Latest）；`.github/workflows/release.yml` 同日入库，之后推 tag 自动建
 - [x] G4 用 `github:` spec 装成功并四查（2026-10-14）：profile 落成 `github:…#v0.1.0` + `dsh.profile.bundles`；①`include:dsh-mcp-manager` 的 name = 包名 ②座位 `{id:'mcp',order:900,active:true}` ③`mcp__context7__*` 在活动工具注册表 ④页面渲染与数据读取正常，重启后仍然正常
 - [ ] G5 卸载（`remove_bundle`）与升级（先卸再装）各走一遍 —— **没跑**
 - [x] G6（v0.1.1）容器归属改造：`cordis.patch.yml` 只留插件行（P2/P3 反过来守"不许出现容器 id"）、缺容器时两半边给出同一行可照抄的 YAML（P11）、`pnpm check` 全绿（**255 条**）+ 新断言注入式反向验证（3 处注入 → 精确报错 → 还原）；profile 侧容器行已加（备份 + 两个真实解析器校验 + 四种状态的离线合成复现）
@@ -300,7 +301,7 @@ profile 被改坏时用 G2 第 1 步的 `.bak` 还原（`package.json` + `cordis
 1. ~~**G4 的 `github:` 路线没有实跑**~~ —— **2026-10-14 实跑成功**（用户在 DSH 界面里安装，审批由 GUI 完成）：`install_bundle(target:'github:qq540491950/dsh-mcp-manager#v0.1.0')` → profile 的 `dependencies` 与 `dsh.profile.bundles` 都落位，**不需要重启即生效**，重启后仍然正常。
 2. ~~**pnpm 对 git 依赖的实际打包结果没有实测**~~ —— **已实测**：装到 `node_modules` 的 30 个文件与自检通过的那份**逐字节一致**（`cordis.patch.yml` / `lib/index.js` / `lib/client.js` / `locale/en.json` / `assets/icon.svg` 五处 sha256 相同），`files` 白名单被严格遵守。§3 第 6 步仍值得做 —— 它是**别人机器上**的第一手验收。
 3. **GitHub `archive/refs/tags/*.tar.gz` 源码包没有验证**：它以 `<repo>-<tag>/` 为根，不是 npm 包的 `package/` 前缀，别当发行物；用 `npm pack` 的 `.tgz`。
-4. **`release.yml` 没有在本仓库跑过**：写法按 `ci.yml` 推导，首次要盯 CI 输出；`gh` 已预装在 GitHub runner 上，但 `--verify-tag` 的重复运行行为要自己确认。
+4. **`release.yml` 已入库（2026-10-29），但还没被任何 tag 触发过**：历史 tag 都在它入库之前推送，v0.2.0 / v0.3.0 / v0.4.1 的 Release 是手工补建的。下一个 tag 首次触发时要盯 CI 输出；`gh` 已预装在 GitHub runner 上，但 `--verify-tag` 的重复运行行为仍要自己确认。
 5. **没有验证私有仓库**：预检特意禁用了凭据助手与交互提示（`:981-996`），把认证交给 pnpm；私有仓库建议直接用 `.tgz` 资产，绕开这层不确定。
 6. ~~**v0.1.1 的真机重装没跑**~~ —— **2026-10-14 已跑**（见 §8 的 G7）：GUI 安装、未重启即生效，四查 + 合成断言全过。
    仍只有离线覆盖的只剩**缺容器时那段提示文案**（本机容器在位，走不到那个分支）。

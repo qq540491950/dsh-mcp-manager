@@ -233,7 +233,7 @@ tools/build.ts           esbuild 打包两半边 + 客户端包装 + 写构建�
 
 **② 本地验证**：`pnpm check` 全绿（typecheck / typecheck:tools / lint / format:check / build / verify 255 条）+ `npm pack` 审内容（有产物 / patch / locale / 图标 / README / LICENSE，无 `src`+`tools`+`docs`，无密钥）。把包装进 profile、运行时四查、`remove_bundle` 回归见 [docs/github-release-plan.md](docs/github-release-plan.md) 的 G2/G4/G5。
 
-**③ 发布（GitHub 路线）**：`git push` → tag（与 `package.json.version` 逐字一致）→ GitHub Release（附 `npm pack` 产物给没有 git 的用户）。**本轮不发 npm**：两条渠道同时维护只会让版本口径分叉。
+**③ 发布（GitHub 路线）**：`git push` → tag（与 `package.json.version` 逐字一致）→ **`.github/workflows/release.yml` 自动**用 `npm pack` 产物建 Release（附 `.tgz` 给没有 git 的用户）。**不发 npm**：两条渠道同时维护只会让版本口径分叉。历史版本要补建 Release 时手工走 `gh release create <tag> <tgz> --notes-file …`（见 [docs/github-release-plan.md](docs/github-release-plan.md) §4）；v0.2.0 / v0.3.0 / v0.4.1 就是这样在 2026-10-29 补齐的。
 
 **④ 发布前必须停下让用户确认**：`npm publish` 与 `git push` 都不代跑。
 
@@ -256,7 +256,8 @@ plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manag
 plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manager#v0.4.1')
 
 # 备选：Release 资产里的 .tgz（纯 HTTPS，不需要 git，也没有那个预检）
-plugin_manager(action:'install_bundle', target:'https://github.com/qq540491950/dsh-mcp-manager/releases/download/v0.2.0/qq540491950-dsh-mcp-manager-0.2.0.tgz')
+# 每个 tag 都有对应资产（v0.1.0 除外：那一版发布时没建 Release）
+plugin_manager(action:'install_bundle', target:'https://github.com/qq540491950/dsh-mcp-manager/releases/download/v0.4.1/qq540491950-dsh-mcp-manager-0.4.1.tgz')
 
 # 只有开发机才有的本地目录形式（改完源码立刻试，不用先发布）
 plugin_manager(action:'install_bundle', target:'D:\project\dsh-plugins\dsh-mcp-manager')
@@ -264,6 +265,7 @@ plugin_manager(action:'install_bundle', target:'D:\project\dsh-plugins\dsh-mcp-m
 # 升级：**就地装新版，不要先卸**（换 tag 就是换 spec：`dsh-plugin-manager` 用
 # "依赖串变了"判定装上了哪个包；返回 restart-required 是正常的 —— 宿主半边变了，
 # 装完重启一次 DSH）。2026-10-25 实测：`file:` 依赖 → `github:…#v0.4.1` 就地替换成功。
+# 下面用 #v0.4.2 作占位（尚未发布）——升级时换成真实的新 tag。
 plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manager#v0.4.2')
 
 # ⚠️ 从 v0.1.x 升上来时：**就地装**，然后删掉 profile 里那行手写的容器
@@ -400,7 +402,7 @@ pnpm verify                 # = node tools/verify.ts
    **v0.2.0 的现场**：容器由 bundle 声明，卸载照常允许（那份声明就在被卸的 bundle 里），代价是 MCP 随之中止加载、装回即恢复。
    反例仍要记住（v0.1.1 当年就是为它改的归属）：容器若写在 bundle 里，卸载 = 容器消失 = 承载列表的覆写行被判 `not found` 整条丢弃 → 服务器停止加载（配置仍在文件里、装回即恢复）。v0.2.0 又把归属翻回 bundle，理由是"装上即用"更重要 —— **取舍写在 §5.6，别再无声来回翻**。
 7. **npm 渠道没跑**：`npm publish` 与"用 registry 包名再装一次"都没做；本轮只走 GitHub（见 [docs/github-release-plan.md](docs/github-release-plan.md) §0）。
-8. **Release 资产 `.tgz` 的 URL 安装没跑**：`github:` spec 已实测；纯 HTTPS 的 `.tgz` 路线只做了 `npm pack` 内容审查与本地 git 依赖的对照。
+8. **Release 资产 `.tgz` 的 URL 安装没跑**：`github:` spec 已实测；纯 HTTPS 的 `.tgz` 路线只做了 `npm pack` 内容审查与本地 git 依赖的对照（v0.1.1 / v0.1.2 / v0.2.0 / v0.3.0 / v0.4.1 的资产都已存在且 URL 可下载，但还没用 `install_bundle` 从 URL 装过）。
 9. **逐按钮的点击回归没做**：页面渲染与数据读取已确认正常（重启前后各一次），但启停 / 删除 / 检测 / 刷新这几个按钮本轮没有逐个点过。
 10. ~~**v0.1.1 的真机重装 + 重启后四查没做**~~ —— **2026-10-14 已做**：GUI「添加插件」填 `github:qq540491950/dsh-mcp-manager#v0.1.1` 装成功（`dependencies` 落成 `…#v0.1.1`、`dsh.profile.bundles` 选上），**未重启即生效**；核查结果见 §5.5 那一行。唯一仍只有离线覆盖的是**缺容器时那段提示文案**（本机容器在位，走不到那个分支）。
 11. **同包换 `#ref` 的常规升级没单独走过**（v0.4.1 → 下一版）：spec 变更升级已实测（2026-10-25，`file:` → `github:…#v0.4.1` 就地替换，见 §5.5），换 `#ref` 的依赖串变化机理相同，但没有单独验证过；同 spec 重复安装会报 `ambiguous-install`（源码判读，未复现）。详见 [docs/publish-plan.md](docs/publish-plan.md) §9。
