@@ -240,7 +240,7 @@ dsh-mcp-manager/
   lib/client.js     产物：浏览器半边 settings.section 页面 + 导航那一格的 MCP 标记（懒 CJS bundle）
   assets/mcp-mark.svg  设置导航那一格用的 MCP 标记（16x16，几何取自官方 favicon）
   assets/nav-preview.png  改后导航那一格的模拟对照图（自绘，非截图；§8.6 引用）
-  tools/verify.ts   自检：纯 Node 零依赖（.ts 入口直接跑，无需构建；条数看输出，别抄死）
+  tools/verify.ts   自检：纯 Node（需 js-yaml；.ts 入口直接跑，无需构建；条数看输出，别抄死）
   tools/build.ts    esbuild 打包两半边 + 客户端包装 + 写 lib/.build-manifest.json 构建指纹
   .gitattributes    统一 LF（本仓库全 LF，混入 CRLF 会产生整文件 diff）
   .gitignore        node_modules / 构建产物 / 日志 / 编辑器 / 系统文件

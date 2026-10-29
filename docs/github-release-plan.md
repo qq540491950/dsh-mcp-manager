@@ -145,8 +145,10 @@ jobs:
         with:
           node-version: 24
 
-      # 零依赖自检先跑（与 ci.yml 同一顺序：install 之前）
-      - name: 自检（零依赖）
+      # 自检先跑（与 ci.yml 同一顺序：install 之前）。
+      # 「零依赖」不成立：verify.ts 自 v0.3.0（8816281）起 import js-yaml，必须装 node_modules。
+      # 所以两个 workflow 的 install 都挪到它前面了（2026-10-29）。
+      - name: 自检
         run: node tools/verify.ts
 
       # tag 与包内版本必须一致，否则"装的哪个版本"就说不清
@@ -302,6 +304,7 @@ profile 被改坏时用 G2 第 1 步的 `.bak` 还原（`package.json` + `cordis
 2. ~~**pnpm 对 git 依赖的实际打包结果没有实测**~~ —— **已实测**：装到 `node_modules` 的 30 个文件与自检通过的那份**逐字节一致**（`cordis.patch.yml` / `lib/index.js` / `lib/client.js` / `locale/en.json` / `assets/icon.svg` 五处 sha256 相同），`files` 白名单被严格遵守。§3 第 6 步仍值得做 —— 它是**别人机器上**的第一手验收。
 3. **GitHub `archive/refs/tags/*.tar.gz` 源码包没有验证**：它以 `<repo>-<tag>/` 为根，不是 npm 包的 `package/` 前缀，别当发行物；用 `npm pack` 的 `.tgz`。
 4. **`release.yml` 已入库（2026-10-29），但还没被任何 tag 触发过**：历史 tag 都在它入库之前推送，v0.2.0 / v0.3.0 / v0.4.1 的 Release 是手工补建的。下一个 tag 首次触发时要盯 CI 输出；`gh` 已预装在 GitHub runner 上，但 `--verify-tag` 的重复运行行为仍要自己确认。
+   同日还查出一件事：**CI 从 v0.3.0（`8816281`）起就一直在红**（`ERR_MODULE_NOT_FOUND: js-yaml`）——`verify.ts` 已不再零依赖，而 `ci.yml` 把自检放在 `pnpm install` 之前。两个 workflow 的 install 已挪到自检之前；`pnpm check` 里那一遍自检此前也从未在 CI 上跑过，所以本仓库的 CI 绿与否不能当"断言全过"的依据，以本机 `node tools/verify.ts` 为准。
 5. **没有验证私有仓库**：预检特意禁用了凭据助手与交互提示（`:981-996`），把认证交给 pnpm；私有仓库建议直接用 `.tgz` 资产，绕开这层不确定。
 6. ~~**v0.1.1 的真机重装没跑**~~ —— **2026-10-14 已跑**（见 §8 的 G7）：GUI 安装、未重启即生效，四查 + 合成断言全过。
    仍只有离线覆盖的只剩**缺容器时那段提示文案**（本机容器在位，走不到那个分支）。

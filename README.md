@@ -179,7 +179,7 @@ src/shared/**            两半边共享的协议值（ROUTE / GROUP_ID / MCP_PA
 lib/**                   构建产物（带 lib/.build-manifest.json 指纹），不要手改
 assets/mcp-mark.svg      设置导航那一格用的 MCP 标记（16x16，几何取自官方 favicon）
 assets/nav-preview.png   改后导航那一格的模拟对照图（自绘，非截图；§8.6 引用）
-tools/verify.ts          自检：纯 Node 零依赖（.ts 入口直接跑，无需构建）
+tools/verify.ts          自检：纯 Node（需 js-yaml；.ts 入口直接跑，无需构建）
 tools/build.ts           esbuild 打包两半边 + 客户端包装 + 写构建指纹
 .github/workflows/ci.yml  CI：typecheck / lint / format / build / verify + lib 漂移检查
 ```
@@ -339,7 +339,7 @@ pnpm verify                 # = node tools/verify.ts
 # → PASS n/n（条数以实际输出为准；本文不写死条数）
 ```
 
-零依赖：不需要 `node_modules`，也不需要先 build（`.ts` 由 Node ≥22.18 的类型擦除直接执行）。覆盖范围就是 [tools/verify.ts](tools/verify.ts) 里的 `//#region`：A 包清单/主题/尺寸/自适应/表单结构与导航标记几何、B 宿主行为 + 行内操作回归 + 失败原因采集 + 相位映射 + 主动探测 + 配置分层 + 工具名单 + **页面外条目 + 容器三态**、C 产物协议与座位契约 + 导航标记 DOM（假 DOM 真跑）、D 真实渲染逐状态（含**页面外那一块**与"声明两次"的提示）、D2 挂载行为（真跑 `useEffect` 的沙箱 + fetch 桩）、E 共享常量 ↔ 出厂产物（含构建指纹 E9/E10 与文档引用一致性 E11/E12）、P 发布形态（`dsh.bundle.patch` / patch 内容 —— **P2/P3 守的是"本文件必须自带容器行、且写在 insert 里排在插件行之前"** / `files` 白名单 / locale / 图标 / `private` / peer / **P11 缺容器时两半边给出同一行可照抄的 YAML**）、F 纯函数直接单测。**断言台账只有这一处**（AGENTS 4.2）；每修一个 bug 同时加断言，新断言必须反向验证。
+**不需要构建**（`.ts` 由 Node ≥22.18 的类型擦除直接执行），但**需要先 `pnpm install`**：`tools/verify.ts` 依赖 `js-yaml` 按真实 YAML 解析 profile 补丁（2026-10-29 起口径修正；此前文档写的"零依赖"自 v0.3.0 起就不成立，CI 从 v0.3.0 起连续 4 次 push 全红）。覆盖范围就是 [tools/verify.ts](tools/verify.ts) 里的 `//#region`：A 包清单/主题/尺寸/自适应/表单结构与导航标记几何、B 宿主行为 + 行内操作回归 + 失败原因采集 + 相位映射 + 主动探测 + 配置分层 + 工具名单 + **页面外条目 + 容器三态**、C 产物协议与座位契约 + 导航标记 DOM（假 DOM 真跑）、D 真实渲染逐状态（含**页面外那一块**与"声明两次"的提示）、D2 挂载行为（真跑 `useEffect` 的沙箱 + fetch 桩）、E 共享常量 ↔ 出厂产物（含构建指纹 E9/E10 与文档引用一致性 E11/E12）、P 发布形态（`dsh.bundle.patch` / patch 内容 —— **P2/P3 守的是"本文件必须自带容器行、且写在 insert 里排在插件行之前"** / `files` 白名单 / locale / 图标 / `private` / peer / **P11 缺容器时两半边给出同一行可照抄的 YAML**）、F 纯函数直接单测。**断言台账只有这一处**（AGENTS 4.2）；每修一个 bug 同时加断言，新断言必须反向验证。
 
 工具脚本自身另有类型检查：`pnpm typecheck:tools` 是门禁（0 错误），`typecheck:tools:wip` 是进度计（续做方法见 [docs/tools-ts.md](docs/tools-ts.md)）。
 

@@ -15,14 +15,16 @@ jobs:
         with:
           node-version: 24
 
-      # 自检脚本是零依赖的：**没装 node_modules 也要能跑**。
-      # 这一步放在 install 之前是刻意的——它守住"克隆下来就能自检"这条性质。
-      # 注意：它是 .ts，但**不需要构建**（Node ≥22.18 原生类型擦除，入口直接跑）。
-      - name: 自检（零依赖）
-        run: node tools/verify.ts
-
+      # 依赖必须先装：自检**不再零依赖** —— tools/verify.ts 自 v0.3.0（8816281）起
+      # import 了 js-yaml（用它按真实 YAML 解析 profile 补丁）。2026-10-29 之前这里把
+      # 自检放在 install 之前，CI 从 8816281 起一直是红的（ERR_MODULE_NOT_FOUND），
+      # 而没人看。别再把这一步挪回 install 前面。
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
+
+      # 注意：它是 .ts，但**不需要构建**（Node ≥22.18 原生类型擦除，入口直接跑）。
+      - name: 自检
+        run: node tools/verify.ts
 
       - name: 类型 + 风格 + 产物契约
         run: pnpm check

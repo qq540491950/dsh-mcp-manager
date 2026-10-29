@@ -1,5 +1,9 @@
 /**
- * dsh-mcp-manager 自检程序（纯 Node，零依赖）。
+ * dsh-mcp-manager 自检程序（纯 Node，无需构建）。
+ *
+ * 依赖边界：只依赖 `node_modules` 里的 `js-yaml`（B 区按**真实 YAML** 解析 profile 补丁，
+ * 不做行级近似），**不依赖构建产物**——`.ts` 入口由 Node ≥22.18 的类型擦除直接执行。
+ * 所以跑自检前要先 `pnpm install`（CI 的两个 workflow 都是 install → verify）。
  *
  * 覆盖三组断言：
  *   A. 包清单契约（dsh.client.platform / exports["./client"] / 模块 id 与包名一致）
@@ -21,8 +25,8 @@ import * as yaml from 'js-yaml'
  * 共享常量的**唯一来源**：`src/shared/constants.ts`。
  *
  * 这里直接 import TypeScript 源文件 —— Node ≥22.18 默认开启类型擦除，所以自检脚本
- * 仍然**零依赖**（不装 node_modules 也能跑），却能把"两半边必须一致"的那些值从
- * "断言里手写的字面量"升级成"期望值来自唯一来源"。E 区就是这件事的守卫。
+ * **不需要构建**，却能把"两半边必须一致"的那些值从"断言里手写的字面量"升级成
+ * "期望值来自唯一来源"。E 区就是这件事的守卫。
  */
 let shared
 try {
@@ -2688,9 +2692,7 @@ check(
     check(
       'D50b 意图落地后恢复可用（行内按钮只由 busy/pending 驱动，没有写死禁用）',
       ['编辑', '停用', '删除'].every((label) => actionButtons(list, label)[0]?.disabled === false),
-      ['编辑', '停用', '删除']
-        .map((label) => `${label}=${String(actionButtons(list, label)[0]?.disabled)}`)
-        .join('|'),
+      ['编辑', '停用', '删除'].map((label) => `${label}=${String(actionButtons(list, label)[0]?.disabled)}`).join('|'),
     )
   }
 
@@ -3424,7 +3426,9 @@ check(
       doc.visibilityState = 'visible'
       for (const listener of listeners) listener()
       await tick(60)
-      const extraGets = visible.filter((request) => request.method === 'GET').length - visible.filter((request, index) => index < afterMount && request.method === 'GET').length
+      const extraGets =
+        visible.filter((request) => request.method === 'GET').length -
+        visible.filter((request, index) => index < afterMount && request.method === 'GET').length
       check(
         'D54b 切回可见 → 补一次读；仍不稳定 → 重走一遍衰减节奏（1 读 + 1 探测 + 16 重读）',
         visible.length - afterMount === 18 && extraGets === 17,
@@ -3659,8 +3663,9 @@ check(
  * 「装不上」（`not-a-bundle`）或「装上了但设置里没有 MCP 页」（github-release-plan §7）。
  * 这些字段一旦漂移（改名、换 patch 路径、`files` 白名单漏项），本地构建与流水线都照样全绿。
  *
- * 零依赖约束：自检不装 `node_modules`（publish-plan §2），所以这里**不引 YAML 解析器**，
- * 只按本仓库 patch 文件用到的 YAML 子集做行解析（见 insertEntriesOf）。
+ * 为什么这里故意不引 YAML 解析器：P 区只守本仓库 patch 文件用到的 YAML 子集（`insert:` / `id` / `name`），
+ * 行解析能把"写在 insert 里还是写成顶层覆写行"这种差别精确指出来；整份 parse 反而看不出层级归属。
+ * （B 区用真实 js-yaml 模拟宿主行为，两处分工不同。）
  */
 {
   /** 把若干子条件聚合成一条断言；失败时 detail 直接列出不成立的子项（反向验证要能看出是哪一项）。 */
@@ -4426,7 +4431,9 @@ check(
     check(
       'F52 SETTLE_SCHEDULE_MS：200ms×10 起步 + 2s×4、10s×2 衰减长尾（共 ≈30s，16 读，有界非轮询）',
       SETTLE_SCHEDULE_MS.length === 16 &&
-        SETTLE_SCHEDULE_MS.every((delay, index) => (index >= 10 ? delay >= SETTLE_SCHEDULE_MS[index - 1] ?? 0 : delay === 200)) &&
+        SETTLE_SCHEDULE_MS.every((delay, index) =>
+          index >= 10 ? (delay >= SETTLE_SCHEDULE_MS[index - 1] ?? 0) : delay === 200,
+        ) &&
         SETTLE_SCHEDULE_MS.reduce((sum, delay) => sum + delay, 0) === 30000,
       JSON.stringify(SETTLE_SCHEDULE_MS),
     )

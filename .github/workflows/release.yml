@@ -21,17 +21,18 @@ jobs:
         with:
           node-version: 24
 
-      # 零依赖自检（与 ci.yml 同一顺序：install 之前，守住"克隆下来就能自检"）
-      - name: 自检（零依赖）
+      # 依赖必须先装：自检**不再零依赖**（tools/verify.ts import 了 js-yaml）。
+      # 2026-10-29 之前它与 ci.yml 都把这步放在 install 之前，结果是自 v0.3.0 起 CI 全红。
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+
+      - name: 自检
         run: node tools/verify.ts
 
       # tag 与包内版本必须一致，否则"装的哪个版本"说不清
       - name: 校验 tag 与 package.json.version
         run: |
           node -e "const v=require('./package.json').version; if (process.env.GITHUB_REF_NAME !== 'v'+v) { console.error('tag ' + process.env.GITHUB_REF_NAME + ' != v' + v); process.exit(1) }"
-
-      - run: corepack enable
-      - run: pnpm install --frozen-lockfile
 
       - name: 类型 + 风格 + 产物契约
         run: pnpm check

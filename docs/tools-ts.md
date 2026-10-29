@@ -88,7 +88,9 @@ TS2322=5    赋值类型不符
 
 ## 6. 不变的性质（这次改造刻意保住的）
 
-- **零依赖**：`node tools/verify.ts` 在 `node_modules` 不存在时也能跑（Node 原生类型擦除，无构建步骤）。
-  CI 里这一步仍然放在 `pnpm install` **之前**。
+- **不需要构建**：`tools/*.ts` 由 Node 原生类型擦除直接执行（无 esbuild/tsc 产物链路）。
+  代价：自检 import 了 `js-yaml`，**必须先 `pnpm install`** 才能跑（2026-10-29 修正；
+  v0.3.0 之前确实是"不装 node_modules 也能跑"）。
+  CI 里这一步现在放在 `pnpm install` **之后** —— 之前放在前面，CI 从 v0.3.0 起一直红。
 - **oracle 独立于构建**：`tools/*.ts` 由 Node 直接执行，不经过 esbuild/tsc 的产物链路 ——
   构建链路坏掉时自检仍能跑。这条正是当初"想留着 JS"的真实理由，而它不需要 JS 来兑现。

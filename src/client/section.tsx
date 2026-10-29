@@ -141,11 +141,13 @@ export function McpSection(): ReactElement {
    */
   useEffect(() => {
     const api = globalThis as {
-      document?: {
-        visibilityState?: string | undefined
-        addEventListener?: ((type: string, listener: () => void) => void) | undefined
-        removeEventListener?: ((type: string, listener: () => void) => void) | undefined
-      } | undefined
+      document?:
+        | {
+            visibilityState?: string | undefined
+            addEventListener?: ((type: string, listener: () => void) => void) | undefined
+            removeEventListener?: ((type: string, listener: () => void) => void) | undefined
+          }
+        | undefined
     }
     const doc = api.document
     if (doc === undefined) return
