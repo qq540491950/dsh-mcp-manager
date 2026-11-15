@@ -6,7 +6,7 @@
 
 DSH 插件：在设置界面最下方加一页「MCP」，可视化管理 `@deepseek-ai/dsh-mcp-client` 的 Loader 条目。**源码在 `src/**`；`lib/**` 是构建产物，不要直接编辑。**
 
-- 客户端 `src/client/**` → `lib/client.js`：注册 `settings.section`（list 座位，`order: 900`）；把导航里**自己那一格**的兜底齿轮换成 MCP 标记（3.8）。
+- 客户端 `src/client/**` → `lib/client.js`：注册 `settings.section`（list 座位，`order: 900`），并往 `settings.section.icon` 注册这一页的图标（MCP 标记，按 section id 认领；3.8）。
 - 宿主 `src/host/**` → `lib/index.js`：零 import；`ctx.connection.fetch.register()` 开 `/api/mcp-manager`；条目寻址写入器负责 profile patch 的原位编辑。
 - 数据模型（v0.4.0 起）：**profile 补丁文件就是数据库**。每台 MCP 是 `cordis.patch.yml` 里的**普通顶层 Loader 条目**（与手写、市场插件写的完全同形，没有受控块/manifest/"接管"概念）。本插件按 id 寻址直接增删改那些行；声明在**别的层**（其他 bundle / home patch）的条目只能追加 `- id: X` 覆写行（source 三态：`profile` / `overridden` / `external`）。
 - 写入通道：`src/host/patch-writer.ts`（文件锁 `package.json.lock` + 临时文件原子替换 + 自动 `.bak`）执行 `src/shared/patch-doc.ts` 的编辑列表——**替换/删除目标条目的字节区间、末尾追加**，条目之外逐字节未变；同 id 多份声明、区间异常一律**拒绝写入**。
@@ -57,7 +57,7 @@ DSH 插件：在设置界面最下方加一页「MCP」，可视化管理 `@deep
 
 **3.7 [风格] 尺寸基准取自官方 CSS。** 档位、每个数值的出处、"为什么第一版比官方丑"在 README 第 8 节；改尺寸先读它、改完同步它。
 
-**3.8 [边界] 不动别人的 DOM —— 唯一例外：设置导航里我们自己那一格。** 官方 practices 禁止在组件外写 DOM、禁止往 `document.body` append。例外压到最小：`markNavCell()` 只在 label == `SECTION_LABEL` 那一格打 `data-mcpm-nav`，视觉全交给样式表，卸载时 `removeAttribute` + `disconnect`；不读别的插件的 DOM / 样式表 / 组件源码，不删换移 React 管的节点，不往 `document.body` append。必须这样是因为 `settings.section` 契约只有 `id`/`order`/`label`（**无 icon 字段**），图标由官方 `navIcon(id)` 硬编码查表、未知 id 兜底齿轮——**上游已有"带 icon"的提案，落地即改用注册参数**；代价是依赖官方 DOM 结构，结构改了静默失效（最坏仍是齿轮）。
+**3.8 [边界] 不动别人的 DOM —— 没有例外。** 官方 practices 禁止在组件外写 DOM、禁止往 `document.body` append。导航图标走**注册参数**而不是"渲染后改 DOM"：DSH 0.2.2-alpha.3 起 `settings.section.icon` 是一个 list 座位，按 **section id** 认领（官方渲染时传 `only: row.id`），owner props 是 `{size, active}`——本插件注册的图标 `id` 与 `settings.section` 相同（[icon.tsx](src/client/icon.tsx)），几何在 [mark.ts](src/client/mark.ts)，颜色只写 `currentColor`。**为什么改**：0.2.1 及更早没有这个座位，只能给自己那一格打 `data-mcpm-nav` + 两行 CSS 隐藏 `button > svg`；0.2.2-alpha.3 把图标包进了 `<span class="navIcon">`，`> svg` 一条都不命中 → 齿轮与标记同时显示（两个图标，2026-11-15 实测）。机检：eslint 禁 `document.body` / `MutationObserver` / `querySelector(All)`；自检 A36/A37 守产物里没有 DOM 补丁，A35/C12 守图标座位的 `id` 与 section 相同，C14–C16 在**没有 `MutationObserver`** 的沙箱里真跑 `apply`，D35–D38 渲染图标本体。更早的宿主没有该座位 → `slots.inject` 的回调永不执行，官方齿轮兜底，功能不受影响。
 
 **3.9 [边界] 一条错误只允许一个渲染点。** 错误跟着来源走：`formError` 只由表单提交失败写入、渲染在表单内部；`actionError` 只由行内操作（启停/删除/检测）失败写入、渲染在页面级。`call(payload, after, onError)` 的第三个参数就是"写进哪条通道"，**必须只写一条**。
 
@@ -68,7 +68,7 @@ DSH 插件：在设置界面最下方加一页「MCP」，可视化管理 `@deep
 
 **4.1 先跑自检。** `node tools/verify.ts`：改动前 PASS、改动后 FAIL，才能证明是你的改动引起的。
 
-**4.2 每修一个 bug 同时加断言。** 台账只有一处：[tools/verify.ts](tools/verify.ts) 的 `//#region` + 自检输出——**本文件不维护断言 ID**。覆盖：`A` 包清单/主题/尺寸/自适应/布局/表单结构/导航标记几何；`B` 宿主行为 + 行内操作回归 + 失败原因采集 + 相位映射 + 主动探测 + 配置分层 + 工具名单；`C` 产物协议 + 座位契约 + 导航标记 DOM（假 DOM 真跑）；`D` 真实渲染逐状态；`D2` 挂载行为（真跑 `useEffect` 的沙箱 + fetch 桩）；`E` 共享常量 ↔ 出厂产物（含构建指纹、脚本与文档里的引用一致性）；`F` 纯函数直接单测。
+**4.2 每修一个 bug 同时加断言。** 台账只有一处：[tools/verify.ts](tools/verify.ts) 的 `//#region` + 自检输出——**本文件不维护断言 ID**。覆盖：`A` 包清单/主题/尺寸/自适应/布局/表单结构/导航图标几何与座位；`B` 宿主行为 + 行内操作回归 + 失败原因采集 + 相位映射 + 主动探测 + 配置分层 + 工具名单；`C` 产物协议 + 座位契约 + 客户端不碰 DOM（假 DOM 真跑）；`D` 真实渲染逐状态 + 图标组件；`D2` 挂载行为（真跑 `useEffect` 的沙箱 + fetch 桩）；`E` 共享常量 ↔ 出厂产物（含构建指纹、脚本与文档里的引用一致性）；`F` 纯函数直接单测。
 
 **4.3 新断言必须反向验证。** 注入违规 → 确认能精确报错 → 还原（用 `edit`，别用 PowerShell）。断言自己也会错，**断言也要被怀疑**。
 
@@ -98,8 +98,8 @@ DSH 插件：在设置界面最下方加一页「MCP」，可视化管理 `@deep
 | group 子条目不可寻址 | 契约里的 `readOnlyReason: "unaddressable"`；这正是 v0.4 "每台 MCP 独立成顶层条目"的由来 |
 | `disabled` 有效 | 条目**或任一父条目** disabled 即不挂载，支持 `!!js`；启停机制没问题 |
 | 宿主日志基本不可看 | 只写 `crash-*.log`；cordis logger 是 1000 条环形缓冲，超出丢最旧 → 靠自检 + 渲染测试兜住。例外：本插件自己挂的 exporter 把 `mcp-client(<name>): …` 收进快照 |
-| 导航图标不可由插件提供 | 见 3.8；上游提案落地即改用注册参数 |
-| 导航位置由 `order` 决定 | 900 只是比官方页大，别的插件更大就排后面；标记按 label 认格，不受顺序影响 |
+| 导航图标 | 走 `settings.section.icon` 座位（0.2.2-alpha.3 起）；更早宿主没有该座位 → 官方齿轮兜底，见 3.8 |
+| 导航位置由 `order` 决定 | 900 只是比官方页大，别的插件更大就排后面；图标按 section id 认领，不受顺序影响 |
 | 别的层声明的条目删不掉、也永远做不到 | 声明在其他 bundle（node_modules）或 home patch 里的条目，原始声明物理上不在 profile 文件里；本插件最多追加/更新覆写行（`overridden`），删除 = 还原覆写行，**原声明只能去声明它的层处理**。别试图"一键接管删除" |
 | 同 id 多份声明（文件内） | `scanPatchDoc` 能看见全部声明：update/setEnabled **拒绝**（歧义），remove 删掉全部（良定义）。**唯一例外**：恰是一条创建行 + 若干**同内容**覆写行（多行 flow 失明年代的兜底遗迹）时，启停就地收拢为一份（改创建行、删覆写行）——合并结果确定，不算歧义；内容有任何差异仍拒绝。不要再拿"读着正常"判断没事 |
 | 上游 `insert` 共享对象缺陷（未在本机复现） | 上游报告：补丁可能改到共享 insert 对象（插件被静默 disable）；同 id 重复 insert → `duplicate loader entry id` |

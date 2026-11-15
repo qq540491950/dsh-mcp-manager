@@ -1,5 +1,10 @@
 /**
- * 视觉层：样式表 + MCP 官方标记。
+ * 视觉层：本页（MCP 设置页）的样式表。
+ *
+ * 导航那一格**不在这里**：图标已改走官方 `settings.section.icon` 座位、由 React 渲染
+ * （`icon.tsx`）。0.2.1 及更早的宿主没有这个座位，才需要"渲染后打标记 + 两行 CSS"；
+ * 那套做法在 0.2.2 上会画出两个图标（官方把图标包进了 `span.navIcon`，`> svg` 不再命中），
+ * 已随版本升级删除。这里只剩本页自己的类，一个 `[data-shortcut-modal]` 选择器都没有。
  *
  * 采用**紧凑档**：数值取自官方小号控件
  * （`ui-primitives/Button.module.css` 的 `.sm` = 28px 高 / 12px 字号 /
@@ -19,23 +24,6 @@
 
 /** 注入的 <style> 元素 id。 */
 export const STYLE_ELEMENT_ID = 'dsh-mcp-manager-styles'
-
-/**
- * MCP 官方标记（三联弧线笔画）。几何逐字取自官方仓库
- * `modelcontextprotocol/modelcontextprotocol` 的 `docs/favicon.svg`（那三条
- * stroke-width=11.0667 / linecap=round 的 path），只加一层 translate+scale 缩进 16x16：
- * 墨迹高 15、宽 13.4851（居中），有效描边 1.0——官方自然比例是 1.043，
- * 但 16px 下笔画之间的缝只剩约 1px，4% 的加粗就会把缝糊死（实测覆盖率 0.169 → 0.242）。
- *
- * 同源的可读版本是 `assets/mcp-mark.svg`；自检逐字比对两份，防止漂移。
- * 作为 CSS mask 用时只看 alpha：data URI 里的 `currentColor` 会退化成初始色，
- * 真正的颜色由使用处的 `background-color:currentColor` 提供。
- */
-export const MCP_MARK_SVG =
-  '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-linecap="round"><g transform="translate(-0.44525 -0.50229) scale(0.0942473)" stroke-width="10.61038"><path d="M23.5996 85.2532L86.2021 22.6507C94.8457 14.0071 108.86 14.0071 117.503 22.6507C126.147 31.2942 126.147 45.3083 117.503 53.9519L70.2254 101.23"/><path d="M70.8789 100.578L117.504 53.952C126.148 45.3083 140.163 45.3083 148.806 53.952L149.132 54.278C157.776 62.9216 157.776 76.9357 149.132 85.5792L92.5139 142.198C89.6327 145.079 89.6327 149.75 92.5139 152.631L104.14 164.257"/><path d="M101.853 38.3013L55.553 84.6011C46.9094 93.2447 46.9094 107.258 55.553 115.902C64.1966 124.546 78.2106 124.546 86.8543 115.902L133.154 69.6025"/></g></svg>'
-
-/** 同一份几何的 data URI（给 CSS mask 用）；encodeURIComponent 负责转义引号与尖括号。 */
-const MCP_MARK_DATA_URI = `data:image/svg+xml,${encodeURIComponent(MCP_MARK_SVG)}`
 
 /** class 名统一 `mcpm-` 前缀，避免与官方样式冲突。 */
 export const CSS = `
@@ -106,15 +94,6 @@ export const CSS = `
 .mcpm-notice { box-sizing:border-box; min-width:0; padding:8px 12px; border:.5px solid var(--dsw-alias-border-l2); border-radius:var(--dsw-radius-md, 6px); font-size:12px; line-height:16px; }
 .mcpm-notice--error { color:var(--dsw-alias-state-error-primary, #d9534f); border-color:currentColor; }
 .mcpm-actions--form { justify-content:flex-end; margin-left:0; }
-/* 设置导航里「MCP」那一格。
-   官方 navIcon(id) 是**硬编码 id→图标**、未知 id 一律兜底成齿轮
-   （dsh-client-ui-settings-general/lib/client.js:244-267），而 settings.section 的注册契约
-   只有 id/order/label、**没有 icon 字段**，所以只能渲染后给自己那一格打标记再覆盖：
-     · display:none 让官方 <svg> 退出 flex 流（label 的位置因此不变，gap 也不多算一格）；
-     · ::before + mask 画 MCP 标记，颜色走 currentColor（mask 只取 alpha）。
-   React 的节点树一个都不动：不删、不换、不 append 到 body。 */
-[data-shortcut-modal="settings"] button[data-mcpm-nav] > svg { display:none; }
-[data-shortcut-modal="settings"] button[data-mcpm-nav]::before { content:""; flex:none; width:16px; height:16px; background-color:currentColor; -webkit-mask:url("${MCP_MARK_DATA_URI}") center/contain no-repeat; mask:url("${MCP_MARK_DATA_URI}") center/contain no-repeat; }
 `
 
 /**

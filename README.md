@@ -54,7 +54,7 @@ ctx.inject(["slots"], (scope) => {
 
 - `settings.section` 是 **list 座位**：所有注册者都渲染，按 `order` 升序排成设置左侧导航的一页。官方 General 是 `order: 0` → **要"下方"就把 order 开大**（本插件用 `900`）。
 - 不是 `single` 座位，**不存在遮蔽官方控件的风险**，回滚也就一条行（§5.2）。`label` 可传 `string` 或 `() => string`。
-- **导航那一格的图标不是注册项**：契约只有 `id`/`order`/`label`，**没有 `icon`**；图标由官方 `navIcon(id)` 硬编码查表、未知 `id` 兜底成齿轮。本插件用「渲染后给自己那一格打标记 + 两行 CSS」换成 MCP 官方标记——做法与代价见 §8.6。
+- **导航那一格的图标是注册项（DSH 0.2.2-alpha.3 起）**：`settings.section.icon` 是 list 座位，按 section id 认领（官方渲染时传 `only: row.id`），owner props 是 `{size, active}`。本插件注册 `id: "mcp"` 的图标组件（MCP 官方标记）。更早的宿主没有这个座位 → 回调不执行、官方齿轮兜底，功能不受影响。历史与取舍见 §8.6。
 
 ---
 
@@ -231,7 +231,7 @@ tools/build.ts           esbuild 打包两半边 + 客户端包装 + 写构建�
 - `package.json`：删 `private`；包名改 **`@qq540491950/dsh-mcp-manager`**（裸名 `dsh-mcp-manager` 被他人占用）；补 `dsh.bundle.patch`、`exports["."]`（条件导出 + `types`）、`files` 白名单（**不含 `src/`、`tools/`、`docs/`、`AGENTS.md`**）、`publishConfig.access = public`。
 - `peerDependencies` 只留 `@deepseek-ai/cordis`。**没有钉任何 `@deepseek-ai/dsh-*`**：bundle 兼容性只看这些 `dsh-*` peer，不满足就**整个 bundle 被 skip**。
 
-**② 本地验证**：`pnpm check` 全绿（typecheck / typecheck:tools / lint / format:check / build / verify 255 条）+ `npm pack` 审内容（有产物 / patch / locale / 图标 / README / LICENSE，无 `src`+`tools`+`docs`，无密钥）。把包装进 profile、运行时四查、`remove_bundle` 回归见 [docs/github-release-plan.md](docs/github-release-plan.md) 的 G2/G4/G5。
+**② 本地验证**：`pnpm check` 全绿（typecheck / typecheck:tools / lint / format:check / build / `node tools/verify.ts`）+ `npm pack` 审内容（有产物 / patch / locale / 图标 / README / LICENSE，无 `src`+`tools`+`docs`，无密钥）。把包装进 profile、运行时四查、`remove_bundle` 回归见 [docs/github-release-plan.md](docs/github-release-plan.md) 的 G2/G4/G5。
 
 **③ 发布（GitHub 路线）**：`git push` → tag（与 `package.json.version` 逐字一致）→ **`.github/workflows/release.yml` 自动**用 `npm pack` 产物建 Release（附 `.tgz` 给没有 git 的用户）。**不发 npm**：两条渠道同时维护只会让版本口径分叉。历史版本要补建 Release 时手工走 `gh release create <tag> <tgz> --notes-file …`（见 [docs/github-release-plan.md](docs/github-release-plan.md) §4）；v0.2.0 / v0.3.0 / v0.4.1 就是这样在 2026-10-29 补齐的。
 
@@ -253,11 +253,11 @@ plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manag
 
 ```text
 # 主渠道：git + tag（用户机器上要有 git；GitHub 会先跑一次 5s 的 git ls-remote 预检）
-plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manager#v0.4.1')
+plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manager#v0.4.2')
 
 # 备选：Release 资产里的 .tgz（纯 HTTPS，不需要 git，也没有那个预检）
 # 每个 tag 都有对应资产（v0.1.0 除外：那一版发布时没建 Release）
-plugin_manager(action:'install_bundle', target:'https://github.com/qq540491950/dsh-mcp-manager/releases/download/v0.4.1/qq540491950-dsh-mcp-manager-0.4.1.tgz')
+plugin_manager(action:'install_bundle', target:'https://github.com/qq540491950/dsh-mcp-manager/releases/download/v0.4.2/qq540491950-dsh-mcp-manager-0.4.2.tgz')
 
 # 只有开发机才有的本地目录形式（改完源码立刻试，不用先发布）
 plugin_manager(action:'install_bundle', target:'D:\project\dsh-plugins\dsh-mcp-manager')
@@ -265,7 +265,7 @@ plugin_manager(action:'install_bundle', target:'D:\project\dsh-plugins\dsh-mcp-m
 # 升级：**就地装新版，不要先卸**（换 tag 就是换 spec：`dsh-plugin-manager` 用
 # "依赖串变了"判定装上了哪个包；返回 restart-required 是正常的 —— 宿主半边变了，
 # 装完重启一次 DSH）。2026-10-25 实测：`file:` 依赖 → `github:…#v0.4.1` 就地替换成功。
-# 下面用 #v0.4.2 作占位（尚未发布）——升级时换成真实的新 tag。
+# v0.4.2 只改客户端半边（宿主产物未变），装完客户端会热替换；为稳妥仍建议重开设置页。
 plugin_manager(action:'install_bundle', target:'github:qq540491950/dsh-mcp-manager#v0.4.2')
 
 # ⚠️ 从 v0.1.x 升上来时：**就地装**，然后删掉 profile 里那行手写的容器
@@ -297,7 +297,9 @@ plugin_manager(action:'remove_bundle', target:'@qq540491950/dsh-mcp-manager')
 | `v0.2.0`（tag `v0.2.0`） | `github:qq540491950/dsh-mcp-manager#v0.2.0` | 0.2.1-rc.2（desktop profile） | **未实测安装**。改动：①容器行移回 bundle（装上即用，profile 不再需要任何东西）；②容器三态（缺失/重复/正常）+ 页面在"声明两次"时点名要删的那一行；③快照新增 `outside[]`，页面单列「页面外还有 N 台」并给出工具数（解决 `magpie-mcp-context7` 那种"在跑却看不见"）。本轮只跑了 `node tools/verify.ts`（PASS）与新增断言的反向验证；**真机安装 + 迁移验收待执行** |
 | `v0.4.1`（tag `v0.4.1`） | `github:qq540491950/dsh-mcp-manager#v0.4.1` | 0.2.1-rc.3（desktop profile） | ✅ **已实测安装**（2026-10-25 19:36 真机）：依赖由开发用 `file:` 路径**就地替换**为 `github:…#v0.4.1`——spec 变更升级成立，未触发 `ambiguous-install`、无需先 `remove_bundle`；装后产物四份 sha256 与发布构建一致，`mcp__context7__*` 真机调用正常。同逻辑副本（装前手动同步，仅版本号字符串不同）上：重启 DSH 后首次启停把「创建行 + 遗留覆写行」**收拢为单份**（单行、注释保留），官方插件页的行级启停写入与我们的写入器共存。装后补丁文件被整体改写为块式 YAML 并新增 3 台 stdio 服务器——块式条目原生可寻址。改动（对 v0.4.0）：启停状态跟进改衰减长尾 + 可见性补读（修「停用→启用后一直黄色」）、扫描器支持官方美化产生的多行 flow、同内容覆写行就地收拢 |
 
-上面几行里 v0.1.0 / v0.1.1 / v0.4.1 是"它到底能不能用"的真机安装实测；v0.1.2 与 v0.2.0 只有自检结论、**没有真机安装证据**。未跑的部分（npm 渠道 / `.tgz` URL / 卸载回归 / 同包换 `#ref` 的常规升级）见 §7.2 与 [docs/publish-plan.md](docs/publish-plan.md) §9。
+| `v0.4.2`（tag `v0.4.2`） | `github:qq540491950/dsh-mcp-manager#v0.4.2` | 0.2.2-rc.3（desktop profile） | **未实测安装**（离线全绿 + headless Chromium 按官方 0.2.2-rc.3 导航格结构渲染验证）。改动：设置导航图标改走官方 `settings.section.icon` 座位（按 section id 认领），删掉「渲染后打 `data-mcpm-nav` + 两行 CSS」——旧做法在 DSH `0.2.2-alpha.3` 起会画**两个图标**（官方把图标包进 `<span class="navIcon">`，`button > svg` 不再命中）。**只改客户端半边**（`lib/index.js` 与 v0.4.1 逐字节相同）；更早宿主没有该座位 → 退化成官方齿轮，功能不受影响 |
+
+上面几行里 v0.1.0 / v0.1.1 / v0.4.1 是"它到底能不能用"的真机安装实测；v0.1.2、v0.2.0 与 v0.4.2 只有自检结论、**没有真机安装证据**。未跑的部分（npm 渠道 / `.tgz` URL / 卸载回归 / 同包换 `#ref` 的常规升级）见 §7.2 与 [docs/publish-plan.md](docs/publish-plan.md) §9。
 
 ### 5.6 容器的兴衰（v0.4.0 起**已退役**；v0.2/v0.3 曾归 bundle，v0.1.x 曾是 profile）
 
@@ -395,7 +397,7 @@ pnpm verify                 # = node tools/verify.ts
 1. ~~**点击进入页面的那一次 fetch 往返**~~ **已确认**：2026-10-14 重启前后各打开过一次「设置 → MCP」，服务器列表正常。客户端的失败态（「读取失败：<原因>」+ 重试）仍未在真机触发过。
 2. **`configEditor.edit()` 对 insert 条目的 `document.add` 分支**尚未产生过一次真实写入（首次在 UI 点「保存」时才走）；失败是安全的（写入前断言、不落盘）。
 3. **group 子条目当前没有显式 `id`**（Loader 自动生成 `ef60a0d1` 这类十六进制 id）；`serverName` 重命名按数组下标定位，会保留原 `rowId`，改的是 `insert:` 声明而非覆写行时可能新建条目。
-4. **导航那一格的 MCP 标记没在真实界面里点过**：离线侧已证明几何（A32–A38）与假 DOM 三条路径（C12–C17），缺"真机打开设置面板，齿轮确实变成 MCP 标记"这一环。
+4. **导航图标的"新座位"没在真实界面里点过**：离线侧已证明几何（A32–A34）、座位注册（A35/C12）、产物无 DOM 补丁（A36/A37、C14–C16）与图标本体（D35–D38），并在 headless Chromium 里用**官方 0.2.2-rc.3 的导航格结构**渲染过一次（恰好 1 个图标）；仍缺"真机打开设置面板，看到 MCP 标记且只有它一个"。旧方案（改 DOM）为什么在 0.2.2 上画两个图标，见 §8.6。
 5. **「停用 → 再启用之后自动复查」——2026-10-25 真机已点过**：v0.4.1 之前的代码复现了「再启用后一直黄色」（本轮修复的触发现场），v0.4.1 同逻辑代码在真机触发了收拢（文件级证据见 §5.5 v0.4.1 行）；离线 D38–D41/D49–D54 断言请求序列与边界。仍缺的目视确认：点完「启用」后那一行**自己变绿**——期望也不是 1s：慢启动走 ≈30s 衰减长尾，更久的退避靠切回窗口的补读。
 6. **卸载回归（`remove_bundle`）没跑**：装是实测过的（§5.5），卸没有。**v0.2.0 的形态下卸载会把容器一起带走**：容器行在 bundle 补丁层里，卸载 = 那一层消失 = 承载列表的 `- id: mcp-manager` 覆写行被判 `not found` 整条丢弃 → 服务器停止加载（**配置原文仍在 profile 文件里，装回即恢复**）。这是 v0.2.0 明确接受的取舍（§5.6）：换来的是"装完即用、用户不用手写 YAML"。目前是离线证据，没实跑过 `remove_bundle`。
    已知的**卸载被拒**情形（离线复现，逐字抄 `removeBundle` 的判定式）：**v0.1.0 + profile 已有容器行 → `bundle-in-use`**（该 bundle 声明过容器行，而那个容器当时由 profile 提供、永远活着）；v0.1.0 + profile 无容器行 → 允许；**v0.1.1/v0.1.2 + profile 有容器行 → 允许**。
@@ -529,30 +531,37 @@ pnpm verify                 # = node tools/verify.ts
 
 **靠底色分层，不叠两层描边**：早先给面板加过 `border`，和外层卡片叠成「卡片套卡片」——这才是"内部表单不好看"的真正原因（`A30b` 守住）。字段类型由**两个正交开关**决定，不要合并：`mono` **只**把字体换成等宽（仍是单行 28px），`multiline` 换成真正的 `<textarea rows=3>`；混用会在单行字段上套 56px 多行框（`url` 就曾被渲染成一个大框，`A28` 守住）。
 
-### 8.6 设置导航那一格的图标：为什么默认是齿轮，怎么换成 MCP 标记
+### 8.6 设置导航那一格的图标：官方 icon 座位（历史上改 DOM 的那套已删）
 
-**为什么默认是齿轮**：DSH 的设置导航**不接受插件提供图标**——注册选项只有 `id`/`order`/`label`（没有 icon）；图标由硬编码的 id 查表决定（未知 id 兜底齿轮）；渲染处只看 id：`children: [navIcon(row.id), span(row.label)]`；`sidebar.settings` 下也没有「导航装饰」座位。顺带否决一条歪路：**不能靠换 id 蹭官方图标**——那会顶掉官方那一页。
+**现在的做法**：DSH 0.2.2-alpha.3 起，设置导航的图标是一个**座位**，不再只有硬编码查表——
 
-**本插件的做法**（只碰一个属性 + 两行 CSS，不动 React 的节点树）：①`markNavCell()` 在 `ctx.effect` 里挂 body 级 MutationObserver，按官方 data 锚点 `[data-shortcut-modal="settings"] > nav` 找到导航，再按**我们自己注册的 `SECTION_LABEL` 文本**认出那一格（官方 class 是 CSS-module 哈希，会随构建变，不能当锚点）；②只 `setAttribute("data-mcpm-nav", "1")`，已标记且 `isConnected` 时立刻 return（聊天流式渲染的高频 mutation 也不会变热）；③样式表两行：`button[data-mcpm-nav] > svg { display:none }` 让齿轮退出 flex 流（label 位置不变），`::before` + `mask` 用内联 SVG 画标记，颜色走 `currentColor`。
+```
+settings.section.icon   list + inline，按 section id 认领
+                        渲染时传 { only: row.id, fallback: navIcon(row.id) }
+                        owner props = { size, active }
+```
 
-**标记几何**：`assets/mcp-mark.svg` 的三条 path 逐字取自官方仓库 `modelcontextprotocol/modelcontextprotocol` 的 `docs/favicon.svg`；墨迹高 15、`scale` 0.0942473（= 15 / 159.1557，由几何反推）、有效描边 **1.0**（官方自然比例 1.043，但 16px 下笔画之间的缝只剩约 1px，4% 的加粗就把缝糊死）。**A32–A38** 用算术逐条钉住（内联副本与资产文件逐字比对）。
+所以本插件只做一件事：往这个座位注册 `id` 与 `settings.section` 相同的图标组件（[src/client/icon.tsx](src/client/icon.tsx)），几何取自 [src/client/mark.ts](src/client/mark.ts)（与 `assets/mcp-mark.svg` 逐字同源），颜色只写 `currentColor`。**客户端产物不再碰 DOM**：不查选择器、不挂 MutationObserver、不写 inline 样式；唯一的 `document` 用法是注入本页样式表。更早的宿主没有这个座位 → `slots.inject` 的回调永不执行，官方齿轮照常兜底（只是不像 MCP 标记）。
+
+**历史教训（v0.4.1 及更早：两个图标是怎么来的）**：0.2.1 及更早的导航格是 `<button><svg/><span>label</span></button>`，图标由 `navIcon(id)` 硬编码查表、未知 id 兜底齿轮，注册契约里根本没有图标参数。于是插件只能"渲染后给自己那一格打标记再覆盖"：①`markNavCell()` 在 `ctx.effect` 里挂 body 级 MutationObserver，按 `[data-shortcut-modal="settings"] > nav` 找到导航、再按**注册的 label 文本**认格；②只 `setAttribute("data-mcpm-nav", "1")`；③样式表两行：`button[data-mcpm-nav] > svg { display:none }` + `::before` 的 mask 标记。0.2.2-alpha.3 把图标包进了 `<span class="navIcon">`，`> svg` 一条都不命中：齿轮没被隐藏、`::before` 又画一份 → **一行两个图标**（实测截图：MCP 行两个 16px 字形、间距 8px，label 比别的行右移 24px）。这条路径已整块删除。
+
+**断言（都在 [tools/verify.ts](tools/verify.ts)）**：A32–A34 把几何钉在官方 favicon 的比例上、并与 `assets/mcp-mark.svg` 逐字比对；A35/C12 守"图标座位注册了、且 id 与 section 相同"；A36/A37 与 C14–C16 守"产物里没有 DOM 补丁"（在**没有 MutationObserver** 的沙箱里真跑 `apply`）；D35–D38 渲染图标本体（尺寸跟着座位走、`currentColor`、三条 path 与资产一致）。eslint 同时禁掉 `document.body` / `MutationObserver` / `querySelector(All)`，退回旧方案会直接 lint 失败。
 
 改后的样子（**自绘模拟行，非应用截图**）：
 
 ![设置导航里的两行对照：通用=官方齿轮，MCP=本插件标记](assets/nav-preview.png)
 
-> **代价，明确记下**：官方 practices 写的是 *Do not write DOM outside your component*，本插件为此**开了一个有意的例外**并压到最小——只在**我们自己那一格**打一个 data 属性，不读别的插件的 DOM，不删/不换 React 节点，卸载时 `removeAttribute` + `disconnect`。它依赖官方 DOM 结构，DSH 改结构就**静默失效**（最坏情况是继续显示齿轮，不会破坏页面）。若哪天官方给 `settings.section` 加上 `icon` 字段，这段整块删掉、改成注册参数即可（AGENTS 3.8）。
-
 ---
 
 ## 9. 实测依据索引
 
-每条结论都对应某处**本机安装版 DSH 的官方源码或一次运行观测**；完整索引（含行号）在 [docs/agent-rules-notes.md](docs/agent-rules-notes.md) §2，本文旧版的全表在 [docs/design-notes.md](docs/design-notes.md) §9。行号取自 `0.2.0-rc.2`，升级后必然漂移——复核请按"文件 + 关键字符串"重新定位。最常查的几条：
+每条结论都对应某处**本机安装版 DSH 的官方源码或一次运行观测**；完整索引（含行号）在 [docs/agent-rules-notes.md](docs/agent-rules-notes.md) §2，本文旧版的全表在 [docs/design-notes.md](docs/design-notes.md) §9。行号主要取自 `0.2.0-rc.2`（导航图标两条另有来源标注），升级后必然漂移——复核请按"文件 + 关键字符串"重新定位。最常查的几条：
 
 | 结论 | 位置 |
 |---|---|
 | `settings.section` 是 list 座位、按 `order` 排序；行只带 `id`/`order`/`label` | `dsh-client-ui-settings-general/lib/client.js:1017-1030, 1171-1181` |
-| 导航图标是硬编码 id→图标、未知 id 兜底齿轮；那一格的结构与锚点 | 同文件 `:244-267`（用于 `:313`）、`:277-320` |
+| 导航图标：0.2.1 及更早是硬编码 id→图标（未知 id 兜底齿轮），`className: navIcon` 直接挂在 `<svg>` 上 | `dsh-client-ui-settings-general@0.2.1-rc.5` 的 `lib/client.js`（`navIcon(id)` 定义处；npm 包实测，非本机 asar） |
+| 导航图标座位 `settings.section.icon`（0.2.2-alpha.3 起）：list + inline、按 section id 认领、owner props `{size, active}` | 本机 `dsh-client-ui-settings-general@0.2.2-rc.3` 的 `src/client/SettingsRoot.tsx:91-97`、`dsh-client-ui-settings/src/client/contract/slots.ts:58-65` |
 | `configEditor.edit` 的 YAML 节点编辑与失败回滚（断言在写盘前） | `dsh-config-editor/lib/index.js:69-135`（断言 `:122`、写盘 `:123`） |
 | `connection.fetch.register` 精确路由 + 自动鉴权 + disposer 绑调用方 scope | `dsh-client-connection/lib/index.js:608-638, 755-762, 829-843` |
 | 覆写补丁是**整键赋值** → group 的 `config` 被整数组替换，不是"继承层" | `cordis-plugin-include/lib/index.js:99-102`（`src/index.ts:120-123`） |

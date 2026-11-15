@@ -29,7 +29,15 @@ const BASE_RESTRICTED_SYNTAX = [
   },
   {
     selector: "MemberExpression[object.name='document'][property.name='body']",
-    message: '禁止碰 document.body：唯一的 DOM 例外在 src/client/nav-mark.ts（AGENTS 3.8）。',
+    message: '禁止碰 document.body（AGENTS 3.8）。',
+  },
+  {
+    selector: "NewExpression[callee.name='MutationObserver']",
+    message: '客户端不做 DOM 观察：导航图标走 settings.section.icon 座位（AGENTS 3.8）。',
+  },
+  {
+    selector: 'CallExpression[callee.property.name=/^querySelector(All)?$/]',
+    message: '客户端不读别的插件的 DOM：导航图标走 settings.section.icon 座位（AGENTS 3.8）。',
   },
   {
     selector: "MemberExpression[object.name='window'][property.name='__ModuleLoader__']",
@@ -85,14 +93,6 @@ export default [
 
       // 把"踩过的坑"写成机检规则（选择器见文件头 BASE_RESTRICTED_SYNTAX）
       'no-restricted-syntax': ['error', ...BASE_RESTRICTED_SYNTAX],
-    },
-  },
-  {
-    // 全仓库唯一的 DOM 例外：设置导航里"我们自己那一格"的标记（AGENTS 3.8）。
-    // 例外必须小到看得见，所以只有这一个文件被放行。
-    files: ['src/client/nav-mark.ts'],
-    rules: {
-      'no-restricted-syntax': 'off',
     },
   },
   {

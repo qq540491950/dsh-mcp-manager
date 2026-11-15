@@ -64,7 +64,7 @@ ctx.inject(["slots"], (scope) => {
 > `label` 可传 `string` 或 `() => string`（`resolveSlotLabel` 两种都认）。
 > 注意 `settings.section` 是 list 座位，**不像 `single` 座位那样需要 priority 抢位**，所以不存在遮蔽官方控件的风险——这也让本插件天然可回滚。
 >
-> **导航那一格的图标（齿轮）不是本插件选的**：官方按 `id` 硬编码查表、未知 `id` 一律兜底成齿轮，注册契约里**没有 icon 字段**。本插件用「渲染后给自己那一格打标记 + 两行 CSS 覆盖」把它换成了 MCP 官方标记——成因、证据与代价见 **8.6**。
+> **导航那一格的图标（齿轮）不是本插件选的**：官方按 `id` 硬编码查表、未知 `id` 一律兜底成齿轮。DSH 0.2.2-alpha.3 起官方另开了 `settings.section.icon` 座位（按 section id 认领），本插件注册它来显示 MCP 官方标记；更早的宿主没有这个座位，只能退化成齿轮。历史（以及"两个图标"那次事故）见 **8.6**。
 
 ---
 
@@ -436,7 +436,7 @@ account -10 | general 0 | models 10 | plugins 15 | agent-presets 20 | mcp 900 �
 4. **group 子条目当前没有显式 `id`**，Loader 自动生成了 `ef60a0d1` 这类十六进制 id。若希望 id 稳定，给每个子条目手写 `id:`。
 5. **UI 不依赖 primitives 组件**：视觉走注入的样式表（class 名 `mcpm-` 前缀），只用主题 token，因此 `require` 里只有 `react`。`@deepseek-ai/dsh-client-ui-primitives` 里确实有 `Button` / `Input` / `Switch` / `SettingsForm` / `Toast` / `Modal` —— 但它们的 props 我没有实测，所以没有猜着用；间距/配色改按官方 CSS 的实测值照抄（第 8 节）。
 6. **`serverName` 重命名**：客户端目前按数组下标定位被编辑项，重命名会保留原 `rowId`。若改的是 `insert:` 行里的声明而非覆写行，可能新建而非复用条目。
-7. **导航那一格的 MCP 标记没在真实界面里点过**。离线侧能证明的是：几何取自官方 favicon、16px 下光栅化后三层笔画仍分得开（下方 §8.6 的对照图是**我用同一份几何自绘的模拟行**，不是应用截图）、以及 C12–C17 用假 DOM 跑通了标记/重开/卸载三条路径。仍缺的一环是「真机打开设置面板，齿轮确实变成 MCP 标记」——这取决于官方那两处 `data-shortcut-modal="settings"` / `nav > button > [svg, span]` 结构与源码一致（已按 `dsh-client-ui-settings-general/lib/client.js:277-320` 逐行核对）。
+7. **导航图标的新座位（`settings.section.icon`）没在真实界面里点过**。离线侧能证明的是：几何取自官方 favicon（A32–A34）、座位注册 id 正确（A35/C12）、产物里没有任何 DOM 补丁（A36/A37、C14–C16）、图标本体渲染正确（D35–D38），并用 headless Chromium + **官方 0.2.2-rc.3 的导航格结构**渲染过一次（恰好 1 个图标）。仍缺的一环是「真机打开设置面板，看到 MCP 标记、而且只有它一个」。
 8. **「停用 → 再启用之后自动复查」没在真机浏览器里点过**。离线侧能证明的是 D38–D41：在同一套"会真跑 `useEffect`"的沙箱里真点一次「启用」，断言请求序列是 `POST setEnabled → POST probe`，并覆盖"探通了但相位还没稳定"（继续重读快照）与"相位一直不稳定"（有界收手）两条分支。真机上仍需确认的两件事：①宿主的 `probe` 能力存在——**这需要重启 DSH**（§7.4，客户端半边热替换、宿主半边不热替换）；②点完「启用」后约 1s 内那一行从「未检测」/「启动中」变成绿或红。
 
 ### 7.3 行内操作曾经静默丢字段（已修）
@@ -702,24 +702,25 @@ account -10 | general 0 | models 10 | plugins 15 | agent-presets 20 | mcp 900 �
 
 混用会在单行字段上套 56px 的多行框——`url` 就曾被渲染成一个大框（`A28` 守住）。
 
-### 8.6 设置导航那一格的图标：为什么默认是齿轮，以及怎么换成 MCP 标记
+### 8.6 设置导航那一格的图标：官方 icon 座位（旧方案"改 DOM"已删）
 
-**为什么默认是齿轮**：DSH 的设置导航**不接受插件提供图标**，一行证据链：
+**现在的做法**（DSH 0.2.2-alpha.3 起）：官方补上了图标座位，插件不再需要碰 DOM。
 
 | 事实 | 证据 |
 |---|---|
-| `settings.section` 的注册选项只有 `id` / `order` / `label`（**没有 icon**） | 运行时 `Slots.listSubTree` 的 catalog；官方投影行时也只取这三个字段（`dsh-client-ui-settings-general/lib/client.js:1025-1030`） |
-| 图标由**硬编码的 id 查表**决定，未知 id 一律兜底成齿轮 | 同文件 `:244-267`，注释原文 *Nav glyph by section id; unknown ids fall back to the settings gear.* |
-| 渲染处只看 id：`children: [navIcon(row.id), span(row.label)]` | 同文件 `:313` |
-| `sidebar.settings` 下没有「导航装饰」座位 | `Slots.listSubTree`（只有 section / onboarding / trigger / header / action / close / launcher） |
+| `settings.section.icon` 是 list 座位、`inline: true`，按 section id 认领（`only: row.id`），owner props 是 `{size, active}` | 本机 `@deepseek-ai/dsh-client-ui-settings-general@0.2.2-rc.3` 的 `src/client/SettingsRoot.tsx:91-97`；`@deepseek-ai/dsh-client-ui-settings@0.2.2-rc.3` 的 `src/client/contract/slots.ts:58-65` |
+| 图标渲染在 `<span class="navIcon" aria-hidden>` 里；没注册图标时用 `navIcon(row.id)` 兜底（未知 id → 齿轮） | 同文件 `SettingsRoot.tsx:35-42, 91-97` |
+| 更早没有这个座位：图标组件把 `className: navIcon` 直接挂在 `<svg>` 上，格子是 `button > svg + span` | `@deepseek-ai/dsh-client-ui-settings-general@0.2.1-rc.5` 的 `lib/client.js`（npm 包实测） |
 
-顺带否决一条歪路：**不能靠换 id 蹭官方图标**——catalog 原文是 *reusing a shipped id puts you in THAT cell and replaces it*，那会顶掉官方那一页。
+实现：`src/client/icon.tsx` 注册 `{ name: 'settings.section.icon', id: SECTION_ID }`；组件用 `src/client/mark.ts` 的几何、`currentColor` 描边，尺寸取座位给的 `size`（官方给 16）。几何只有一份，`assets/mcp-mark.svg` 是它的可读副本（A32 从源头逐字比对、D36 比对渲染结果）。
 
-**本插件怎么换**（只碰一个属性 + 两行 CSS，不动 React 的节点树）：
+**为什么删掉旧方案（v0.4.2 修的 bug）**：0.2.1 及更早只能"渲染后给自己那一格打标记再覆盖"——
 
-1. `markNavCell()`（`lib/client.js`）在 `ctx.effect` 里挂一个 body 级 MutationObserver；面板打开后按**官方 data 锚点** `[data-shortcut-modal="settings"] > nav` 找到导航，再按**我们自己注册的 `SECTION_LABEL` 文本**认出那一格。官方 class 是 CSS-module 哈希（`wCInkW_navCell`），会随构建变，**不能当锚点**。
+1. `markNavCell()` 在 `ctx.effect` 里挂一个 body 级 MutationObserver；面板打开后按**官方 data 锚点** `[data-shortcut-modal="settings"] > nav` 找到导航，再按**我们自己注册的 `SECTION_LABEL` 文本**认出那一格。官方 class 是 CSS-module 哈希（`wCInkW_navCell`），会随构建变，**不能当锚点**。
 2. 认出来后只 `setAttribute("data-mcpm-nav", "1")`。已标记且 `isConnected` 时立刻 return（一次属性读、不查 DOM），所以聊天流式渲染那种高频 mutation 也不会把它变热。
 3. 样式表两行：`button[data-mcpm-nav] > svg { display:none }` 让官方齿轮退出 flex 流（label 位置不变，`gap:8px` 也不会多算一格），`::before` + `mask` 用内联 SVG 的 data URI 画标记，颜色走 `currentColor`（mask 只取 alpha）。
+
+0.2.2-alpha.3 把图标包进 `<span class="navIcon">` 之后，第 3 步那条 `> svg` 一条都不命中：齿轮没被隐藏、`::before` 又画一份 → **一行两个图标**（实测：MCP 行两个 16px 字形、间距 8px、label 比别的行右移 24px）。而这时官方也已经补齐了图标座位，于是整块改注册参数：客户端产物从此不查 DOM、不挂 MutationObserver（eslint 禁掉 `document.body` / `MutationObserver` / `querySelector(All)`；A36/A37 与 C14–C16 守产物）。
 
 **标记几何**（`assets/mcp-mark.svg`；三条 path 逐字取自官方仓库 `modelcontextprotocol/modelcontextprotocol` 的 `docs/favicon.svg`）：
 
@@ -757,8 +758,9 @@ account -10 | general 0 | models 10 | plugins 15 | agent-presets 20 | mcp 900 �
 | `Include.write()` 整体重写 root.data | `dsh-app-boot/lib/index.js:245-248` |
 | group 子条目随 `internal/update` 重建 | `cordis-plugin-loader/lib/index.js:108-115` |
 | 双半插件的接线范式（路径行） | 同级 `../codex-effort-picker/README.md` |
-| **设置导航图标是硬编码 id→图标，未知 id 兜底齿轮** | `dsh-client-ui-settings-general/lib/client.js:244-267`（用于 `:313`；行只带 id/order/label，见 `:1025-1030`） |
-| 导航那一格的结构与锚点：`panel[data-shortcut-modal="settings"] > nav > button > [svg, span]` | 同文件 `:277-320` |
+| **设置导航图标**：0.2.1 及更早是硬编码 id→图标、未知 id 兜底齿轮；`className: navIcon` 直接挂在 `<svg>` 上 | `dsh-client-ui-settings-general@0.2.1-rc.5` 的 `lib/client.js`（npm 包实测；行只带 id/order/label） |
+| **图标座位** `settings.section.icon`（0.2.2-alpha.3 起）：list + inline，按 section id 认领，owner props `{size, active}` | 本机 `dsh-client-ui-settings-general@0.2.2-rc.3` 的 `src/client/SettingsRoot.tsx:91-97`；`dsh-client-ui-settings/src/client/contract/slots.ts:58-65` |
+| 0.2.2 的导航格结构：`panel[data-shortcut-modal="settings"] > nav > button > span.navIcon(svg) + span.navLabel` | `SettingsRoot.tsx:82-97`（`span.navIcon` 就是让 `button > svg` 失效的那层包壳） |
 | **MCP 官方标记几何**（三联弧线笔画） | 官方仓库 `modelcontextprotocol/modelcontextprotocol` 的 `docs/favicon.svg`（`docs/logo/{light,dark}.svg` 是同一标记 + 文字商标） |
 | 插件**自己**的图标（Plugin Manager 卡片）走 manifest：SVG/PNG/JPEG/WebP ≤256 KiB、须在包目录内 | `dsh-app-boot/lib/index.js:1851-1876, 1971-2001`（渲染端 `dsh-client-ui-plugin-manager/lib/client.js:2029-2032` 的 `PackageArtwork`） |
 | 但 `file://` 接线**拿不到**上面那份 manifest（`barePackageName()` 对含 `:` 的 specifier 返回 undefined） | `dsh-app-boot/lib/index.js:1167-1174`（`metaOf` 在 `:3261-3263`） |

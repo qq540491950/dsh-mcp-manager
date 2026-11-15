@@ -212,7 +212,7 @@ cordis_inspect_query(platform: client, provider: Slots, method: listSubTree,
 
 **group 子条目不可单独寻址**：`plugin_manager` 对 `include:mcp-manager` 之类会报 `readOnlyReason: "unaddressable"`。这正是本插件"整体重写 group config 数组"设计的由来（子条目没有独立可寻址的写入路径）。契约侧字面量证据见第 2 节；运行时返回**本轮未复现**（本会话没有该工具）。
 
-**导航图标不可由插件提供**：`settings.section` 的注册契约只有 `id`/`order`/`label`，图标是 `navIcon(id)` 硬编码查表 + 齿轮兜底（证据见第 2 节）。本插件靠给自己那一格打 `data-mcpm-nav` + CSS 覆盖实现（AGENTS 3.8 的例外），代价是依赖官方 DOM 结构。上游 [discussion #1229](https://github.com/deepseek-ai/deepseek-harness/discussions/1229) 正是要补上可选 `icon`。
+**导航图标：0.2.2-alpha.3 起有座位了（旧方案改 DOM 已删）**：`settings.section` 的注册契约仍然只有 `id`/`order`/`label`，但官方另开了一格 `settings.section.icon`（list + inline、按 section id 认领、owner props `{size, active}`；证据见第 2 节）。本插件从 v0.4.2 起注册这一格（`src/client/icon.tsx`），客户端产物不再碰 DOM。为什么必须改：0.2.1 及更早只能给自己那一格打 `data-mcpm-nav` + 两行 CSS 隐藏 `button > svg`，而 0.2.2-alpha.3 把图标包进了 `<span class="navIcon">` → `> svg` 不命中 → 齿轮与标记同时显示（两个图标，2026-11-15 实测）。上游 [discussion #1229](https://github.com/deepseek-ai/deepseek-harness/discussions/1229) 正是这个提案，现已落地。
 
 **判据权威顺序**（AGENTS §5 的一句话展开）：① 本机**已安装**的 DSH 产物（`resources/app.asar` 内的 `lib/index.js` + `lib/types/**/*.d.ts`）——官方 skills 自己写着 *"the installed Harness is the authority"*；② 随安装附带的官方 skills 文档；③ 官方 GitHub 仓库与 discussions；④ 二手文章。**不要**用 ④ 去推翻 ①。
 

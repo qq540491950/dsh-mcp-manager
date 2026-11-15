@@ -568,23 +568,25 @@ check(
   check('A14 说明文字在标题行之外', headerAt >= 0 && rowAt >= 0 && subtitleAt > rowAt)
 }
 
-// 导航图标护栏：DSH 的设置导航是**硬编码 id→图标**、未知 id 兜底成齿轮
-// （dsh-client-ui-settings-general/lib/client.js:244-267），注册契约里没有 icon 字段，
-// 所以本插件只能渲染后给自己那一格打标记再覆盖。下面把「标记方式」与「标记几何」都钉住。
+// 导航图标：DSH 0.2.2-alpha.3 起官方给了一格 `settings.section.icon` 座位，图标是**注册参数**，
+// 不再是"渲染后改 DOM"。旧做法（打 data-mcpm-nav + 两行 CSS 隐藏 `button > svg`）在 0.2.2 上
+// 会画出**两个图标**：官方把图标包进了 `<span class="navIcon">`，`> svg` 一条都不命中，
+// 齿轮留在原地、`::before` 又画一份（2026-11-15 实测截图）。
+// 下面钉三件事：几何只有一份、图标走座位注册、产物里一根 DOM 补丁都不剩。
 {
   // 官方墨迹包围盒（含描边）：由官方仓库 docs/favicon.svg 那三条 path 采样解析得到。
   const OFFICIAL_INK = { x: 18.06625, y: 10.63465, w: 143.0821, h: 159.1557 }
   const TARGET_HEIGHT = 15
 
+  const mark = await import('../src/client/mark.ts')
   const asset = await readFile(join(root, 'assets', 'mcp-mark.svg'), 'utf8')
   // 注释里也会出现 stroke-width 之类的字样，先剥掉再解析，否则会取到注释里的数字。
   const assetMarkup = asset.replace(/<!--[\s\S]*?-->/g, '')
   const assetPaths = [...assetMarkup.matchAll(/<path d="([^"]+)"/g)].map(([, d]) => d)
-  const inlinePaths = [...clientSource.matchAll(/<path d="([^"]+)"/g)].map(([, d]) => d)
   check(
-    'A32 MCP 标记：内联副本与 assets/mcp-mark.svg 的三条 path 逐字一致',
-    assetPaths.length === 3 && inlinePaths.length === 3 && same(assetPaths, inlinePaths),
-    `asset=${assetPaths.length} inline=${inlinePaths.length}`,
+    'A32 MCP 标记：几何只有一份（src/client/mark.ts 的三条 d 与 assets/mcp-mark.svg 逐字一致）',
+    assetPaths.length === 3 && same([...mark.MCP_MARK_PATHS], assetPaths),
+    `asset=${assetPaths.length} source=${mark.MCP_MARK_PATHS.length}`,
   )
   check(
     'A33 MCP 标记：几何与官方 favicon 同源（round linecap + currentColor，无硬编码颜色）',
@@ -601,7 +603,7 @@ check(
       ? null
       : { tx: Number(transform[1]), ty: Number(transform[2]), scale: Number(transform[3]), stroke: Number(stroke[1]) }
   }
-  const inline = numbers(clientSource)
+  const inline = numbers(`${mark.MCP_MARK_TRANSFORM}" stroke-width="${mark.MCP_MARK_STROKE_WIDTH}"`)
   const inAsset = numbers(assetMarkup)
   const near = (a: number, b: number, tol: number): boolean => Math.abs(a - b) <= tol
   const geometryOk =
@@ -616,35 +618,21 @@ check(
 
   const code = clientSource.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
   check(
-    'A35 导航标记用官方 data 锚点，不依赖 CSS-module 哈希类名',
-    code.includes('\'[data-shortcut-modal="settings"]\'') ||
-      code.includes('NAV_DIALOG_SELECTOR = \'[data-shortcut-modal="settings"]\''),
+    'A35 导航图标走官方 settings.section.icon 座位，id 与 section 相同（官方按 id 认领）',
+    /name: "settings\.section\.icon", id: SECTION_ID/.test(code),
+    code.includes('settings.section.icon') ? '' : '产物里没有 settings.section.icon',
   )
   check(
-    'A36 导航标记只 setAttribute/removeAttribute，不改 React 节点树',
-    /cell\.setAttribute\(NAV_ATTRIBUTE, "1"\)/.test(code) &&
-      /removeAttribute\(NAV_ATTRIBUTE\)/.test(code) &&
-      !/document\.body\.append|\.removeChild\(|innerHTML/.test(code),
+    'A36 客户端产物不碰导航 DOM（无 data 标记 / 无 MutationObserver / 无 querySelector）',
+    !/data-mcpm-nav|data-shortcut-modal|MutationObserver|querySelector/.test(code),
   )
   check(
-    'A37 只隐藏官方 <svg>，不隐藏我们自己那一格',
-    /\[data-shortcut-modal="settings"\] button\[data-mcpm-nav\] > svg \{ display:none; \}/.test(clientSource) &&
-      !/button\[data-mcpm-nav\]\s*\{[^}]*display\s*:\s*none/.test(clientSource),
+    'A37 样式表里不再有导航覆盖规则（无 button[data-mcpm-nav]、无 mask 数据 URI）',
+    !/button\[data-mcpm-nav\]/.test(clientSource) && !/mask:url\("data:image\/svg\+xml/.test(clientSource),
   )
-  // 注意：这条规则里含 `${MCP_MARK_DATA_URI}`，用 `[^}]*` 取规则会在第一个 `}` 处截断，
-  // 所以按「行」取（样式表里一条规则一行）。
-  const markAt = clientSource.indexOf('button[data-mcpm-nav]::before')
-  const markRule = markAt < 0 ? '' : clientSource.slice(markAt, clientSource.indexOf('\n', markAt))
   check(
-    'A38 标记颜色走 currentColor，几何走内联 SVG 的 data URI（不是外链图片或硬编码颜色）',
-    markRule.includes('background-color:currentColor') &&
-      markRule.includes('mask:url("${MCP_MARK_DATA_URI}")') &&
-      markRule.includes('width:16px') &&
-      // 打包器会把 `const` 打印成 `var`，所以声明关键字要可选。
-      /(?:const|var|let) MCP_MARK_DATA_URI = `data:image\/svg\+xml,\$\{encodeURIComponent\(MCP_MARK_SVG\)\}`/.test(
-        clientSource,
-      ),
-    markRule.slice(0, 120),
+    'A38 图标颜色走 currentColor、尺寸走座位给的 size（没有硬编码尺寸/颜色）',
+    /stroke: "currentColor"/.test(code) && /width: size/.test(code) && /height: size/.test(code),
   )
 }
 //#endregion
@@ -2252,11 +2240,24 @@ const clientCtx: ClientCtxStub = {
     })
   },
 }
-clientExports.apply(clientCtx)
+// apply 抛错时后面每一条 C 断言都会因为"什么都没注册"而红；包一层让报告能跑完，
+// 并把原始错误带在 C6 的 detail 里（否则整份自检在报告前就崩了，看不到别处的失败）。
+let clientApplyError: unknown = null
+try {
+  clientExports.apply(clientCtx)
+} catch (error) {
+  clientApplyError = error
+}
 
 check('C5 只注入 slots', same(injectedNames, ['slots']), JSON.stringify(injectedNames))
-check('C6 注册了一个座位条目', registrations.length === 1, String(registrations.length))
-const { options, component } = registrations[0] ?? {}
+check(
+  'C6 注册了两个座位条目：页面 + 导航图标',
+  registrations.length === 2 && clientApplyError === null,
+  `${String(registrations.length)}${clientApplyError === null ? '' : ` applyError=${String(clientApplyError)}`}`,
+)
+const sectionRegistration = registrations.find((entry) => entry.options?.name === 'settings.section')
+const iconRegistration = registrations.find((entry) => entry.options?.name === 'settings.section.icon')
+const { options, component } = sectionRegistration ?? {}
 check('C7 座位名', options?.name === 'settings.section', String(options?.name))
 check('C8 条目 id', options?.id === 'mcp', String(options?.id))
 check(
@@ -2265,126 +2266,105 @@ check(
   String(options?.order),
 )
 check('C10 label 可解析', (typeof options?.label === 'function' ? options.label() : options?.label) === 'MCP')
-check('C11 组件是函数', typeof component === 'function')
-// 导航标记必须走 ctx.effect 登记，否则插件卸载/热替换后 observer 会留在页面上。
+check('C11 页面组件是函数', typeof component === 'function')
 check(
-  'C12 导航标记经 ctx.effect 登记（可随插件卸载收掉）',
-  effects.length === 1 && /nav mark/.test(effects[0]?.label ?? '') && typeof effects[0]?.dispose === 'function',
+  'C12 导航图标注册进 settings.section.icon，id 与 section 相同（官方按 row.id 认领）',
+  iconRegistration !== undefined &&
+    iconRegistration.options?.id === options?.id &&
+    typeof iconRegistration.component === 'function',
+  `${String(iconRegistration?.options?.name)}/${String(iconRegistration?.options?.id)}`,
+)
+// 旧方案靠 ctx.effect 挂 MutationObserver 找导航格；现在图标是注册参数，apply 不该再登记观察者。
+check(
+  'C13 apply 不再登记任何 DOM 观察 effect（图标走座位，不再渲染后改 DOM）',
+  effects.length === 0,
   JSON.stringify(effects.map((effect) => effect.label)),
 )
 
-// C13–C17：拿一套假 DOM 真跑一遍 apply，验证「只标记我们那一格」「面板关闭重开后能重新标记」
-// 「卸载后清干净」。这些行为源码 grep 抓不到。
+// C14–C16：旧方案会 querySelector 找导航格、new MutationObserver 盯面板开关；现在产物不许碰这些。
+// 这里给一个"碰了就记一笔"的假 DOM，并在**没有 MutationObserver** 的沙箱里真跑一遍 apply：
+// 注册必须完成，且一次 DOM 查询都不许发生（旧实现在这里会抛 ReferenceError / 记下 selector）。
 {
-  /** 按官方结构造一格：`<button><svg/><span>label</span></button>`。 */
-  const makeCell = (label) => {
-    const span = { tagName: 'SPAN', textContent: label }
-    const svg = { tagName: 'svg' }
-    return {
-      tagName: 'BUTTON',
-      children: [svg, span],
-      isConnected: true,
-      attributes: {},
-      get lastElementChild() {
-        return this.children[this.children.length - 1]
-      },
-      setAttribute(name, value) {
-        this.attributes[name] = value
-      },
-      getAttribute(name) {
-        return name in this.attributes ? this.attributes[name] : null
-      },
-      removeAttribute(name) {
-        delete this.attributes[name]
-      },
-    }
-  }
-
-  const cells = [makeCell('通用'), makeCell('模型'), makeCell('MCP')]
-  const nav = { querySelectorAll: (selector) => (selector === 'button' ? cells : []) }
-  const dialog = { querySelector: (selector) => (selector === 'nav' ? nav : null) }
-  const injected = []
-  const observers = []
-  class FakeMutationObserver {
-    constructor(callback) {
-      this.callback = callback
-      this.disconnected = false
-      observers.push(this)
-    }
-    observe(target, options) {
-      this.target = target
-      this.options = options
-    }
-    disconnect() {
-      this.disconnected = true
-    }
-  }
-  const fakeDocument = {
+  const domReads: string[] = []
+  const sheets: Array<{ id?: string; textContent?: string }> = []
+  const probeEffects: string[] = []
+  const inertDocument = {
     body: { nodeName: 'BODY' },
-    head: { appendChild: (element) => injected.push(element) },
+    head: { appendChild: (element: { id?: string; textContent?: string }) => sheets.push(element) },
     getElementById: () => null,
     createElement: () => ({ id: '', textContent: '' }),
-    querySelectorAll: (selector) => (selector === '[data-shortcut-modal="settings"]' ? [dialog] : []),
+    querySelectorAll: (selector: string) => {
+      domReads.push(`all:${selector}`)
+      return []
+    },
+    querySelector: (selector: string) => {
+      domReads.push(selector)
+      return null
+    },
   }
-
-  const domSandbox = {
-    window: { __ModuleLoader__: { load: (definition) => registered.push(definition) } },
-    document: fakeDocument,
-    MutationObserver: FakeMutationObserver,
+  const probeRegistered: StubModuleDefinition[] = []
+  const probeSandbox: Record<string, unknown> = {
+    window: { __ModuleLoader__: { load: (definition: StubModuleDefinition) => probeRegistered.push(definition) } },
+    document: inertDocument,
     console,
   }
-  domSandbox.globalThis = domSandbox
-  vm.runInNewContext(clientSource, domSandbox, { filename: 'lib/client.js' })
-  const domExports = registered[registered.length - 1].factory(stubRequire)
-  const domEffects = []
-  domExports.apply({
-    effect(callback, label) {
-      domEffects.push({ label, dispose: callback() })
-    },
-    inject() {},
-  })
-
+  probeSandbox.globalThis = probeSandbox
+  vm.runInNewContext(clientSource, probeSandbox, { filename: 'lib/client.js' })
+  const probeExports = lastOrThrow(probeRegistered, '客户端模块注册表').factory(stubRequire)
+  const probeRegistrations: Array<{ options: Record<string, unknown>; component: unknown }> = []
+  // 旧实现在这里 new MutationObserver（沙箱没给）→ 会抛；包一层让失败变成"红的断言"而不是整份自检崩掉。
+  let applyError: unknown = null
+  try {
+    probeExports.apply({
+      effect: (_callback: () => unknown, label?: string) => {
+        probeEffects.push(String(label))
+      },
+      inject: (
+        _names: string[],
+        callback: (scope: {
+          slots: {
+            inject(name: string, register: () => void): void
+            register(options: Record<string, unknown>, registered: unknown): void
+          }
+        }) => void,
+      ) =>
+        callback({
+          slots: {
+            inject: (_name, register) => {
+              register()
+            },
+            register: (options, registered) => {
+              probeRegistrations.push({ options, component: registered })
+            },
+          },
+        }),
+    })
+  } catch (error) {
+    applyError = error
+  }
   check(
-    'C13 只在「MCP」那一格打标记（按 label 文本认，不看哈希类名）',
-    cells.filter((cell) => cell.getAttribute('data-mcpm-nav') === '1').length === 1 &&
-      cells[2].getAttribute('data-mcpm-nav') === '1',
-    `marked=${cells.filter((cell) => cell.getAttribute('data-mcpm-nav') === '1').length}`,
+    'C14 没有 MutationObserver 也能完成两个座位注册（旧实现在这里直接抛 ReferenceError）',
+    applyError === null && probeRegistrations.length === 2 && probeEffects.length === 0,
+    `error=${applyError === null ? 'none' : String(applyError)} registered=${probeRegistrations.length} effects=${JSON.stringify(probeEffects)}`,
   )
   check(
-    'C14 observer 挂在 body 上（设置面板是 portal 到 body 的）',
-    observers.length === 1 && observers[0].target === fakeDocument.body && observers[0].options?.subtree === true,
+    'C15 客户端产物一次导航 DOM 查询都不做（不读 querySelector / querySelectorAll）',
+    domReads.length === 0,
+    JSON.stringify(domReads),
   )
-  const sheet = injected[0]?.textContent ?? ''
+  const probeSheet = sheets[0]?.textContent ?? ''
   check(
-    'C15 注入的样式表里已含导航那两行（隐藏官方 svg + mask 画标记）',
-    /\[data-shortcut-modal="settings"\] button\[data-mcpm-nav\] > svg \{ display:none; \}/.test(sheet) &&
-      /content:""[^}]*mask:url\("data:image\/svg\+xml,/.test(sheet),
-    `chars=${sheet.length}`,
-  )
-
-  // 面板关闭 → 旧节点断开 → 重新打开（新节点）→ 应重新标记。
-  cells[2].isConnected = false
-  cells[2].removeAttribute('data-mcpm-nav')
-  const reopened = makeCell('MCP')
-  cells[2] = reopened
-  observers[0].callback()
-  check('C16 面板关闭重开后能重新标记新节点', reopened.getAttribute('data-mcpm-nav') === '1')
-
-  // 先确认确实标记过，否则「卸载后没有属性」会变成一条空断言（曾经就差点漏过这个洞）。
-  const beforeDispose = reopened.getAttribute('data-mcpm-nav')
-  domEffects[0].dispose()
-  check(
-    'C17 卸载时摘掉 observer 与标记',
-    beforeDispose === '1' && observers[0].disconnected === true && reopened.getAttribute('data-mcpm-nav') === null,
-    `before=${String(beforeDispose)} after=${String(reopened.getAttribute('data-mcpm-nav'))}`,
+    'C16 样式表里不再有导航覆盖规则（无 data-mcpm-nav、无 mask 数据 URI）',
+    probeSheet.includes('.mcpm-page') && !/data-mcpm-nav|mask:url\("data:image/.test(probeSheet),
+    `chars=${probeSheet.length}`,
   )
 }
 
-// C18：客户端半边热替换时，页面上那份**旧样式表**必须被刷新。
-// 反例（真实踩过）：`ensureStyles` 写成「元素存在就 return」，于是新加的导航规则永远进不了页面，
-// 表现就是「bundle 更新了、图标却还是齿轮」。
+// C17：客户端半边热替换时，页面上那份**旧样式表**必须被刷新。
+// 反例（真实踩过）：`ensureStyles` 写成「元素存在就 return」，于是新加的规则永远进不了页面，
+// 表现就是「bundle 更新了、页面还是旧样式」。
 {
-  const elements = [{ id: 'dsh-mcp-manager-styles', textContent: '/* 旧版样式，没有导航规则 */' }]
+  const elements = [{ id: 'dsh-mcp-manager-styles', textContent: '/* 旧版样式 */' }]
   const staleDocument = {
     body: { nodeName: 'BODY' },
     head: { appendChild: (element) => elements.push(element) },
@@ -2395,19 +2375,17 @@ check(
   const staleSandbox = {
     window: { __ModuleLoader__: { load: (definition) => registered.push(definition) } },
     document: staleDocument,
-    MutationObserver: class {
-      observe() {}
-      disconnect() {}
-    },
     console,
   }
   staleSandbox.globalThis = staleSandbox
   vm.runInNewContext(clientSource, staleSandbox, { filename: 'lib/client.js' })
-  registered[registered.length - 1].factory(stubRequire).apply({ effect: () => {}, inject: () => {} })
+  lastOrThrow(registered, '客户端模块注册表')
+    .factory(stubRequire)
+    .apply({ effect: () => {}, inject: () => {} })
   check(
-    'C18 热替换时刷新已有样式表（写成「存在就跳过」会让新 CSS 永不生效）',
-    elements.length === 1 && elements[0].textContent.includes('data-mcpm-nav'),
-    `count=${elements.length} refreshed=${elements[0].textContent.includes('data-mcpm-nav')}`,
+    'C17 热替换时刷新已有样式表（写成「存在就跳过」会让新 CSS 永不生效）',
+    elements.length === 1 && elements[0].textContent.includes('.mcpm-page'),
+    `count=${elements.length} refreshed=${elements[0].textContent.includes('.mcpm-page')}`,
   )
 }
 //#endregion
@@ -2471,26 +2449,27 @@ check(
   const typesOf = (tree) => collect(tree, (n) => (typeof n.type === 'string' ? n.type : undefined))
   const hasClass = (tree, cls) => classesOf(tree).some((value) => value.split(/\s+/).includes(cls))
 
+  /** 本模块注册的座位组件，按座位名收（两个座位都要拿到，不能只留最后一个）。 */
+  const components = {}
   /** 用给定场景渲染 McpSection。 */
   const renderSection = (values) => {
-    let sectionComponent = null
     const fresh = definition.factory((specifier) => (specifier === 'react' ? fakeReact : {}))
     fresh.apply({
-      // 渲染测试只关心页面组件；导航标记那部分由 C12–C17 覆盖。
+      // 渲染测试只关心页面组件；图标座位由 D35–D38 单独渲染。
       effect: () => {},
       inject: (_names, callback) =>
         callback({
           slots: {
             inject: (_name, register) => register(),
-            register: (_options, registered) => {
-              sectionComponent = registered
+            register: (options, registered) => {
+              components[options.name] = registered
             },
           },
         }),
     })
     hookValues = []
     hookIndex = 0
-    return render(fakeReact.createElement(sectionComponent, {}), values)
+    return render(fakeReact.createElement(components['settings.section'], {}), values)
   }
 
   const server = {
@@ -3041,6 +3020,41 @@ check(
       JSON.stringify(errorNotices(both)),
     )
   }
+
+  // D35–D38 导航图标（settings.section.icon 座位）：几何、颜色、尺寸全在组件里，
+  // 产物里那份必须就是 assets/mcp-mark.svg 里那份（几何只存一份，A32 从源头比对）。
+  {
+    const icon = components['settings.section.icon']
+    const renderIcon = (props) => render(fakeReact.createElement(icon, props), {})
+    const tree = renderIcon({ size: 16, active: false })
+    check(
+      'D35 图标是 <svg>，尺寸取座位给的 size（官方给 16）',
+      tree !== null && tree.type === 'svg' && tree.props.width === 16 && tree.props.height === 16,
+      JSON.stringify(tree === null ? null : { type: tree.type, width: tree.props?.width, height: tree.props?.height }),
+    )
+    const iconAssetPaths = [
+      ...readFileSync(join(root, 'assets', 'mcp-mark.svg'), 'utf8')
+        .replace(/<!--[\s\S]*?-->/g, '')
+        .matchAll(/<path d="([^"]+)"/g),
+    ].map(([, d]) => d)
+    const iconPaths = collect(tree, (node) => (node.type === 'path' ? node.props.d : undefined))
+    check(
+      'D36 图标三条 path 与 assets/mcp-mark.svg 逐字一致（渲染用的就是资产里的几何）',
+      same(iconPaths, iconAssetPaths),
+      `${iconPaths.length}/${iconAssetPaths.length}`,
+    )
+    check(
+      'D37 图标颜色走 currentColor、无填充色（主题切换不用改代码）',
+      tree.props.stroke === 'currentColor' && tree.props.fill === 'none',
+      JSON.stringify({ stroke: tree.props.stroke, fill: tree.props.fill }),
+    )
+    const smaller = renderIcon({ size: 8 })
+    check(
+      'D38 尺寸跟着座位走（8 → 8），不是写死的 16',
+      smaller.props.width === 8 && smaller.props.height === 8,
+      JSON.stringify({ width: smaller.props.width }),
+    )
+  }
 }
 //#endregion
 
@@ -3131,8 +3145,9 @@ check(
         callback({
           slots: {
             inject: (_name, register) => register(),
-            register: (_options, registered) => {
-              component = registered
+            register: (options, registered) => {
+              // 现在有两个座位（页面 + 导航图标），只收页面那个。
+              if (options.name === 'settings.section') component = registered
             },
           },
         }),
@@ -3409,6 +3424,8 @@ check(
         getElementById: () => null,
         createElement: () => ({ dataset: {} as Record<string, string> }),
         head: { appendChild: () => {} },
+        // 客户端不该查 DOM；真查了由 A36 / C15 报红，这里只保证沙箱不因缺方法而崩掉报告。
+        querySelectorAll: () => [],
       }
       const visible = await mount({
         capabilities: newHost,

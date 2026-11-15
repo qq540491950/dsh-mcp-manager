@@ -13,36 +13,37 @@
  *
  * 本插件做什么：往 `settings.section`（list 座位）注册一页 **MCP** 设置页，
  * `order: 900` 使它落在设置导航的**最下方**（General 是 0，其余官方页在中间）；
- * 并把自己在设置导航里那一格的**齿轮图标换成 MCP 官方标记**——注册契约没有 icon 字段，
- * 官方 `navIcon(id)` 对未知 id 一律兜底成齿轮，所以只能渲染后打标记 + 样式覆盖
- * （见 nav-mark.ts 与 README 8.6；只 setAttribute，不动 React 的节点树）。
+ * 再往 `settings.section.icon` 注册这一页的图标（MCP 官方标记，按 section id 认领）。
+ *
+ * 图标的历史：0.2.1 及更早的宿主没有 icon 座位，只能在渲染后给自己那一格打标记 + 两行 CSS。
+ * 那套做法依赖官方 `<button><svg/><span/></button>` 的精确结构，0.2.2-alpha.3 把图标包进
+ * `<span class="navIcon">` 之后就失效了（齿轮和标记同时显示）。现在改走注册参数，
+ * 客户端产物**不碰 DOM**（唯一的 `document` 用法是注入样式表）。
  *
  * 模块划分（P4 拆的，每个文件只负责一件事）：
  *   core/status.ts  运行时状态 → 颜色/文案（纯函数，可单测）
  *   core/draft.ts   记录 ↔ 草稿 ↔ 提交载荷（纯函数，可单测）
  *   core/api.ts     路由 / 超时预算 / 请求整理（不碰 React）
- *   styles.ts       样式表 + MCP 标记
- *   nav-mark.ts     全仓库唯一允许碰 DOM 的模块
+ *   styles.ts       样式表
+ *   mark.ts         MCP 标记几何（唯一来源，自检与 assets/mcp-mark.svg 逐字比对）
+ *   icon.tsx        导航格图标组件（settings.section.icon 座位）
  *   form.tsx        表单          row.tsx     一行摘要
  *   section.tsx     整页
  */
 import { SECTION_ID, SECTION_LABEL } from '../shared/constants.ts'
-import { markNavCell } from './nav-mark.ts'
+import { McpNavIcon } from './icon.tsx'
 import { McpSection } from './section.tsx'
 import { ensureStyles } from './styles.ts'
 import type { ClientContext } from './service-types.ts'
 
 /**
- * 客户端插件体：在设置导航最下方注册一页 MCP 管理，并把导航那一格的齿轮换成 MCP 标记。
+ * 客户端插件体：在设置导航最下方注册一页 MCP 管理，并给这一页注册 MCP 官方标记作图标。
  * @param ctx - 客户端根上下文。
  */
 export function apply(ctx: ClientContext): void {
   // 幂等注入视觉层：inline style 的 background 会压过 :hover，
   // 所以视觉必须走 CSS，inline 只留布局。
   ensureStyles()
-  // 导航那一格：注册契约里没有 icon 字段，只能渲染后自己覆盖。
-  // ctx.effect 让 observer 与标记随插件卸载/热替换一起收掉。
-  ctx.effect(markNavCell, 'ui-mcp-manager: nav mark')
   // 只注入 slots：数据面走同源 fetch，不需要 remote / connection 注入。
   ctx.inject(['slots'], (scope) => {
     scope.slots.inject('settings.section', () => {
@@ -56,6 +57,11 @@ export function apply(ctx: ClientContext): void {
         },
         McpSection,
       )
+    })
+    // 导航那一格的图标：官方按 section id 认领（`only: row.id`），所以 id 必须与上面一致。
+    // 0.2.2-alpha.3 之前的宿主没有声明这个座位 → 回调永远不执行，官方齿轮照常兜底。
+    scope.slots.inject('settings.section.icon', () => {
+      scope.slots.register({ name: 'settings.section.icon', id: SECTION_ID }, McpNavIcon)
     })
   })
 }
